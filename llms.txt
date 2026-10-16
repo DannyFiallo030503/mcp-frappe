@@ -1,0 +1,25 @@
+# Frappe MCP
+
+> An authenticated, permission-aware MCP server installed as a Frappe app. It discovers installed apps and exposes bounded read, document, workflow, report, file, print, translation, customization, and export tools.
+
+## Start here
+
+- [README](README.md): product overview, requirements, installation summary, and documentation index.
+- [AI agent guide](docs/ai-agent-guide.md): safe discovery, read, write, workflow, customization, export, and error-handling workflows.
+- [Tool reference](docs/tool-reference.md): behavior, required/optional arguments, permissions, and limits for all 30 tools.
+- [Security model](docs/security.md): identity, permission enforcement, write safeguards, and filesystem boundaries.
+- [Installation and configuration](docs/installation-and-configuration.md): Bench installation, Frappe token setup, MCP client configuration, and connection check.
+- [Architecture](docs/architecture.md): package responsibilities, request flow, and extension guidance.
+- [Compatibility and validation](docs/compatibility-and-validation.md): tested versions, real HTTP acceptance scope, and limitations.
+- [Development guide](docs/development.md): local setup, automated tests, and real endpoint acceptance runner.
+- [Contributing](CONTRIBUTING.md): contribution expectations.
+- [Security policy](SECURITY.md): vulnerability reporting guidance.
+
+## Important operating rules
+
+- Always discover apps and DocType fields from the connected site before constructing calls.
+- The authenticated Frappe user's permissions apply; permission errors must not be bypassed.
+- Preview writes, inspect the preview, then explicitly confirm. Use the exact `expected_modified` or `expected_preview` from the preview response.
+- Whitelisted methods may have unknown side effects. Verify method code/docs before invoking.
+- Use HTTPS and a dedicated least-privilege Frappe API user. Never expose API secrets in prompts, logs, or repository files.
+- There is no arbitrary SQL/Python tool and no file-upload MCP tool.
