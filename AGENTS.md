@@ -1,31 +1,26 @@
 # Instructions for AI coding agents
 
-These instructions apply to the entire repository.
-
-## Project purpose
-
-This repository is a generic Frappe app that exposes Frappe sites as an authenticated MCP server. Keep it independent of CubaZone-specific apps and avoid hardcoded ERPNext/HRMS catalogs. Discover site apps and metadata at runtime.
+This repository builds a generic, standalone Frappe MCP server. The MCP process runs outside Frappe and connects over standard HTTP APIs. Do not change target sites, install a Frappe app, run migrations, or deploy unless the user explicitly asks.
 
 ## Required behavior
 
-- Preserve the connected Frappe user's permissions. Never add `ignore_permissions=True` to bypass authorization.
-- Do not add arbitrary SQL execution, arbitrary Python evaluation, or an unbounded method dispatcher.
-- Bound returned lists, report rows, file bytes, and rendered HTML.
-- Validate user-provided DocType/field/app/module names against Frappe metadata and installed app ownership.
-- For mutations, provide a preview and require explicit confirmation. For existing-document changes, require a preview-bound `expected_modified` token.
-- Treat whitelisted methods as potentially side-effecting and non-idempotent.
-- Restrict filesystem writes to the selected installed app and preserve backups/rollback behavior.
-- Keep secrets, customer data, and live credential files out of source, tests, and evidence.
+- Preserve the connected Frappe user's permissions; do not bypass authorization.
+- Do not add arbitrary SQL, Python evaluation, or unrestricted method dispatch.
+- Bound list, report, and response sizes.
+- Validate DocType, field, app, and module names against remote metadata.
+- Preview mutations and require confirmation; bind existing-document changes to a current `modified` value.
+- Restrict optional filesystem writes to `FRAPPE_APPS_PATH`, verify remote app/module ownership, and preserve backups.
+- Keep credentials, private site data, and customer data out of source, tests, and evidence.
 
 ## Before changing tools
 
-1. Inspect the existing tool implementation and Frappe APIs used by the target operation.
-2. Add type hints and a meaningful docstring; the MCP input schema is generated from function signatures/docstrings.
-3. Add focused automated coverage under `mcp_frappe/tests/` or the matching vendored transport test directory.
-4. Update `docs/tool-reference.md` and `docs/ai-agent-guide.md`; update security/architecture docs when relevant.
-5. Exercise changed behavior using authenticated MCP HTTP calls against an isolated Frappe site when possible. Do not target a production site.
-6. Inspect generated files and evidence for credentials or private data before sharing.
+1. Inspect the existing tool and the standard Frappe API used.
+2. Add type hints and an informative docstring; the MCP schema comes from signatures/docstrings.
+3. Add focused coverage for changed behavior.
+4. Update tool reference and AI guide; update architecture/security/compatibility docs when needed.
+5. Exercise changed behavior with an MCP client and a non-production site when possible.
+6. Inspect evidence and generated files for secrets and private data.
 
-## Documentation conventions
+## Documentation
 
-User-facing documentation is written in English. Keep examples generic and runnable only after replacing placeholders. Never publish a credential or an actual customer identifier.
+User-facing documentation is in English. Examples use placeholders or local development hostnames; never publish a credential or real customer identifier.
