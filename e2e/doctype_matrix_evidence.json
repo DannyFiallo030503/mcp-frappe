@@ -1,0 +1,89 @@
+{
+  "run_date": "2026-10-19",
+  "transport": "MCP stdio to standalone server, then Frappe HTTP API",
+  "site": "cubazone.localhost",
+  "stack": {
+    "frappe": "15.96.0",
+    "erpnext": "15.96.1"
+  },
+  "identity": "Administrator",
+  "field_types_from_frappe_15": 43,
+  "doctype_field_types_roundtripped": 43,
+  "custom_field_types_created": 43,
+  "doctype_variants": {
+    "child": true,
+    "regular": true,
+    "single": true,
+    "tree": true,
+    "submittable": true,
+    "virtual_metadata": true,
+    "site_custom_metadata_and_crud": true
+  },
+  "native_file_and_database_roundtrip": {
+    "generated_doctype_json_exists": true,
+    "json_contains_all_43_field_types": true,
+    "json_contains_requested_properties": true,
+    "json_contains_permission_row": true,
+    "doctype_metadata_matches_request": true
+  },
+  "doctype_properties_checked": [
+    "editable_grid",
+    "quick_entry",
+    "track_changes",
+    "track_seen",
+    "track_views",
+    "allow_rename",
+    "allow_import",
+    "allow_copy",
+    "title_field",
+    "search_fields",
+    "sort_field",
+    "sort_order",
+    "description",
+    "max_attachments",
+    "autoname",
+    "nsm_parent_field"
+  ],
+  "property_setter_allowlist_passed": [
+    "label",
+    "hidden",
+    "read_only",
+    "reqd",
+    "default",
+    "in_list_view",
+    "in_standard_filter",
+    "options",
+    "description",
+    "depends_on",
+    "mandatory_depends_on",
+    "read_only_depends_on",
+    "collapsible",
+    "bold",
+    "width"
+  ],
+  "record_checks": {
+    "single_value_roundtrip": true,
+    "table_and_table_multiselect_rows": true,
+    "tree_parent_link": true,
+    "select_link_dynamic_link": true,
+    "submittable_draft_docstatus": true,
+    "site_custom_record_create_list": true
+  },
+  "export_and_rollback": true,
+  "cleanup": {
+    "temporary_doctypes_removed_by_mcp": "9/9",
+    "doctype_customization_record_counts": 0,
+    "single_value_record_count": 0,
+    "test_table_count_after_manual_cleanup": 0,
+    "old_empty_orphan_tables_removed_after_verification": 49,
+    "final_run_empty_tables_removed_after_verification": 6,
+    "erp_app_checkout_clean": true
+  },
+  "limitations": [
+    "Virtual DocType CRUD requires app controller storage methods and was not tested.",
+    "The run did not exhaust every field or DocType property combination.",
+    "No browser-rendered Desk control was available for visual comparison.",
+    "Frappe 16 and ERPNext business-process end-to-end coverage remain untested."
+  ],
+  "credentials_included": false
+}

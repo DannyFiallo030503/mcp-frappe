@@ -4,20 +4,30 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mcp-frappe"
-version = "0.1.0"
-description = "Universal MCP server app for Frappe Framework and installed apps"
+version = "0.2.0"
+description = "Standalone MCP server for connecting to Frappe sites over HTTP"
 requires-python = ">=3.10"
 dependencies = [
-  "jsonschema>=4.24,<5.0",
-  "Click>=8.1.8,<9.0",
+  "httpx>=0.27,<1.0",
+  "mcp>=1.26,<2.0",
 ]
 
+[project.scripts]
+mcp-frappe = "frappe_mcp.standalone:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0,<9.0", "ruff>=0.11,<1.0"]
+
 [tool.hatch.build.targets.wheel]
-packages = ["mcp_frappe", "frappe_mcp"]
+packages = ["frappe_mcp"]
 
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+extend-exclude = ["legacy"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,104 +1,65 @@
-# Installation and Configuration
+# Installation and configuration
 
 ## Deployment model
 
-Frappe MCP is a Frappe app (`mcp_frappe`) installed into a Bench and installed on each target site. The app registers the authenticated endpoint:
+Frappe MCP is a standalone MCP process launched by the AI host over `stdio`. It connects to the target Frappe site over HTTP. Do not run `bench get-app`, `bench install-app`, `bench migrate`, or restart the target site for this integration.
 
-```text
-/api/method/mcp_frappe.mcp.handle_mcp
-```
-
-The MCP client sends JSON-RPC/MCP requests to this endpoint using Frappe token authentication. The Frappe session user becomes the identity used by all tools.
-
-## Prerequisites
-
-1. A running Frappe Bench and target site.
-2. A Python runtime supported by that Bench. The package declares Python `>=3.10` and runtime dependencies `jsonschema>=4.24,<5.0` and `Click>=8.1.8,<9.0`.
-3. An MCP client with Streamable HTTP support and custom HTTP headers.
-4. A dedicated Frappe user and a least-privilege role assignment.
-5. For customization tools, `System Manager` on that user. Exporting also requires the selected app to be installed and its target module to exist and be writable by the Bench process.
-
-## Install from source
-
-From the Bench directory:
+## Install
 
 ```bash
-bench get-app https://github.com/<OWNER>/mcp-frappe.git
-bench --site <site-name> install-app mcp_frappe
-bench restart
+git clone https://github.com/DannyFiallo030503/mcp-frappe.git
+cd mcp-frappe
+uv sync
 ```
 
-Replace `<OWNER>` with the published repository owner. If working from a local checkout, place/link it as `apps/mcp_frappe` and then run the site install command.
+The executable is `mcp-frappe`; alternatively run `uv run python -m frappe_mcp.standalone` from the checkout.
 
-Check installation:
+## Environment
 
-```bash
-bench --site <site-name> list-apps
-```
+| Variable | Required | Description |
+|---|---:|---|
+| `FRAPPE_URL` | Yes | Site base URL, e.g. `http://127.0.0.1:32783` |
+| `FRAPPE_SITE` | No | Site host name sent as the HTTP `Host` header for multi-site Bench routing |
+| `FRAPPE_API_KEY` | Token auth | API key; use together with `FRAPPE_API_SECRET` |
+| `FRAPPE_API_SECRET` | Token auth | API secret |
+| `FRAPPE_USERNAME` | Password auth | Login username; defaults to `Administrator` |
+| `FRAPPE_PASSWORD` | Password auth | Password; never stored in this repository |
+| `FRAPPE_APPS_PATH` | DocType creation and export | Local Bench `apps/` directory visible to the MCP process |
+| `FRAPPE_TIMEOUT` | No | HTTP timeout in seconds; defaults to `30` |
 
-The output should include `mcp_frappe`. The app has a required app dependency on `frappe`; it does not require ERPNext or HRMS. Those apps are discovered if installed.
+Use either both API token variables or a username/password. Token auth is preferred for remote sites. Password login uses Frappe's `/api/method/login` and is restricted to HTTPS except for loopback and `.localhost` URLs. Every request runs as the configured Frappe user. This setup uses `Administrator`; Frappe grants that user all DocType permissions independently of Developer Mode. An Administrator password is highly privileged; use it only in a trusted development environment, and supply it through the MCP host's secret store/environment.
 
-## Create API credentials
+## MCP host configuration
 
-Create a dedicated Frappe user from the Desk, enable API access, and assign only the roles required for the use case. Generate an API key and secret from that user's API Access section. Do not use `Administrator` for normal MCP use.
-
-For read-only use, grant the minimum read/report/print access necessary. Add `System Manager` only if the agent must use schema customization, role permission, fixture export, or rollback tools. Frappe permissions still apply even to a System Manager.
-
-Token header format:
-
-```http
-Authorization: token <api_key>:<api_secret>
-```
-
-Keep the secret out of shell history, logs, repository files, screenshots, and evidence artifacts. Prefer the MCP client's secret store or environment interpolation. Rotate the key if exposed.
-
-## Configure an MCP client
-
-Use the URL of the Frappe site, including the endpoint path:
-
-```text
-https://<frappe-host>/api/method/mcp_frappe.mcp.handle_mcp
-```
-
-Example shape for clients accepting JSON server declarations:
+Generic local server declaration:
 
 ```json
 {
   "mcpServers": {
     "frappe": {
-      "url": "https://<frappe-host>/api/method/mcp_frappe.mcp.handle_mcp",
-      "headers": {
-        "Authorization": "token ${FRAPPE_API_KEY}:${FRAPPE_API_SECRET}"
+      "command": "uv",
+      "args": ["--directory", "/absolute/path/to/mcp-frappe", "run", "mcp-frappe"],
+      "env": {
+        "FRAPPE_URL": "http://127.0.0.1:32783",
+        "FRAPPE_SITE": "cubazone.localhost",
+        "FRAPPE_USERNAME": "Administrator",
+        "FRAPPE_PASSWORD": "${FRAPPE_PASSWORD}"
       }
     }
   }
 }
 ```
 
-This is a generic shape, not a guaranteed drop-in config for every client. Follow the client-specific instructions for Streamable HTTP, header support, and secret substitution. Do not put real credentials in a shared JSON config.
+Environment expansion is host-specific. Set the secret outside this shared JSON file. If the MCP host runs in a container, ensure it can reach the Frappe host/port and only mount the app directory required for exports.
 
-## Verify the connection
+Without `FRAPPE_APPS_PATH`, discovery, reads, record CRUD, and database-backed Custom Field/Property Setter tools work, but standard DocType creation and file export cannot verify or write app source files. Set it to the actual Bench `apps` directory visible to the MCP process, not an arbitrary parent path. Each requested app/module must exist below it and the module must match the remote site's Module Def ownership. The target Frappe site must be running and reachable at `FRAPPE_URL`; provide the HTTP port and `FRAPPE_SITE` when host-based multi-site routing needs it.
 
-Connect from the MCP client and ask it to call `list_installed_apps`. The result should contain the apps installed on that site. Then call `list_doctypes` for one installed app. A `401`/`403` response usually indicates missing/invalid credentials or a site permission denial; verify the Frappe API user and roles before changing endpoint permissions.
+Standard DocType creation (`is_custom: false`, the default) requires **Developer Mode on the target Frappe site**, an installed custom app, and an existing module in that app. Frappe's native DocType controller writes the standard JSON/controller/client/test files into that app. Site-custom DocTypes (`is_custom: true`) are database-backed and require an existing remote Module Def, but no local app checkout, `FRAPPE_APPS_PATH`, or Developer Mode; they do not produce app files, and Frappe does not allow them to be Virtual. Developer Mode is not required for ordinary record operations or database-backed Custom Fields/Property Setters. The minimum supported site setup is a reachable Frappe + ERPNext site; other apps are discovered at runtime.
 
-For a raw HTTP smoke check, use a secure local shell and do not paste the credential into an issue or log:
+## Verify
 
-```bash
-curl --fail-with-body \
-  -H "Authorization: token ${FRAPPE_API_KEY}:${FRAPPE_API_SECRET}" \
-  -H "Content-Type: application/json" \
-  --data '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"smoke-check","version":"1"}}}' \
-  "https://<frappe-host>/api/method/mcp_frappe.mcp.handle_mcp"
-```
-
-An unauthenticated request is expected to be rejected. Do not configure Guest access as a workaround.
-
-## Upgrades
-
-Back up the site and app code using your normal Frappe deployment process before upgrading. Review the release notes and compatibility matrix. Restart the Bench processes after code changes. Run automated checks in an isolated site and perform a real MCP handshake before deploying to a shared site.
-
-The MCP customization export tool writes files into the selected app tree. Treat those exported files as code changes: review the diff, commit them through your normal source-control process, and run the app's migration/deployment procedure on other sites. MCP does not deploy an app to other sites.
+In the MCP host, connect and call `list_installed_apps`, then `list_doctypes`. For a raw login smoke check, keep the password out of shell history and output. An invalid password or missing role should fail through the standard Frappe API response; do not enable Guest access to work around it.
 
 ## Removal
 
-Follow Frappe's supported app removal procedure for your Frappe version and site. Back up first. Removing the app may not remove all data created by other installed apps or tools. Review site data and app files separately before removal.
+Remove the `frappe` server entry from the MCP host configuration and delete the standalone checkout if no longer needed. No app uninstall, site migration, or Bench change is required.

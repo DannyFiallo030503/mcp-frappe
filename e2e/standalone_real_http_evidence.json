@@ -1,0 +1,54 @@
+{
+  "run_date": "2026-10-16",
+  "server": "standalone-stdio",
+  "transport": "MCP stdio",
+  "site_environment": "local development site; URL and credentials omitted",
+  "stack": {
+    "frappe": "15.96.0",
+    "erpnext": "15.96.1",
+    "hrms": "15.60.0",
+    "cuba": "14.3.7",
+    "erp_app": "0.0.1"
+  },
+  "smoke": {
+    "initialize": true,
+    "tools_list_count": 14,
+    "installed_app_count": 5,
+    "doctype_sample_count": 5,
+    "customer_schema_fields": 85,
+    "document_read_count": 1,
+    "query_report_rows_returned": 1,
+    "query_report_truncated": true,
+    "custom_app_doctype_sample_count": 5,
+    "doctype_create_preview": true,
+    "custom_field_preview": true,
+    "property_setter_preview": true,
+    "export_preview": true,
+    "read_only": true
+  },
+  "document_mutations": {
+    "create_preview_and_confirm": true,
+    "update_preview_and_confirm": true,
+    "stale_update_rejected": true,
+    "readback_verified": true,
+    "delete_preview_and_confirm": true,
+    "temporary_record_absent_after_cleanup": true
+  },
+  "customization_and_export": {
+    "custom_field_preview_create_and_cleanup": true,
+    "property_setter_preview_create_and_cleanup": true,
+    "schema_reflected_custom_field_and_property_setter": true,
+    "fixture_and_managed_hooks_export": true,
+    "export_preview_confirmation": true,
+    "rollback_preview_confirmation": true,
+    "temporary_field_absent_after_cleanup": true,
+    "exported_files_in_round_trip": 4
+  },
+  "repository_checks": {
+    "pytest": "8 passed",
+    "ruff": "passed",
+    "target_site_mcp_app_installed": false,
+    "erp_app_working_tree_clean_after_cleanup": true
+  },
+  "secrets_or_business_record_payloads_recorded": false
+}

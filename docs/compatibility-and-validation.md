@@ -1,49 +1,24 @@
-# Compatibility and Validation
+# Compatibility and validation
 
-## Compatibility status
+## Standalone server
 
-The current implementation was exercised on the following isolated Frappe site stack:
+The standalone MCP server was exercised through its real MCP stdio transport against the existing Aspire-managed development site on **2026-10-19**, using `Administrator` for the requested manual operations. Credentials are not included in evidence. The connected stack was Frappe 15.96.0, ERPNext 15.96.1, HRMS 15.60.0, Cuba 14.3.7, and erp_app 0.0.1.
 
-| App | Version |
-|---|---:|
-| Frappe Framework | 15.96.0 |
-| ERPNext | 15.96.1 |
-| HRMS | 15.60.0 |
-| cuba | 14.3.7 |
-| erp_app | 0.0.1 |
-| prueba | 0.0.1 |
+The [manual functional report](../e2e/manual_functional_report.md) covers real MCP calls as Administrator, broad DocType/field/property creation, generated files and database checks, child rows, tree links, role permissions, Custom Fields, Property Setters, record CRUD, export/rollback, cleanup, and the failures found. The redacted [DocType matrix evidence](../e2e/doctype_matrix_evidence.json), [acceptance report](../e2e/standalone_real_http_report.md), and [evidence summary](../e2e/standalone_real_http_evidence.json) cover the scripted matrix and smoke/mutation/customization checks. The test runners are in `e2e/run_standalone_*.py`.
 
-These versions were left unchanged during validation. This evidence demonstrates behavior for that installed stack; it does not establish compatibility with all Frappe release lines. Validate each target version and app combination on a separate site before deployment.
+The mutation, customization, and DocType-matrix acceptance runners are opt-in and refuse non-loopback targets. They create unique temporary data and delete records/metadata through Frappe; the customization runner also restores exported app files and consumes its backup manifest. Frappe leaves physical SQL tables after DocType deletion, so inspect and remove only verified-empty test tables separately. The manual matrix cleanup confirmed zero remaining `MCP Matrix` metadata, Single values, or tables, and the `erp_app` Git working tree was clean.
 
-## Real endpoint acceptance run
+Manual DocType checks confirmed representative native files and database behavior, but exposed important defects: Single DocType files could be written without a persisted DocType row; Frappe's autoreloader can disconnect the MCP after writes, leaving an uncertain result; delete left an empty physical table; `get_document` omitted `docstatus`; and export previews allowed core-app paths. The manual report records cleanup and remaining gaps. This does not establish visual equality against Desk, compatibility with every Frappe version/custom app, or ERPNext end-to-end business process coverage. The historical [HTTP acceptance report](../e2e/REAL_HTTP_REPORT.md) documents the former Frappe-hosted implementation and is retained for migration history; it is not evidence for the standalone server.
 
-The MCP endpoint was exercised over authenticated HTTP on `prueba.localhost`. Calls used MCP JSON-RPC through the installed Frappe endpoint; tool Python functions were not called directly. The unrelated `cubazone.localhost` site was not used.
+For the intended Frappe + ERPNext minimum, generic-app contract, exact current tool coverage, missing surfaces, and the proposed clean-site/version matrix, see the [Frappe capability study](frappe-capability-study.md). The current evidence is a v15 development site, not a clean-site or v16 compatibility claim.
 
-Recorded evidence:
+## Current boundaries
 
-- 84 HTTP exchanges: 83 HTTP 200 responses and one expected HTTP 403 for an anonymous initialization attempt.
-- 80 MCP tool calls covering all 30 tool names exposed by `tools/list`.
-- 75 tool calls completed successfully; 5 produced expected MCP errors for negative checks (stale update timestamp, file-size cap, non-whitelisted method, restricted field, and nonexistent workflow document).
-- Additional exercised flows included schema/app discovery, child DocTypes, customization creation, export/rollback, document lifecycle, workflow, reports, files, print output, workspace, and translations.
+- Read and core document operations use standard Frappe REST APIs.
+- Reports use Frappe's Query Report endpoint.
+- DocType metadata merges standard fields with Custom Fields and Property Setters.
+- App export writes standard DocType JSON, Custom Field/Property Setter/Client Script/Custom DocPerm fixtures, and a managed fixture block in `hooks.py`. It backs up overwritten files and supports guarded rollback.
+- Workflow actions, submit/cancel/amend/rename, file download/upload, print rendering, translations, workspace operations, user-role membership/User Permissions, and arbitrary app-specific methods remain outside this standalone release.
+- File writes require a local app checkout and `FRAPPE_APPS_PATH`. Standard DocType writes can cause a development Bench to reload its web worker and disconnect the MCP request even when some DB/filesystem changes succeeded. Reconcile site and source state before retrying; this behavior is a known correctness issue, not a successful-operation guarantee.
 
-The line-by-line coverage matrix and failure/fix notes are in [`../e2e/REAL_HTTP_REPORT.md`](../e2e/REAL_HTTP_REPORT.md). Raw JSONL request summaries are in [`../e2e/real_http_evidence.jsonl`](../e2e/real_http_evidence.jsonl), and the HTTP runner is [`../e2e/run_real_http.py`](../e2e/run_real_http.py). Evidence excludes API credentials. It records request arguments and selected response summaries; treat it as test data, not a general sanitized production log.
-
-## Fixes exercised during acceptance
-
-The real HTTP run exposed and verified fixes for stale Frappe module ownership maps between requests, child Table-field write validation, JSON-RPC data leaking into native `form_dict`, report listing that did not match report-role access, and non-serializable `Path` export results. Exact behavior and coverage sequence numbers are documented in the E2E report.
-
-## Permission coverage and limitations
-
-The test identity had `System Manager` but did not have HRMS roles. The run successfully read the Attendance schema, while protected HR DocTypes were correctly denied. This confirms permission enforcement; it does not show that the MCP can read every protected DocType. Tools return only what the authenticated Frappe user is permitted to access.
-
-The server can discover every installed app's metadata at runtime, but “universal discovery” is not equivalent to universal access. Version-specific behavior in each installed app must be checked on the target version.
-
-## File operation note
-
-The current MCP tool set has no upload operation. The acceptance run used Frappe's official upload endpoint only to prepare a text and binary File fixture, then used `list_files` and `read_file` through MCP. The binary read returned base64. This setup method is documented so that file-read coverage is not mistaken for MCP upload support.
-
-## Test environment cleanup
-
-The temporary API user and credential file used by the run were deleted. Failed/temporary DocTypes and customization records were cleaned. The isolated site retains named MCP E2E demonstration examples, an active sample workflow, a Print Format, a translation, and attachment fixtures so the environment can be inspected. The test site is not a clean-room or production data source.
-
-The runner's credentials are no longer present in this repository or the test site. To repeat the run, create a dedicated test identity and provide a new local credential JSON through `MCP_FRAPPE_CREDENTIALS` as described in the [development guide](development.md).
+Validate every new Frappe release line or unusual app combination on a disposable site before relying on it.

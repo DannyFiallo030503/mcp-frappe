@@ -1,27 +1,33 @@
 # Roadmap
 
-Frappe MCP is intended to work independently of ERPNext and to discover installed apps at runtime. The roadmap describes current scope and likely future work; it is not a promise of a release date.
+Frappe MCP is a standalone stdio server. The roadmap separates implemented behavior from Frappe surfaces that still need explicit, permission-aware API wrappers.
+
+See the [Frappe capability study](docs/frappe-capability-study.md) for the detailed framework/ERPNext inventory, coverage definitions, DocType visual-equivalence criteria, and test strategy.
 
 ## Implemented
 
-1. **Runtime discovery and reads** — installed apps, modules, visible DocTypes, readable schema and fields, filtered document lists, individual documents, and child rows.
-2. **Document writes** — create, update, delete, submit, cancel, and explicitly whitelisted method calls. Mutations use previews and confirmations; existing-document changes use `expected_modified`; explicit-name creates support safe identical replays.
-3. **Schema customization** — standard DocType creation, Custom Fields, Property Setters, Client Scripts, and role permission updates through native Frappe controllers.
-4. **Portable customization export** — selected DocType JSON and Custom Field, Property Setter, Client Script, and Custom DocPerm fixtures; diff preview, `preview_id` confirmation, file backups, and rollback manifests.
-5. **Extended Frappe surfaces** — reports, workflows, workspaces, print formats, files, and translations.
+1. **Standalone host integration** — launch by an MCP host over stdio; connect to any configured Frappe site over HTTP with API token or local password login.
+2. **Runtime discovery** — installed apps/modules represented by Module Def, DocTypes, and schemas merged with Custom Fields and Property Setters.
+3. **Document access** — bounded lists and document reads through Frappe's resource API.
+4. **Core document mutations** — create/update/delete with previews and confirmation; update/delete require a current `modified` token.
+5. **Reports** — run permitted Query/Script Reports with bounded MCP output.
+6. **Customization** — create standard DocTypes, Custom Fields, and allowlisted Property Setters through Frappe APIs.
+7. **Portable export and rollback** — DocType JSON, selected fixtures, managed `hooks.py` fixture registration, preview hashes, local backups, manifests, and guarded rollback.
+8. **Validation** — unit coverage and real MCP stdio acceptance runs on an isolated local development site.
 
-## Future considerations
+## Future work
 
-- Publish a broader compatibility matrix covering additional Frappe release lines and common app combinations.
-- Add more real HTTP acceptance scenarios for role permutations, unusual DocType metadata, and export/rollback edge cases.
-- Evaluate paginated discovery/read tools for large sites while preserving explicit bounded results.
-- Consider controlled file upload only if a safe, permission-aware contract is defined.
-- Improve user-facing installation and client configuration examples as supported MCP clients are verified.
+- Workflow transitions and lifecycle actions.
+- Permission-aware workspace, print, file, and translation tools.
+- More role combinations, error-path coverage, and additional Frappe versions.
+- Better report pagination where supported by the target Frappe report API.
+- Explicit support for idempotent exports when a Bench reload interrupts the MCP response.
+- Controlled custom app method adapters with per-method allowlists.
 
 ## Security boundaries
 
-- Do not add arbitrary SQL or Python execution.
-- Preserve the connected Frappe user's permissions and field-level access.
-- Require preview and explicit confirmation for changes.
-- Keep file writes within installed app trees and expose diffs/backups/rollback.
-- Treat whitelisted methods as potentially side-effecting and non-idempotent.
+- Do not add arbitrary SQL, Python, or unrestricted method dispatch.
+- Preserve the connected user's Frappe permissions.
+- Preview and explicitly confirm mutations; bind existing-document changes to fresh state.
+- Restrict filesystem writes to the configured app root and keep backups/rollback information.
+- Treat Administrator credentials as full access and keep them outside source control.

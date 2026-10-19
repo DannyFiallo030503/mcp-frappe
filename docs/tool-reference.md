@@ -1,145 +1,50 @@
-# Tool Reference
+# Tool reference
 
-The MCP server currently exposes 30 tools. Inputs are JSON objects whose property names match the argument names below. Optional parameters may be omitted. Exact JSON Schemas are available from the server through MCP `tools/list`; this guide explains behavior and operating limits.
+All tools execute in the standalone MCP process and use the configured Frappe HTTP session. Native Frappe permissions apply to every remote call. List tools cap result sizes; mutation tools preview before acting unless noted.
 
-All calls run as the authenticated Frappe user. A tool's presence does not grant permission to use it. Errors from Frappe permission and validation checks are expected outcomes, not reasons to bypass the checks.
+## Discovery and records
 
-## Discovery and document reads
+| Tool | Purpose | Important arguments |
+|---|---|---|
+| `list_installed_apps` | Group Module Def records by owning app | none |
+| `list_doctypes` | List site DocTypes | `app`, `module`, `include_child_tables`, `limit` (max 1000) |
+| `get_doctype_schema` | Read one DocType definition merged with Custom Fields and Property Setters | `doctype` |
+| `list_documents` | List records through Frappe REST | `doctype`, `filters`, `fields`, `limit` (max 100) |
+| `get_document` | Read a record through Frappe REST, including system `docstatus` when present | `doctype`, `name` |
+| `run_report` | Run a report through Frappe's Query Report endpoint | `report_name`, `filters`, `limit` (max 500) |
 
-### `list_installed_apps()`
+The generic resource API is the common access path for standard and custom app DocTypes. A custom DocType or field that the connected user cannot read remains inaccessible. Filter expressions are passed to Frappe's REST resource endpoint and must be appropriate for that endpoint.
 
-Returns installed app names and their Module Def names. No arguments.
+## Mutations
 
-### `list_doctypes(app?, module?, include_child_tables=true)`
+| Tool | Purpose | Confirmation |
+|---|---|---|
+| `create_document` | Create using native DocType validation | First call with `confirm: false`; inspect, then confirm |
+| `update_document` | Update a record using the native resource API | Confirm with `expected_modified` from the preview |
+| `delete_document` | Delete a record | Confirm with `expected_modified` from the preview |
+| `create_doctype` | Create a standard app DocType or a site-custom DocType through Frappe's native controller | `fields`, `is_submittable`, `is_child_table`, `is_single`, `is_tree`, `is_custom`, `properties`, and `permissions`; preview, inspect, then confirm |
+| `set_role_permissions` | Add or update role permissions through Frappe's native Permission Manager | `doctype`, `role`, `permissions`, `permlevel`; preview, then confirm |
+| `create_custom_field` | Add a Custom Field | Preview, then confirm |
+| `set_field_property` | Add a Property Setter for an allowlisted form property | Preview, then confirm |
+| `export_customizations` | Export DocType JSON and selected customization fixtures | Confirm with the current `preview_id` |
+| `rollback_export` | Restore or remove files from one prior export | Preview, then confirm with the current rollback `preview_id` |
 
-Lists DocTypes visible to the current user. `app` must be installed; `module` filters by module name. Child table DocTypes are included by default, but are listed only when at least one parent DocType is readable. Each item includes `doctype`, `module`, owning `app`, `custom`, `single`, and `child_table`.
+Frappe still decides whether the user may perform the operation. A preview is not a substitute for checking permissions, and a confirmed mutation may trigger native hooks or side effects.
 
-### `get_doctype_schema(doctype, parent_doctype?)`
+`create_doctype` accepts native DocField objects in `fields`, so Frappe's DocType controller validates field types and properties. DocType-level values such as `autoname`, `track_changes`, `title_field`, `search_fields`, `sort_field`, and `sort_order` go in `properties`; the MCP restricts this object to recognized DocType settings. Role rules go in `permissions`.
 
-Returns DocType metadata and only fields readable by the current user. Child-table schema inspection requires its `parent_doctype`. Output includes module/app, custom/single/child-table flags, submittable/tree metadata, title/search/sort/autoname metadata, and readable field descriptors (type, options, required/read-only/hidden/permission level/default/description and list/filter flags).
+By default, `is_custom: false` creates a standard DocType. It requires Developer Mode, and the app/module must exist on the site and under `FRAPPE_APPS_PATH`. Frappe writes the standard JSON and controller scaffolding; it also creates JavaScript/test scaffolds for non-child DocTypes. The MCP stages Frappe's own templates before the metadata request and reconciles a development-server restart against the site's DocType record. It refuses source writes to the protected `frappe` and `erpnext` apps.
 
-### `list_documents(doctype, filters?, fields?, limit=20)`
+Set `is_custom: true` to create a site-custom DocType. Frappe stores that definition in site metadata and does not generate app JSON/Python/JavaScript files; this path still requires an existing remote Module Def belonging to `app`, but does not require a local checkout, `FRAPPE_APPS_PATH`, or Developer Mode. Frappe rejects custom Virtual DocTypes. The live v15 matrix verified site-custom metadata and record CRUD; see the [manual report](../e2e/manual_functional_report.md).
 
-Lists non-child documents through Frappe list permissions. `fields` defaults to `name`; every requested field must be readable. Filters may use searchable or readable field names. `limit` must be 1–100. Results sort by `modified desc`. Read child rows through the parent document.
+`set_role_permissions` uses Frappe's System Manager-only Permission Manager methods. The connected account must have the System Manager role, and the target DocType and role must already exist. The tool does not create roles or assign roles to users.
 
-### `get_document(doctype, name?, fields?, child_row_limit=100)`
+## File export details
 
-Reads one non-child document and selected readable fields. For Single DocTypes, omit `name`; otherwise `name` is required. If fields are omitted, readable fields are returned. Readable child-table rows are included only when their parent field is requested; `child_row_limit` must be 1–200. The result marks child tables truncated when applicable.
+`FRAPPE_APPS_PATH` must point to a local Bench `apps/` directory. The requested app and module must exist below it, and the corresponding remote Module Def must name that app as owner. Path traversal and escaping symlinks are rejected. Source export refuses the protected `frappe` and `erpnext` apps. The export preview reports destination paths, bounded diffs, and content hashes. Existing files are backed up under the selected app's `.mcp-frappe-backups/` directory; inspect and commit the resulting files with Git. A successful rollback consumes its manifest and backup files.
 
-## Document writes
+The standalone exporter handles standard DocType JSON, Custom Field, Property Setter, Client Script, and Custom DocPerm fixtures. It adds or updates a clearly marked fixture block in the app's `hooks.py`, preserving text outside that managed block. It creates local backups and a rollback manifest, and refuses rollback if an exported file changed after export. It does not deploy files, run migrations, or rollback remote database changes.
 
-Every write tool with `confirm` defaults to preview mode (`false`). Review the preview before the second call. Do not confirm a changed request using an old preview.
+## Deliberate exclusions
 
-### `create_document(doctype, values, name?, confirm=false)`
-
-Creates through the native Frappe controller and validates writable fields. `values` must be a non-empty object. `name` is optional. An explicit name provides idempotent replay for the same requested field values; a conflicting existing record fails. Without a name, autoname behavior is delegated to Frappe and replay is not guaranteed to be idempotent.
-
-### `update_document(doctype, values, name?, expected_modified?, confirm=false)`
-
-Updates through `doc.save()` with native validation and write permissions. `name` is required except for a Single DocType. Preview returns `modified`; confirmation requires that exact value as `expected_modified`.
-
-### `delete_document(doctype, name, expected_modified?, confirm=false)`
-
-Permanently deletes a non-Single document through Frappe after delete permission. Preview returns the current `modified`; confirmation requires that exact value.
-
-### `submit_document(doctype, name, expected_modified?, confirm=false)`
-
-Submits a submittable document through its controller. Requires current `docstatus=0`, native submit permission, and `expected_modified` on confirmation.
-
-### `cancel_document(doctype, name, expected_modified?, confirm=false)`
-
-Cancels a submitted document through its controller. Requires current `docstatus=1`, native cancel permission, and `expected_modified` on confirmation.
-
-### `call_whitelisted_method(method, arguments?, confirm=false)`
-
-Calls an installed app's dotted method path only when Frappe recognizes it as whitelisted and allows POST. It always previews first; preview labels effects as unknown. Confirmation executes the method with the supplied argument object. The tool cannot assess arbitrary method side effects or idempotency. Do not call untrusted methods.
-
-## Schema customization and export
-
-All tools in this section require `System Manager`. The selected app must be installed, and selected modules must belong to that app. Operations use native Frappe documents/controllers where applicable.
-
-### `create_doctype(app, module, name, fields, is_submittable=false, is_child_table=false, confirm=false)`
-
-Creates a standard (non-custom) DocType and exports its JSON into the app's module `doctype/` directory. `fields` is a non-empty array of Frappe DocField objects; consult Frappe's DocType metadata and use valid field types/options. Existing DocTypes and destination files are rejected rather than overwritten.
-
-### `create_custom_field(app, module, doctype, field, confirm=false)`
-
-Creates a native Custom Field on `doctype`. `field` is a Custom Field field object and must include a unique `fieldname`; the server sets its DocType and module. The target DocType must be writable by the connected user.
-
-### `set_field_property(app, module, doctype, property, value, property_type, fieldname?, confirm=false)`
-
-Creates a native Property Setter, equivalent to a Customize Form property override. If `fieldname` is omitted, the property targets the DocType; otherwise it targets that DocField. `property_type` must be a valid Frappe property type and `value` is passed as text.
-
-### `create_client_script(app, module, doctype, name, script, view="Form", enabled=true, confirm=false)`
-
-Creates a Client Script for the target DocType. `view` must be `Form` or `List`; `name` must be unique. `script` is JavaScript executed by the Desk client according to normal Frappe behavior. Treat script content as executable code and review it before confirmation.
-
-### `set_role_permissions(doctype, role, permissions, permlevel=0, confirm=false)`
-
-Creates or updates a Custom DocPerm rule through Frappe's Permission Manager. `permissions` must contain one or more boolean flags from: `read`, `write`, `create`, `delete`, `submit`, `cancel`, `amend`, `report`, `export`, `import`, `share`, `print`, `email`, `select`. `permlevel` must be integer 0–9. Omitted flags retain current values; preview returns current, requested, and resulting values. Some system DocTypes and automatic roles are not configurable through this operation.
-
-### `export_customizations(app, doctypes, modules?, include_standard_doctypes=true, expected_preview?, confirm=false)`
-
-Previews or writes selected customization files into an installed app. `doctypes` must be non-empty. `modules` defaults to all modules owned by `app`; every supplied module must belong to that app. Selected records include Custom Fields, Property Setters, Client Scripts, and Custom DocPerm rules for the selected DocTypes/modules. If enabled, standard DocTypes are exported as JSON only when they belong to the target app and a selected module.
-
-Preview includes fixture membership, file diffs, and a content-derived `preview_id`. Confirmation must supply that exact value as `expected_preview`; a mismatch means preview again. The export backs up existing files and returns a `rollback_id`. Review and commit these files using the app's normal code workflow. Export does not deploy or migrate another site.
-
-### `rollback_export(app, rollback_id, confirm=false)`
-
-Previews or restores the file changes represented by an export manifest. Preview lists files to restore/remove. Confirmation restores prior file contents or removes files created by that export. The manifest is consumed on rollback. This is filesystem rollback, not a database rollback and not a deployment to other sites.
-
-## Reports and Frappe UI metadata
-
-### `list_reports(doctype?, limit=100)`
-
-Lists enabled reports visible to the user, optionally filtered by reference DocType. Requires report permission on the reference DocType and permission to read/run the Report. `limit` must be 1–200.
-
-### `run_report(report_name, filters?, limit=200)`
-
-Runs an enabled Query/Script Report under the current user. Requires a readable Report and report permission on its reference DocType. `filters` is a JSON object; `limit` must be 1–500. Result rows are capped; output contains `returned_rows` and `truncated`.
-
-### `list_workflows(doctype?, limit=100)`
-
-Lists active workflows whose document types are readable to the user. Optional `doctype` filter; `limit` 1–200.
-
-### `get_workflow_actions(doctype, name)`
-
-Returns the native transitions currently available for this user and exact document. The action list can depend on document state, roles, and conditions.
-
-### `apply_workflow_action(doctype, name, action, expected_modified?, confirm=false)`
-
-Previews and applies a currently available native workflow action. Preview includes current/next state and `modified`. Confirmation requires the same action and exact preview `modified` value. Verify the document's new state afterward.
-
-### `list_workspaces(limit=100)` and `get_workspace(name)`
-
-Lists workspaces visible under native Frappe permissions (`limit` 1–200) or reads one permitted workspace including its layout/cards/links.
-
-### `list_print_formats(doctype, limit=100)`
-
-Lists enabled print formats for a readable DocType. `limit` 1–200.
-
-### `render_print_format(doctype, name, print_format?, max_chars=100000)`
-
-Renders HTML using Frappe's print view after document read and print permissions. An optional format must exist and belong to `doctype`. `max_chars` must be 1,000–500,000; output indicates truncation.
-
-## Files and translations
-
-### `list_files(doctype?, name?, limit=100)`
-
-Lists readable File records, optionally attached to a DocType; `name` requires `doctype`. `limit` 1–200. This is not an upload tool.
-
-### `read_file(name, max_bytes=1048576)`
-
-Reads a permitted Frappe File. `max_bytes` must be 1–5,000,000 and the file is rejected when larger. UTF-8 content is returned as text; binary content is base64. Treat either result as potentially sensitive.
-
-### `search_translations(language, query, limit=50)`
-
-Searches readable Translation records by exact language and a contains match on source text. Language and non-empty query are required; `limit` 1–200.
-
-## General limits and behavior
-
-- MCP input schemas can be discovered dynamically with `tools/list`; this reference is explanatory and should be updated with code changes.
-- List tools cap result counts; they are not unbounded exports.
-- Read/write access is determined at request time from Frappe and may differ by user or site.
-- Customization/export file operations require Bench filesystem permissions as well as Frappe authorization.
-- No tool provides arbitrary SQL or Python execution.
+There is no arbitrary Python execution, SQL execution, or unrestricted whitelisted-method dispatcher. Other Frappe features such as workflow actions, file downloads, translations, print rendering, and arbitrary app-specific method calls require explicit wrappers and are not exposed by this standalone release yet. Do not infer a tool exists from the retained legacy source tree.
