@@ -9,8 +9,8 @@ import json
 import logging
 import os
 import re
-import stat
 import shutil
+import stat
 import tempfile
 import time
 import uuid
@@ -467,9 +467,13 @@ def _remove_partial_doctype_tree(doctype_path: Path, generated_files: list[Path]
         for path in doctype_path.rglob("*"):
             if path.is_dir():
                 if path.name != "__pycache__":
-                    raise RuntimeError("Refusing to remove unexpected files from the DocType directory")
+                    raise RuntimeError(
+                        "Refusing to remove unexpected files from the DocType directory"
+                    )
                 continue
-            if path.name in expected or (path.parent.name == "__pycache__" and path.suffix == ".pyc"):
+            if path.name in expected or (
+                path.parent.name == "__pycache__" and path.suffix == ".pyc"
+            ):
                 continue
             raise RuntimeError("Refusing to remove unexpected files from the DocType directory")
         shutil.rmtree(doctype_path)
@@ -478,7 +482,9 @@ def _remove_partial_doctype_tree(doctype_path: Path, generated_files: list[Path]
 def _app_publisher(app_path: Path) -> str:
     hooks = app_path / app_path.name / "hooks.py"
     if not hooks.is_file():
-        raise ValueError("Target app hooks.py is missing; cannot prepare native DocType scaffolding")
+        raise ValueError(
+            "Target app hooks.py is missing; cannot prepare native DocType scaffolding"
+        )
     tree = ast.parse(hooks.read_text(encoding="utf-8"), filename=str(hooks))
     for node in tree.body:
         if isinstance(node, ast.Assign) and any(
@@ -489,7 +495,9 @@ def _app_publisher(app_path: Path) -> str:
                 return value
             if isinstance(value, (list, tuple)) and value and isinstance(value[0], str):
                 return value[0]
-    raise ValueError("Target app hooks.py must define a literal app_publisher for native scaffolding")
+    raise ValueError(
+        "Target app hooks.py must define a literal app_publisher for native scaffolding"
+    )
 
 
 def _prepare_native_doctype_scaffolding(
@@ -509,7 +517,8 @@ def _prepare_native_doctype_scaffolding(
         required.extend([templates / "test_controller._py", templates / "controller.js"])
     if any(not path.is_file() for path in required):
         raise ValueError(
-            "FRAPPE_APPS_PATH must include the installed Frappe source to generate native DocType files"
+            "FRAPPE_APPS_PATH must include the installed Frappe source to generate "
+            "native DocType files"
         )
 
     for directory in (module_path, module_path / "doctype", doctype_path):
@@ -761,6 +770,73 @@ def _fixture_plan(app_path: Path, doctypes: list[str], module: str) -> tuple[Pat
     return hooks, source + block_text
 
 
+def _doctype_customization_payloads(
+    module_path: Path,
+    doctype: str,
+    *,
+    sync_on_migrate: bool,
+    with_permissions: bool,
+    seen: set[str] | None = None,
+) -> list[tuple[Path, str]]:
+    """Build Frappe's native Customize Form export for a DocType and its child tables."""
+    seen = seen or set()
+    if doctype in seen:
+        return []
+    if len(seen) >= 50:
+        raise ValueError("Customize Form export exceeds 50 DocTypes")
+    seen.add(doctype)
+    schema = _doctype(doctype)
+
+    def records(resource_doctype: str, filters: dict[str, Any]) -> list[dict[str, Any]]:
+        result = _request(
+            "GET",
+            _resource(resource_doctype),
+            params={
+                "fields": '["*"]',
+                "filters": _filters(filters),
+                "limit_page_length": 1000,
+                "order_by": "name asc",
+            },
+        )
+        if not isinstance(result, list):
+            raise RuntimeError(f"Unexpected {resource_doctype} response")
+        if len(result) >= 1000:
+            raise ValueError(f"Too many {resource_doctype} records to export safely")
+        return result
+
+    custom_fields = records("Custom Field", {"dt": doctype})
+    property_setters = records("Property Setter", {"doc_type": doctype})
+    links = records("DocType Link", {"parent": doctype})
+    custom_perms = records("Custom DocPerm", {"parent": doctype}) if with_permissions else []
+
+    payloads: list[tuple[Path, str]] = []
+    if custom_fields or property_setters or custom_perms:
+        payload = {
+            "custom_fields": custom_fields,
+            "custom_perms": custom_perms,
+            "doctype": doctype,
+            "links": links,
+            "property_setters": property_setters,
+            "sync_on_migrate": int(sync_on_migrate),
+        }
+        path = module_path / "custom" / f"{_slug(doctype)}.json"
+        payloads.append((path, json.dumps(payload, ensure_ascii=False, indent=1) + "\n"))
+
+    for field in schema.get("fields", []):
+        child_doctype = field.get("options")
+        if field.get("fieldtype") == "Table" and isinstance(child_doctype, str):
+            payloads.extend(
+                _doctype_customization_payloads(
+                    module_path,
+                    child_doctype,
+                    sync_on_migrate=sync_on_migrate,
+                    with_permissions=with_permissions,
+                    seen=seen,
+                )
+            )
+    return payloads
+
+
 def _safe_app_file(app_path: Path, path: Path) -> Path:
     resolved = path.resolve(strict=False)
     if not resolved.is_relative_to(app_path.resolve()) or resolved == app_path.resolve():
@@ -786,6 +862,110 @@ def _file_preview(path: Path, content: str) -> dict[str, Any]:
         "new_sha256": hashlib.sha256(content.encode()).hexdigest(),
         "diff": diff[:12000],
         "diff_truncated": len(diff) > 12000,
+    }
+
+
+@server.tool()
+def export_form_customizations(
+    app: str,
+    module: str,
+    doctype: str,
+    sync_on_migrate: bool = True,
+    with_permissions: bool = False,
+    confirm: bool = False,
+    expected_preview: str | None = None,
+) -> dict[str, Any]:
+    """Export Customize Form data as native `module/custom/<doctype>.json` files.
+
+    The selected module is the destination app module and the Custom Field's
+    owner, so the source DocType may belong to Frappe or another app. By default
+    exported customizations are marked `sync_on_migrate` so Frappe reapplies
+    them when the app is migrated.
+    """
+    _assert_writable_app(app)
+    _, module_path = _assert_app_module(app, module)
+    if not _SAFE_NAME.fullmatch(doctype):
+        raise ValueError("Invalid DocType name")
+
+    payloads = _doctype_customization_payloads(
+        module_path,
+        doctype,
+        sync_on_migrate=sync_on_migrate,
+        with_permissions=with_permissions,
+    )
+    if len(payloads) > 50:
+        raise ValueError("Customize Form export exceeds 50 files")
+
+    previews = []
+    total_size = 0
+    for path, content in payloads:
+        path = _safe_app_file(module_path.parents[1], path)
+        total_size += len(content.encode("utf-8"))
+        if total_size > 5_000_000:
+            raise ValueError("Customize Form export exceeds the 5 MB total output limit")
+        previews.append(_file_preview(path, content))
+    preview_id = hashlib.sha256(json.dumps(previews, sort_keys=True).encode()).hexdigest()
+    if not confirm:
+        return {
+            "preview": True,
+            "action": "export_form_customizations",
+            "app": app,
+            "module": module,
+            "doctype": doctype,
+            "sync_on_migrate": sync_on_migrate,
+            "files": previews,
+            "preview_id": preview_id,
+            "requires_confirmation": True,
+        }
+    if expected_preview != preview_id:
+        raise ValueError("Customize Form preview is missing or stale")
+    if not payloads:
+        return {
+            "exported": False,
+            "app": app,
+            "module": module,
+            "doctype": doctype,
+            "files": [],
+            "message": "No Custom Fields, Property Setters, or selected permissions exist.",
+        }
+
+    app_path = module_path.parents[1]
+    backup_root = _safe_app_file(app_path, app_path / ".mcp-frappe-backups")
+    backup_root.mkdir(parents=True, exist_ok=True)
+    rollback_id = f"export-{preview_id[:32]}.json"
+    manifest: list[dict[str, Any]] = []
+    for path, content in payloads:
+        path = _safe_app_file(app_path, path)
+        backup_name = None
+        if path.exists():
+            backup_name = f"{uuid.uuid4().hex}.bak"
+            _atomic_write(
+                backup_root / backup_name,
+                path.read_text(encoding="utf-8"),
+                mode=0o600,
+            )
+        manifest.append(
+            {
+                "path": str(path.relative_to(app_path.resolve())),
+                "backup": backup_name,
+                "exported_sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+            }
+        )
+    _atomic_write(
+        backup_root / rollback_id,
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+        mode=0o600,
+    )
+    for path, content in payloads:
+        _atomic_write(_safe_app_file(app_path, path), content)
+    return {
+        "exported": True,
+        "app": app,
+        "module": module,
+        "doctype": doctype,
+        "sync_on_migrate": sync_on_migrate,
+        "files": [str(path) for path, _ in payloads],
+        "rollback_id": rollback_id,
     }
 
 

@@ -73,7 +73,8 @@ All settings are described in [installation and configuration](docs/installation
 3. Read with `list_documents` or `get_document`, requesting only needed data.
 4. For a mutation, call the tool with `confirm: false`, review the preview, then confirm with its current `modified` token when required.
 5. For schema changes, preview the operation first and verify the configured app/module ownership.
-6. Call `export_customizations` to preview filesystem changes. Confirm with the returned `preview_id`, then inspect and commit the app files through normal source control.
+6. After creating or changing fields in Customize Form, call `export_form_customizations` for the DocType and destination app module. Keep `sync_on_migrate: true`, review the native `custom/<doctype>.json` diff, then confirm with its current `preview_id`.
+7. Use `export_customizations` when a separate fixture export is needed. Confirm with its returned `preview_id`, then inspect and commit the app files through normal source control.
 
 The MCP does not run migrations, restart Bench, create sites, or deploy exported code.
 

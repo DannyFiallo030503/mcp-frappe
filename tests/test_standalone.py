@@ -1,3 +1,4 @@
+import json
 import stat
 from pathlib import Path
 
@@ -22,6 +23,7 @@ def test_server_registers_expected_tools() -> None:
         "create_custom_field",
         "set_field_property",
         "export_customizations",
+        "export_form_customizations",
         "rollback_export",
     }
 
@@ -178,6 +180,67 @@ def test_fixture_plan_preserves_existing_hooks(tmp_path: Path) -> None:
     assert "existing.json" in content
     assert "MCP FRAPPE MANAGED FIXTURES" in content
     assert "Custom Field" in content
+
+
+def test_export_form_customizations_targets_custom_app_module_and_syncs_on_migrate(
+    tmp_path: Path, monkeypatch
+) -> None:
+    app_path = tmp_path / "apps" / "erp_app"
+    module_path = app_path / "erp_app" / "cubazone"
+    module_path.mkdir(parents=True)
+    monkeypatch.setattr(standalone, "_assert_app_module", lambda *_: (app_path, module_path))
+    monkeypatch.setattr(
+        standalone,
+        "_doctype",
+        lambda _: {"module": "Setup", "fields": []},
+    )
+
+    def request(method, path, **kwargs):
+        assert method == "GET"
+        if path.endswith("/Custom%20Field"):
+            return [
+                {
+                    "doctype": "Custom Field",
+                    "name": "Brand-disabled",
+                    "dt": "Brand",
+                    "fieldname": "disabled",
+                    "fieldtype": "Check",
+                    "label": "Disabled",
+                    "default": "0",
+                    "module": "CubaZone",
+                }
+            ]
+        if path.endswith(("/Property%20Setter", "/DocType%20Link")):
+            return []
+        raise AssertionError(f"Unexpected resource: {path}")
+
+    monkeypatch.setattr(standalone, "_request", request)
+
+    preview = standalone.export_form_customizations(
+        app="erp_app", module="CubaZone", doctype="Brand"
+    )
+
+    destination = module_path / "custom" / "brand.json"
+    assert preview["requires_confirmation"] is True
+    assert preview["sync_on_migrate"] is True
+    assert preview["files"][0]["path"] == str(destination)
+    assert preview["files"][0]["changed"] is True
+    assert not destination.exists()
+
+    result = standalone.export_form_customizations(
+        app="erp_app",
+        module="CubaZone",
+        doctype="Brand",
+        confirm=True,
+        expected_preview=preview["preview_id"],
+    )
+
+    exported = json.loads(destination.read_text(encoding="utf-8"))
+    assert result["exported"] is True
+    assert result["sync_on_migrate"] is True
+    assert exported["doctype"] == "Brand"
+    assert exported["sync_on_migrate"] == 1
+    assert exported["custom_fields"][0]["fieldname"] == "disabled"
 
 
 def test_atomic_write_preserves_existing_mode_and_sets_public_source_mode(tmp_path: Path) -> None:

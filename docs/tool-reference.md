@@ -26,6 +26,7 @@ The generic resource API is the common access path for standard and custom app D
 | `set_role_permissions` | Add or update role permissions through Frappe's native Permission Manager | `doctype`, `role`, `permissions`, `permlevel`; preview, then confirm |
 | `create_custom_field` | Add a Custom Field | Preview, then confirm |
 | `set_field_property` | Add a Property Setter for an allowlisted form property | Preview, then confirm |
+| `export_form_customizations` | Export Customize Form data to the app module's native `custom/<doctype>.json` file | `app`, destination `module`, `doctype`; defaults `sync_on_migrate` to true; preview, then confirm |
 | `export_customizations` | Export DocType JSON and selected customization fixtures | Confirm with the current `preview_id` |
 | `rollback_export` | Restore or remove files from one prior export | Preview, then confirm with the current rollback `preview_id` |
 
@@ -41,7 +42,7 @@ Set `is_custom: true` to create a site-custom DocType. Frappe stores that defini
 
 ## File export details
 
-`FRAPPE_APPS_PATH` must point to a local Bench `apps/` directory. The requested app and module must exist below it, and the corresponding remote Module Def must name that app as owner. Path traversal and escaping symlinks are rejected. Source export refuses the protected `frappe` and `erpnext` apps. The export preview reports destination paths, bounded diffs, and content hashes. Existing files are backed up under the selected app's `.mcp-frappe-backups/` directory; inspect and commit the resulting files with Git. A successful rollback consumes its manifest and backup files.
+`FRAPPE_APPS_PATH` must point to a local Bench `apps/` directory. The requested app and destination module must exist below it, and the corresponding remote Module Def must name that app as owner. `export_form_customizations` can target a standard DocType owned by another app (for example, add a CubaZone Custom Field to ERPNext's Brand DocType); it writes the native `custom/<doctype>.json` format and marks it `sync_on_migrate` by default. This is distinct from `export_customizations`, which writes selected records as Frappe fixtures and registers them in `hooks.py`. Path traversal and escaping symlinks are rejected. Source export refuses the protected `frappe` and `erpnext` apps. The export preview reports destination paths, bounded diffs, and content hashes. Existing files are backed up under the selected app's `.mcp-frappe-backups/` directory; inspect and commit the resulting files with Git. A successful rollback consumes its manifest and backup files.
 
 The standalone exporter handles standard DocType JSON, Custom Field, Property Setter, Client Script, and Custom DocPerm fixtures. It adds or updates a clearly marked fixture block in the app's `hooks.py`, preserving text outside that managed block. It creates local backups and a rollback manifest, and refuses rollback if an exported file changed after export. It does not deploy files, run migrations, or rollback remote database changes.
 

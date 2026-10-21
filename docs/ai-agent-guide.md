@@ -34,8 +34,9 @@ Use the same preview-first pattern for creation/deletion. Do not create records 
 2. Verify that the app/module exists below configured `FRAPPE_APPS_PATH`.
 3. Preview `create_doctype`, `create_custom_field`, or `set_field_property`.
 4. Confirm only after reviewing names, field types, options, and destination.
-5. Call `export_customizations`, review every path, diff, and `preview_id`, then confirm with that ID.
-6. If the export needs reversal, preview `rollback_export` and confirm with its latest `preview_id`.
-7. Inspect the app's Git diff and use the project's normal deployment process. The MCP does not migrate or deploy.
+5. For Custom Fields, Property Setters, or other Customize Form changes, call `export_form_customizations` for the target DocType and the destination app module. Keep `sync_on_migrate: true`, review every path, diff, and `preview_id`, then confirm with that ID. This writes Frappe's native `custom/<doctype>.json` export.
+6. Use `export_customizations` separately only when you need fixture export for selected records or other supported configuration doctypes.
+7. If the export needs reversal, preview `rollback_export` and confirm with its latest `preview_id`.
+8. Inspect the app's Git diff and use the project's normal deployment process. The MCP does not migrate or deploy.
 
-The exporter supports DocType JSON, Custom Field, Property Setter, Client Script, and Custom DocPerm fixtures, plus a managed `hooks.py` fixture block. It does not export arbitrary Frappe state or custom app code.
+`export_customizations` supports DocType JSON, Custom Field, Property Setter, Client Script, and Custom DocPerm fixtures, plus a managed `hooks.py` fixture block. `export_form_customizations` writes the native Customize Form export, including its `sync_on_migrate` setting. Neither tool exports arbitrary Frappe state or custom app code.
