@@ -21,9 +21,73 @@ def test_server_registers_expected_tools() -> None:
         "set_role_permissions",
         "create_custom_field",
         "set_field_property",
-        "export_customizations",
+        "export_form_customizations",
         "rollback_export",
     }
+
+
+def test_client_uses_aspire_local_administrator_defaults(monkeypatch) -> None:
+    for key in (
+        "FRAPPE_URL",
+        "FRAPPE_SITE",
+        "FRAPPE_API_KEY",
+        "FRAPPE_API_SECRET",
+        "FRAPPE_USERNAME",
+        "FRAPPE_PASSWORD",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(standalone, "_session", None)
+    calls = {}
+
+    class Response:
+        is_error = False
+
+        @staticmethod
+        def json():
+            return {"message": "Logged In"}
+
+    class Client:
+        def __init__(self, **kwargs):
+            calls["config"] = kwargs
+
+        def post(self, path, *, data):
+            calls["login"] = {"path": path, "data": data}
+            return Response()
+
+    monkeypatch.setattr(standalone.httpx, "Client", Client)
+
+    standalone._client()
+
+    assert calls["config"]["base_url"] == "http://127.0.0.1:8000"
+    assert calls["config"]["headers"]["Host"] == "cubazone.localhost"
+    assert calls["login"] == {
+        "path": "/api/method/login",
+        "data": {"usr": "Administrator", "pwd": "admin"},
+    }
+
+    monkeypatch.setenv("FRAPPE_USERNAME", "Limited User")
+    monkeypatch.setenv("FRAPPE_PASSWORD", "test-password")
+    monkeypatch.setattr(standalone, "_session", None)
+    calls.clear()
+    standalone._client()
+    assert calls["login"]["data"]["usr"] == "Limited User"
+    assert calls["login"]["data"]["pwd"] == "test-password"
+
+
+def test_remote_client_requires_explicit_password_or_api_token(monkeypatch) -> None:
+    monkeypatch.setattr(standalone, "_session", None)
+    monkeypatch.setenv("FRAPPE_URL", "https://frappe.example.invalid")
+    monkeypatch.delenv("FRAPPE_API_KEY", raising=False)
+    monkeypatch.delenv("FRAPPE_API_SECRET", raising=False)
+    monkeypatch.delenv("FRAPPE_PASSWORD", raising=False)
+    monkeypatch.setattr(
+        standalone.httpx,
+        "Client",
+        lambda **_kwargs: pytest.fail("Client must not send implicit credentials remotely"),
+    )
+
+    with pytest.raises(RuntimeError, match="FRAPPE_PASSWORD for remote sites"):
+        standalone._client()
 
 
 def test_read_validation_allows_name_but_write_validation_rejects_it(monkeypatch) -> None:
@@ -165,19 +229,70 @@ def test_doctype_slugs_are_filesystem_safe() -> None:
     assert standalone._slug("áé漢字") == "áé漢字"
 
 
-def test_fixture_plan_preserves_existing_hooks(tmp_path: Path) -> None:
-    app_path = tmp_path / "example_app"
-    package = app_path / "example_app"
-    hooks = package / "hooks.py"
-    hooks.parent.mkdir(parents=True)
-    hooks.write_text("fixtures = ['existing.json']\n", encoding="utf-8")
+def test_export_form_customizations_calls_native_frappe_export(
+    tmp_path: Path, monkeypatch
+) -> None:
+    app_path = tmp_path / "apps" / "erp_app"
+    module_path = app_path / "erp_app" / "cubazone"
+    module_path.mkdir(parents=True)
+    monkeypatch.setattr(standalone, "_assert_app_module", lambda *_: (app_path, module_path))
+    monkeypatch.setattr(
+        standalone,
+        "_doctype",
+        lambda _: {"module": "Setup", "fields": []},
+    )
 
-    path, content = standalone._fixture_plan(app_path, ["Example DocType"], "Example Module")
+    def request(method, path, **kwargs):
+        if method == "POST":
+            assert path == "/api/method/frappe.modules.utils.export_customizations"
+            assert kwargs["data"] == {
+                "module": "CubaZone",
+                "doctype": "Brand",
+                "sync_on_migrate": 1,
+                "with_permissions": 0,
+            }
+            return str(module_path / "custom" / "brand.json")
+        if path == "/api/method/frappe.auth.get_logged_user":
+            return "Administrator"
+        if path == "/api/method/frappe.core.doctype.user.user.get_roles":
+            return ["System Manager"]
+        assert method == "GET"
+        if path.endswith("/Custom%20Field"):
+            return [
+                {
+                    "name": "Brand-disabled",
+                    "modified": "2026-10-22 10:00:00",
+                }
+            ]
+        if path.endswith(("/Property%20Setter", "/DocType%20Link")):
+            return []
+        raise AssertionError(f"Unexpected resource: {path}")
 
-    assert path == hooks
-    assert "existing.json" in content
-    assert "MCP FRAPPE MANAGED FIXTURES" in content
-    assert "Custom Field" in content
+    monkeypatch.setattr(standalone, "_request", request)
+
+    preview = standalone.export_form_customizations(
+        app="erp_app", module="CubaZone", doctype="Brand"
+    )
+
+    destination = module_path / "custom" / "brand.json"
+    assert preview["requires_confirmation"] is True
+    assert preview["sync_on_migrate"] is True
+    assert preview["files"][0]["path"] == str(destination)
+    assert preview["content_diff_available"] is False
+    assert not destination.exists()
+
+    result = standalone.export_form_customizations(
+        app="erp_app",
+        module="CubaZone",
+        doctype="Brand",
+        confirm=True,
+        expected_preview=preview["preview_id"],
+    )
+
+    assert result["exported"] is True
+    assert result["sync_on_migrate"] is True
+    assert result["native_result"] == str(destination)
+    assert result["shared_app_tree_detected"] is True
 
 
 def test_atomic_write_preserves_existing_mode_and_sets_public_source_mode(tmp_path: Path) -> None:
@@ -271,44 +386,53 @@ def test_custom_doctype_creation_does_not_require_local_files(monkeypatch) -> No
     assert result["native_files_complete"] is None
 
 
-def test_merged_custom_fields_follow_insert_after_order() -> None:
+def test_doctype_schema_uses_frappe_native_metadata(monkeypatch) -> None:
     schema = {
+        "name": "Customer",
         "fields": [
-            {"fieldname": "title", "fieldtype": "Data", "idx": 1},
-            {"fieldname": "section", "fieldtype": "Section Break", "idx": 2},
-            {"fieldname": "custom_after_title", "fieldtype": "Data", "is_custom_field": 1,
-             "insert_after": "title", "idx": 1},
-            {"fieldname": "custom_after_custom", "fieldtype": "Fold", "is_custom_field": 1,
-             "insert_after": "custom_after_title", "idx": 2},
-            {"fieldname": "custom_append", "fieldtype": "Data", "is_custom_field": 1,
-             "insert_after": "append", "idx": 3},
-        ]
-    }
-
-    standalone._sort_merged_fields(schema)
-
-    assert [row["fieldname"] for row in schema["fields"]] == [
-        "title",
-        "custom_after_title",
-        "custom_after_custom",
-        "section",
-        "custom_append",
-    ]
-    assert [row["idx"] for row in schema["fields"]] == [1, 2, 3, 4, 5]
-
-
-def test_merged_fields_respect_explicit_field_order() -> None:
-    schema = {
-        "field_order": '["second", "first"]',
-        "fields": [
-            {"fieldname": "first", "fieldtype": "Data", "idx": 1},
-            {"fieldname": "second", "fieldtype": "Data", "idx": 2},
+            {"fieldname": "custom_field", "is_custom_field": 1, "idx": 1},
+            {"fieldname": "customer_name", "idx": 2},
         ],
     }
 
-    standalone._sort_merged_fields(schema)
+    def request(method, path, **kwargs):
+        assert method == "GET"
+        assert path == "/api/method/frappe.desk.form.load.getdoctype"
+        assert kwargs["params"] == {"doctype": "Customer"}
+        return {"docs": [schema]}
 
-    assert [row["fieldname"] for row in schema["fields"]] == ["second", "first"]
+    monkeypatch.setattr(standalone, "_request", request)
+
+    assert standalone._doctype("Customer") == schema
+
+
+def test_doctype_schema_rejects_unexpected_native_metadata(monkeypatch) -> None:
+    monkeypatch.setattr(standalone, "_request", lambda *_args, **_kwargs: {"docs": []})
+
+    with pytest.raises(RuntimeError, match="unexpected DocType metadata"):
+        standalone._doctype("Customer")
+
+
+def test_run_report_uses_frappe_prepared_report_default(monkeypatch) -> None:
+    def request(method, path, **kwargs):
+        assert method == "GET"
+        assert path == "/api/method/frappe.desk.query_report.run"
+        assert kwargs["params"] == {
+            "report_name": "Customer Ledger",
+            "filters": '{"company": "Example Company"}',
+            "ignore_prepared_report": False,
+        }
+        return {"result": [{"name": f"row-{index}"} for index in range(3)]}
+
+    monkeypatch.setattr(standalone, "_request", request)
+
+    result = standalone.run_report(
+        "Customer Ledger", filters={"company": "Example Company"}, limit=2
+    )
+
+    assert result["result"] == [{"name": "row-0"}, {"name": "row-1"}]
+    assert result["returned_rows"] == 2
+    assert result["truncated"] is True
 
 
 def test_doctype_payload_rejects_duplicate_fields_unknown_properties_and_single_table() -> None:

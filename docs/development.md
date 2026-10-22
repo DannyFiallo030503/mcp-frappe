@@ -39,13 +39,7 @@ Run only on a development site. The runner cleans up in a `finally` block and pr
 
 ## Customization and export acceptance
 
-This temporarily creates a Custom Field and Property Setter, verifies the merged schema, exports standard JSON/fixtures/hooks, previews and confirms rollback, then removes the temporary records. It refuses non-loopback targets:
-
-```bash
-FRAPPE_ALLOW_CUSTOMIZATION_TEST=YES uv run python e2e/run_standalone_customization_acceptance.py
-```
-
-Because Bench development mode watches app files, a confirmed export or rollback may reload the Frappe web worker. The standalone client should tolerate a short transient connection failure after those operations. Inspect the target app's Git status after the run; successful rollback consumes its own backup manifest and files.
+This acceptance runner records the previous standalone fixture-export behavior and refers to the removed `export_customizations` tool. It is historical and is not compatible with the current tool list. The current native Customize Form export path still needs a dedicated disposable-site acceptance run; do not use this runner as evidence for it.
 
 ## Secrets and evidence
 

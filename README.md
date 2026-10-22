@@ -2,7 +2,7 @@
 
 Frappe MCP is a **standalone Model Context Protocol server**. An MCP host launches it as a local process over `stdio`; it connects to a Frappe site over HTTP using that site's regular API. You do not install this project as a Frappe app, add it to a Bench, or migrate the target site.
 
-It discovers installed apps and DocTypes at runtime, so the same server can work with Frappe Framework, ERPNext, HRMS, official apps, and custom apps. Permissions and validation remain enforced by Frappe's standard REST APIs. Schema exports are written locally into an explicitly configured app directory.
+It discovers installed apps and DocTypes at runtime, so the same server can work with Frappe Framework, ERPNext, HRMS, official apps, and custom apps. Permissions and validation remain enforced by Frappe's standard APIs. Frappe-native customization export writes to the app tree on the Frappe host; local preview and rollback require that tree to be shared with the MCP process.
 
 > **Status:** The standalone transport and core tools are implemented. The previous Frappe app implementation is archived under `legacy/` and is not included in the installable package. See [validation](docs/compatibility-and-validation.md) for completed real-site checks and known limits.
 
@@ -11,7 +11,7 @@ It discovers installed apps and DocTypes at runtime, so the same server can work
 - Discover apps, modules, DocTypes, fields, schemas, and records from the connected site.
 - Create, update, and delete documents through Frappe's standard resource API, with previews and stale-document checks.
 - Create standard DocTypes with native field definitions, DocType settings, role permissions, and Frappe-generated app files; create Custom Fields and Property Setters through the REST API.
-- Export standard DocType JSON and customization fixtures into a configured local app tree, with a preview hash, managed `hooks.py` block, backups, and rollback.
+- Delegate Customize Form export to Frappe's native exporter, with a source-state preview, confirmation, and guarded local rollback when the Frappe host shares the app tree.
 - Run permitted Query and Script Reports through Frappe's report API.
 - Connect to custom apps without maintaining app-specific catalogs.
 
@@ -50,7 +50,7 @@ The server reads its connection settings from environment variables. Example sha
       "command": "uv",
       "args": ["--directory", "/absolute/path/to/mcp-frappe", "run", "mcp-frappe"],
       "env": {
-        "FRAPPE_URL": "http://127.0.0.1:32783",
+        "FRAPPE_URL": "http://127.0.0.1:8000",
         "FRAPPE_SITE": "cubazone.localhost",
         "FRAPPE_USERNAME": "Administrator",
         "FRAPPE_PASSWORD": "${FRAPPE_PASSWORD}"
@@ -60,7 +60,7 @@ The server reads its connection settings from environment variables. Example sha
 }
 ```
 
-Host-specific environment substitution varies. Supply secrets using the host's secret store or process environment; do not replace the placeholder with a password in a shared config file. `FRAPPE_SITE` is optional and is used as the HTTP `Host` header for a multi-site Bench. For non-local targets, use HTTPS and preferably an API key/secret pair.
+With the local Aspire setup, omit these variables to use `http://127.0.0.1:8000`, site `cubazone.localhost`, and `Administrator` / `admin`. Override `FRAPPE_USERNAME` and `FRAPPE_PASSWORD` when the MCP should use another Frappe role. These defaults apply only to local targets. For remote sites, provide explicit credentials or an API key/secret pair; use HTTPS and a host secret store.
 
 For file export, set `FRAPPE_APPS_PATH` to the local Bench `apps` directory visible to the MCP process. Only app/module paths that exist below that directory are writable. When the MCP host runs in a container, mount only the intended app directory and set the path to that mount; the MCP does not need to run inside the Frappe container.
 
@@ -73,13 +73,15 @@ All settings are described in [installation and configuration](docs/installation
 3. Read with `list_documents` or `get_document`, requesting only needed data.
 4. For a mutation, call the tool with `confirm: false`, review the preview, then confirm with its current `modified` token when required.
 5. For schema changes, preview the operation first and verify the configured app/module ownership.
-6. Call `export_customizations` to preview filesystem changes. Confirm with the returned `preview_id`, then inspect and commit the app files through normal source control.
+6. After creating or changing fields in Customize Form, call `export_form_customizations` for the DocType and destination app module. Keep `sync_on_migrate: true`, review the source-state preview and destination paths, then confirm with its current `preview_id`. Frappe writes the file on its own host; the MCP cannot show a content diff unless that app tree is shared with the MCP process.
+7. For fixture export, run Frappe's supported Bench `export-fixtures` command in the app's Bench. The standalone MCP does not emulate this operation because Frappe exposes no equivalent public HTTP method.
 
 The MCP does not run migrations, restart Bench, create sites, or deploy exported code.
 
 ## Docs
 
 - [Frappe capability study and MCP coverage](docs/frappe-capability-study.md) — framework/app capability model, current coverage, visual-equivalence criteria, and test roadmap.
+- [Native Frappe process audit](docs/native-process-audit.md) — source-based comparison of MCP tool behavior with Frappe's Desk, API, and Bench operations.
 - [Manual functional verification report](e2e/manual_functional_report.md) — Administrator-driven live checks of DocTypes, field settings, generated files, database state, customizations, and known failures.
 - [Installation and configuration](docs/installation-and-configuration.md)
 - [Tool reference](docs/tool-reference.md)

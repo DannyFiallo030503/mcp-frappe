@@ -18,16 +18,16 @@ The executable is `mcp-frappe`; alternatively run `uv run python -m frappe_mcp.s
 
 | Variable | Required | Description |
 |---|---:|---|
-| `FRAPPE_URL` | Yes | Site base URL, e.g. `http://127.0.0.1:32783` |
-| `FRAPPE_SITE` | No | Site host name sent as the HTTP `Host` header for multi-site Bench routing |
+| `FRAPPE_URL` | No for local Aspire | Site base URL; defaults to `http://127.0.0.1:8000` |
+| `FRAPPE_SITE` | No | Site host sent as HTTP `Host`; defaults to `cubazone.localhost` when using the built-in local Aspire URL |
 | `FRAPPE_API_KEY` | Token auth | API key; use together with `FRAPPE_API_SECRET` |
 | `FRAPPE_API_SECRET` | Token auth | API secret |
 | `FRAPPE_USERNAME` | Password auth | Login username; defaults to `Administrator` |
-| `FRAPPE_PASSWORD` | Password auth | Password; never stored in this repository |
+| `FRAPPE_PASSWORD` | Password auth | Password; defaults to `admin` for local targets only. Remote sites require an explicit password or API token. |
 | `FRAPPE_APPS_PATH` | DocType creation and export | Local Bench `apps/` directory visible to the MCP process |
 | `FRAPPE_TIMEOUT` | No | HTTP timeout in seconds; defaults to `30` |
 
-Use either both API token variables or a username/password. Token auth is preferred for remote sites. Password login uses Frappe's `/api/method/login` and is restricted to HTTPS except for loopback and `.localhost` URLs. Every request runs as the configured Frappe user. This setup uses `Administrator`; Frappe grants that user all DocType permissions independently of Developer Mode. An Administrator password is highly privileged; use it only in a trusted development environment, and supply it through the MCP host's secret store/environment.
+With no connection variables set, the MCP connects to the local Aspire site at `http://127.0.0.1:8000`, routes to `cubazone.localhost`, and logs in as `Administrator` with the local development password `admin`. Set `FRAPPE_USERNAME` and `FRAPPE_PASSWORD` to use another account and role. This fallback is enabled only for loopback or `.localhost` targets; remote sites require explicit credentials, and password login uses HTTPS outside local hosts. API token authentication remains available and is preferred for remote sites.
 
 ## MCP host configuration
 
@@ -40,7 +40,7 @@ Generic local server declaration:
       "command": "uv",
       "args": ["--directory", "/absolute/path/to/mcp-frappe", "run", "mcp-frappe"],
       "env": {
-        "FRAPPE_URL": "http://127.0.0.1:32783",
+        "FRAPPE_URL": "http://127.0.0.1:8000",
         "FRAPPE_SITE": "cubazone.localhost",
         "FRAPPE_USERNAME": "Administrator",
         "FRAPPE_PASSWORD": "${FRAPPE_PASSWORD}"
@@ -50,7 +50,7 @@ Generic local server declaration:
 }
 ```
 
-Environment expansion is host-specific. Set the secret outside this shared JSON file. If the MCP host runs in a container, ensure it can reach the Frappe host/port and only mount the app directory required for exports.
+Environment expansion is host-specific. Set any non-default secret outside this shared JSON file. If the MCP host runs in a container, ensure it can reach the Frappe host/port and only mount the app directory required for exports.
 
 Without `FRAPPE_APPS_PATH`, discovery, reads, record CRUD, and database-backed Custom Field/Property Setter tools work, but standard DocType creation and file export cannot verify or write app source files. Set it to the actual Bench `apps` directory visible to the MCP process, not an arbitrary parent path. Each requested app/module must exist below it and the module must match the remote site's Module Def ownership. The target Frappe site must be running and reachable at `FRAPPE_URL`; provide the HTTP port and `FRAPPE_SITE` when host-based multi-site routing needs it.
 

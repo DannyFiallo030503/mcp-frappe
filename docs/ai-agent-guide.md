@@ -8,7 +8,7 @@
 - Frappe permissions are enforced remotely. If a request is denied, report the missing access; do not try alternate APIs to bypass it.
 - Treat every mutation as potentially side-effecting because native Frappe hooks and validations run.
 - Review previews before confirming. For record updates/deletes, pass the exact `modified` token returned in the preview; if it changed, start over.
-- For DocTypes and fixtures, preview the app/module destination and hashes. After export, inspect the local diff and let the developer handle Git review and migrations.
+- For standard DocTypes, review the Frappe-generated files. For Customize Form export, review the source-state fingerprint and target paths before confirmation; inspect the generated diff in Git when the app tree is shared. Fixture export uses Frappe's Bench command, outside the MCP.
 - Never place credentials in tool arguments, source code, logs, screenshots, or evidence.
 
 ## Read a record type
@@ -34,8 +34,9 @@ Use the same preview-first pattern for creation/deletion. Do not create records 
 2. Verify that the app/module exists below configured `FRAPPE_APPS_PATH`.
 3. Preview `create_doctype`, `create_custom_field`, or `set_field_property`.
 4. Confirm only after reviewing names, field types, options, and destination.
-5. Call `export_customizations`, review every path, diff, and `preview_id`, then confirm with that ID.
-6. If the export needs reversal, preview `rollback_export` and confirm with its latest `preview_id`.
-7. Inspect the app's Git diff and use the project's normal deployment process. The MCP does not migrate or deploy.
+5. For Custom Fields, Property Setters, or other Customize Form changes, call `export_form_customizations` for the target DocType and destination app module. Keep `sync_on_migrate: true`, review the source-state fingerprint, target paths, and `preview_id`, then confirm with that ID. Frappe writes its native `custom/<doctype>.json` export on the Frappe host. The MCP can show changed content and offer local rollback only when the app directory is shared with its process.
+6. For fixture export, use Frappe's Bench `export-fixtures` command. The standalone MCP does not recreate this server-side operation because there is no equivalent public HTTP endpoint in the audited Frappe version.
+7. If the export needs reversal, preview `rollback_export` and confirm with its latest `preview_id`.
+8. Inspect the app's Git diff and use the project's normal deployment process. The MCP does not migrate or deploy.
 
-The exporter supports DocType JSON, Custom Field, Property Setter, Client Script, and Custom DocPerm fixtures, plus a managed `hooks.py` fixture block. It does not export arbitrary Frappe state or custom app code.
+`export_form_customizations` delegates to Frappe's native Customize Form export and honors its `sync_on_migrate` setting. It does not export arbitrary Frappe state or custom app code. `set_field_property` creates a native Property Setter document, but does not represent the full Customize Form save operation.
