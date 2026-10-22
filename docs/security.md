@@ -4,7 +4,7 @@
 
 The standalone process authenticates to Frappe with either an API token or the standard login endpoint. Requests execute as that user, and Frappe's resource/method APIs enforce its permissions and validation. API tokens are preferred outside local development. Password login over plain HTTP is blocked except for loopback and `.localhost` targets.
 
-Administrator is a full-privilege account. If used for local development, supply its password through the MCP host's secret/environment facility. The project has no embedded default password and does not write credentials into files, tests, logs, or evidence. Do not use a known default password on a network reachable site.
+Administrator is a full-privilege account. For the local Aspire site only, the MCP defaults to `Administrator` / `admin`; an explicit username and password can select another role. The fallback is applied only to loopback and `.localhost` hosts. Remote sites require explicit credentials or an API token, and the project does not send the local default password to them. Do not expose a local development site with its default password to a network.
 
 ## Tool boundaries
 

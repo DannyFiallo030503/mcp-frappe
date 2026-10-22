@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import ast
 import difflib
 import hashlib
 import json
@@ -129,9 +128,9 @@ _PERMISSION_MANAGER_EXCLUDED_DOCTYPES = {
     "Module Def",
     "Transaction Log",
 }
-_HOOK_BEGIN = "# BEGIN MCP FRAPPE MANAGED FIXTURES"
-_HOOK_END = "# END MCP FRAPPE MANAGED FIXTURES"
 _PROTECTED_APPS = {"frappe", "erpnext"}
+_DEFAULT_LOCAL_URL = "http://127.0.0.1:8000"
+_DEFAULT_LOCAL_SITE = "cubazone.localhost"
 
 
 def _client() -> httpx.Client:
@@ -139,12 +138,13 @@ def _client() -> httpx.Client:
     if _session is not None:
         return _session
 
-    base_url = os.environ.get("FRAPPE_URL", "").rstrip("/")
-    if not base_url:
-        raise RuntimeError("Set FRAPPE_URL to the target site's base URL")
+    configured_url = os.environ.get("FRAPPE_URL") or None
+    base_url = (configured_url or _DEFAULT_LOCAL_URL).rstrip("/")
     timeout = float(os.environ.get("FRAPPE_TIMEOUT", "30"))
     headers = {"Accept": "application/json"}
     site = os.environ.get("FRAPPE_SITE")
+    if site is None and base_url == _DEFAULT_LOCAL_URL:
+        site = _DEFAULT_LOCAL_SITE
     if site:
         headers["Host"] = site
     key, secret = os.environ.get("FRAPPE_API_KEY"), os.environ.get("FRAPPE_API_SECRET")
@@ -157,8 +157,6 @@ def _client() -> httpx.Client:
 
     username = os.environ.get("FRAPPE_USERNAME", "Administrator")
     password = os.environ.get("FRAPPE_PASSWORD")
-    if not password:
-        raise RuntimeError("Set an API key/secret or FRAPPE_PASSWORD")
     local_hosts = {"localhost", "127.0.0.1", "::1"}
     from urllib.parse import urlparse
 
@@ -166,8 +164,12 @@ def _client() -> httpx.Client:
     local_target = parsed.hostname in local_hosts or bool(
         parsed.hostname and parsed.hostname.endswith(".localhost")
     )
+    if not password and local_target:
+        password = "admin"
     if parsed.scheme != "https" and not local_target:
         raise RuntimeError("Password login is allowed only over HTTPS or to localhost")
+    if not password:
+        raise RuntimeError("Set an API key/secret or FRAPPE_PASSWORD for remote sites")
     _session = httpx.Client(
         base_url=base_url, headers=headers, timeout=timeout, follow_redirects=False
     )
@@ -218,116 +220,19 @@ def _doctype_raw(doctype: str) -> dict[str, Any]:
     return result
 
 
-def _sort_merged_fields(schema: dict[str, Any]) -> None:
-    """Apply Frappe's field_order and Custom Field insert_after rules to metadata."""
-    fields = schema.get("fields", [])
-    if not fields:
-        return
-    by_name = {row.get("fieldname"): row for row in fields if row.get("fieldname")}
-    if not by_name:
-        return
-
-    explicit_order = schema.get("field_order")
-    if isinstance(explicit_order, str):
-        try:
-            explicit_order = json.loads(explicit_order)
-        except json.JSONDecodeError:
-            explicit_order = []
-    order = [name for name in explicit_order or [] if name in by_name]
-    if not order:
-        order = [
-            row["fieldname"] for row in fields
-            if row.get("fieldname") and not row.get("is_custom_field")
-        ]
-
-    insert_after: dict[str, list[str]] = {}
-    for row in fields:
-        name = row.get("fieldname")
-        if not name or name in order or not row.get("is_custom_field"):
-            continue
-        anchor = row.get("insert_after")
-        if anchor:
-            insert_after.setdefault(str(anchor), []).append(name)
-        else:
-            order.insert(0, name)
-
-    # Frappe resolves chains such as a custom field inserted after another
-    # custom field in repeated passes, preserving each anchor's creation order.
-    while True:
-        changed = False
-        for anchor in list(insert_after):
-            if anchor not in order:
-                continue
-            index = order.index(anchor) + 1
-            for name in insert_after.pop(anchor):
-                order.insert(index, name)
-                index += 1
-            changed = True
-        if not changed:
-            break
-    for remaining in insert_after.values():
-        order.extend(name for name in remaining if name not in order)
-
-    order.extend(name for name in by_name if name not in order)
-    schema["fields"] = [by_name[name] for name in order]
-    for index, row in enumerate(schema["fields"], 1):
-        row["idx"] = index
-
-
 def _doctype(doctype: str) -> dict[str, Any]:
-    """Return the base DocType merged with site-level Custom Fields and Property Setters."""
-    schema = _doctype_raw(doctype)
-    fields = schema.setdefault("fields", [])
-    known = {row.get("fieldname") for row in fields if row.get("fieldname")}
-    custom_fields = _request(
+    """Return metadata composed by Frappe's native Desk metadata endpoint."""
+    if not _SAFE_NAME.fullmatch(doctype):
+        raise ValueError("Invalid DocType name")
+    result = _request(
         "GET",
-        _resource("Custom Field"),
-        params={
-            "fields": '["*"]',
-            "filters": _filters({"dt": doctype}),
-            "limit_page_length": 500,
-            "order_by": "idx asc",
-        },
+        "/api/method/frappe.desk.form.load.getdoctype",
+        params={"doctype": doctype},
     )
-    for custom_field in custom_fields:
-        fieldname = custom_field.get("fieldname")
-        if fieldname and fieldname not in known:
-            custom_field["is_custom_field"] = 1
-            fields.append(dict(custom_field))
-            known.add(fieldname)
-
-    setters = _request(
-        "GET",
-        _resource("Property Setter"),
-        params={
-            "fields": '["field_name","property","value","property_type","doctype_or_field"]',
-            "filters": _filters({"doc_type": doctype}),
-            "limit_page_length": 500,
-            "order_by": "creation asc",
-        },
-    )
-    by_field = {row.get("fieldname"): row for row in fields if row.get("fieldname")}
-    for setter in setters:
-        key = setter.get("property")
-        if not key:
-            continue
-        value = setter.get("value")
-        kind = setter.get("property_type")
-        try:
-            if kind == "Check":
-                value = bool(int(value))
-            elif kind == "Int":
-                value = int(value)
-            elif kind in {"Float", "Currency", "Percent"}:
-                value = float(value)
-        except (TypeError, ValueError):
-            continue
-        fieldname = setter.get("field_name")
-        target = by_field.get(fieldname) if fieldname else schema
-        if target is not None:
-            target[key] = value
-    _sort_merged_fields(schema)
-    return schema
+    docs = result.get("docs") if isinstance(result, dict) else None
+    if not isinstance(docs, list) or not docs or not isinstance(docs[0], dict):
+        raise RuntimeError("Frappe returned an unexpected DocType metadata response")
+    return docs[0]
 
 
 def _assert_fields(doctype: str, values: dict[str, Any], *, writing: bool = False) -> None:
@@ -479,102 +384,6 @@ def _remove_partial_doctype_tree(doctype_path: Path, generated_files: list[Path]
         shutil.rmtree(doctype_path)
 
 
-def _app_publisher(app_path: Path) -> str:
-    hooks = app_path / app_path.name / "hooks.py"
-    if not hooks.is_file():
-        raise ValueError(
-            "Target app hooks.py is missing; cannot prepare native DocType scaffolding"
-        )
-    tree = ast.parse(hooks.read_text(encoding="utf-8"), filename=str(hooks))
-    for node in tree.body:
-        if isinstance(node, ast.Assign) and any(
-            isinstance(target, ast.Name) and target.id == "app_publisher" for target in node.targets
-        ):
-            value = ast.literal_eval(node.value)
-            if isinstance(value, str):
-                return value
-            if isinstance(value, (list, tuple)) and value and isinstance(value[0], str):
-                return value[0]
-    raise ValueError(
-        "Target app hooks.py must define a literal app_publisher for native scaffolding"
-    )
-
-
-def _prepare_native_doctype_scaffolding(
-    app_path: Path,
-    module_path: Path,
-    doctype_path: Path,
-    name: str,
-    *,
-    is_child_table: bool,
-    is_tree: bool,
-) -> None:
-    """Stage Frappe's own boilerplates before the metadata request triggers file watchers."""
-    frappe_source = app_path.parent / "frappe" / "frappe"
-    templates = frappe_source / "core" / "doctype" / "doctype" / "boilerplate"
-    required = [templates / "controller._py"]
-    if not is_child_table:
-        required.extend([templates / "test_controller._py", templates / "controller.js"])
-    if any(not path.is_file() for path in required):
-        raise ValueError(
-            "FRAPPE_APPS_PATH must include the installed Frappe source to generate "
-            "native DocType files"
-        )
-
-    for directory in (module_path, module_path / "doctype", doctype_path):
-        directory.mkdir(parents=True, exist_ok=True)
-        init_file = directory / "__init__.py"
-        if not init_file.exists():
-            _atomic_write(init_file, "")
-
-    class_name = name.replace(" ", "").replace("-", "")
-    base_class = "NestedSet" if is_tree else "Document"
-    base_class_import = (
-        "from frappe.utils.nestedset import NestedSet"
-        if is_tree
-        else "from frappe.model.document import Document"
-    )
-    values = {
-        "year": time.localtime().tm_year,
-        "app_publisher": _app_publisher(app_path),
-        "classname": class_name,
-        "doctype": name,
-        "base_class_import": base_class_import,
-        "base_class": base_class,
-        "custom_controller": "pass",
-    }
-    controller_slug = _slug(name)
-    files = {
-        doctype_path / f"{controller_slug}.py": templates / "controller._py",
-    }
-    if not is_child_table:
-        files[doctype_path / f"test_{controller_slug}.py"] = templates / "test_controller._py"
-        files[doctype_path / f"{controller_slug}.js"] = templates / "controller.js"
-    for destination, template in files.items():
-        if destination.exists():
-            raise ValueError("Refusing to overwrite an existing DocType scaffold")
-        _atomic_write(destination, template.read_text(encoding="utf-8").format(**values))
-
-
-def _wait_for_server_ready(timeout: float = 45.0, settle_seconds: float = 5.0) -> None:
-    """Wait until the target site is reachable and stable after generated Python files."""
-    deadline = time.monotonic() + timeout
-    online_since: float | None = None
-    while time.monotonic() < deadline:
-        try:
-            _request("GET", "/api/method/frappe.auth.get_logged_user")
-        except (httpx.TransportError, RuntimeError):
-            online_since = None
-        else:
-            now = time.monotonic()
-            if online_since is None:
-                online_since = now
-            elif now - online_since >= settle_seconds:
-                return
-        time.sleep(0.5)
-    raise RuntimeError("Frappe did not return to a stable state after preparing DocType files")
-
-
 def _wait_for_document_deleted(doctype: str, name: str, timeout: float = 45.0) -> bool:
     """Reconcile a delete whose response was cut off by a Frappe worker reload."""
     deadline = time.monotonic() + timeout
@@ -621,7 +430,8 @@ def _create_doctype_request(
             return True
         raise RuntimeError(
             "Frappe restarted during DocType creation and no DocType record was found "
-            "after the request settled. The MCP removed only its temporary scaffold; retry is safe."
+            "after the request settled. Partial files were removed when it was safe; "
+            "inspect the selected module before retrying."
         ) from error
 
 
@@ -698,101 +508,30 @@ def _atomic_write(path: Path, content: str, mode: int | None = None) -> None:
         Path(temp_name).unlink(missing_ok=True)
 
 
-def _fixture_plan(app_path: Path, doctypes: list[str], module: str) -> tuple[Path, str]:
-    hooks = app_path / app_path.name / "hooks.py"
-    if not hooks.is_file() or not os.access(hooks, os.W_OK):
-        raise ValueError("Target app hooks.py is missing or not writable")
-    source = hooks.read_text(encoding="utf-8")
-    begin, end = source.find(_HOOK_BEGIN), source.find(_HOOK_END)
-    existing: list[dict[str, Any]] = []
-    if begin >= 0 or end >= 0:
-        if begin < 0 or end < begin or source[end + len(_HOOK_END) :].strip():
-            raise ValueError("Managed fixture block is invalid; inspect hooks.py manually")
-        block = ast.parse(source[begin + len(_HOOK_BEGIN) : end])
-        assignment = next(
-            (
-                node
-                for node in block.body
-                if isinstance(node, ast.Assign)
-                and any(
-                    isinstance(target, ast.Name) and target.id == "mcp_frappe_exported_fixtures"
-                    for target in node.targets
-                )
-            ),
-            None,
-        )
-        if assignment:
-            existing = ast.literal_eval(assignment.value)
-        source = source[:begin].rstrip()
-
-    additions = [
-        {"dt": "Custom Field", "filters": [["dt", "in", doctypes], ["module", "in", [module]]]},
-        {
-            "dt": "Property Setter",
-            "filters": [["doc_type", "in", doctypes], ["module", "in", [module]]],
-        },
-        {"dt": "Client Script", "filters": [["dt", "in", doctypes], ["module", "in", [module]]]},
-        {"dt": "Custom DocPerm", "filters": [["parent", "in", doctypes]]},
-    ]
-    managed = list(existing)
-    for addition in additions:
-        target_field = {
-            "Custom Field": "dt",
-            "Property Setter": "doc_type",
-            "Client Script": "dt",
-            "Custom DocPerm": "parent",
-        }[addition["dt"]]
-        previous = next((row for row in managed if row.get("dt") == addition["dt"]), None)
-        if previous is None:
-            managed.append(addition)
-            continue
-        filters = list(previous.get("filters", []))
-        for key in (target_field, "module"):
-            incoming = next(
-                (condition[2] for condition in addition["filters"] if condition[0] == key), []
-            )
-            current = next(
-                (condition for condition in filters if len(condition) == 3 and condition[0] == key),
-                None,
-            )
-            if current and current[1] == "in":
-                current[2] = sorted(set(current[2]) | set(incoming))
-            elif incoming:
-                filters.append([key, "in", incoming])
-        previous["filters"] = filters
-
-    block_text = (
-        f"\n\n{_HOOK_BEGIN}\n"
-        f"mcp_frappe_exported_fixtures = {managed!r}\n"
-        "fixtures = list(globals().get('fixtures', [])) + mcp_frappe_exported_fixtures\n"
-        f"{_HOOK_END}\n"
-    )
-    return hooks, source + block_text
-
-
-def _doctype_customization_payloads(
+def _customization_export_snapshot(
     module_path: Path,
     doctype: str,
     *,
-    sync_on_migrate: bool,
     with_permissions: bool,
     seen: set[str] | None = None,
-) -> list[tuple[Path, str]]:
-    """Build Frappe's native Customize Form export for a DocType and its child tables."""
+) -> tuple[list[tuple[str, Path]], list[dict[str, Any]]]:
+    """Fingerprint Frappe's export inputs without serializing or writing them."""
     seen = seen or set()
     if doctype in seen:
-        return []
+        return [], []
     if len(seen) >= 50:
         raise ValueError("Customize Form export exceeds 50 DocTypes")
     seen.add(doctype)
     schema = _doctype(doctype)
+    targets = [(doctype, module_path / "custom" / f"{_slug(doctype)}.json")]
+    snapshot: list[dict[str, Any]] = [{"doctype": doctype, "modified": schema.get("modified")}]
 
-    def records(resource_doctype: str, filters: dict[str, Any]) -> list[dict[str, Any]]:
+    def record_state(resource_doctype: str, filters: dict[str, Any]) -> list[dict[str, Any]]:
         result = _request(
             "GET",
             _resource(resource_doctype),
             params={
-                "fields": '["*"]',
+                "fields": '["name","modified"]',
                 "filters": _filters(filters),
                 "limit_page_length": 1000,
                 "order_by": "name asc",
@@ -802,39 +541,53 @@ def _doctype_customization_payloads(
             raise RuntimeError(f"Unexpected {resource_doctype} response")
         if len(result) >= 1000:
             raise ValueError(f"Too many {resource_doctype} records to export safely")
-        return result
+        return [{"name": row.get("name"), "modified": row.get("modified")} for row in result]
 
-    custom_fields = records("Custom Field", {"dt": doctype})
-    property_setters = records("Property Setter", {"doc_type": doctype})
-    links = records("DocType Link", {"parent": doctype})
-    custom_perms = records("Custom DocPerm", {"parent": doctype}) if with_permissions else []
+    resources = [
+        ("Custom Field", {"dt": doctype}),
+        ("Property Setter", {"doc_type": doctype}),
+    ]
+    if with_permissions:
+        resources.append(("Custom DocPerm", {"parent": doctype}))
+    for resource_doctype, filters in resources:
+        snapshot.append(
+            {
+                "resource": resource_doctype,
+                "records": record_state(resource_doctype, filters),
+            }
+        )
 
-    payloads: list[tuple[Path, str]] = []
-    if custom_fields or property_setters or custom_perms:
-        payload = {
-            "custom_fields": custom_fields,
-            "custom_perms": custom_perms,
-            "doctype": doctype,
-            "links": links,
-            "property_setters": property_setters,
-            "sync_on_migrate": int(sync_on_migrate),
-        }
-        path = module_path / "custom" / f"{_slug(doctype)}.json"
-        payloads.append((path, json.dumps(payload, ensure_ascii=False, indent=1) + "\n"))
+    links = schema.get("links", [])
+    if not isinstance(links, list) or len(links) > 1000:
+        raise ValueError("Too many or malformed DocType Link metadata records to preview")
+    snapshot.append({"resource": "DocType Link", "records": links})
 
     for field in schema.get("fields", []):
         child_doctype = field.get("options")
-        if field.get("fieldtype") == "Table" and isinstance(child_doctype, str):
-            payloads.extend(
-                _doctype_customization_payloads(
-                    module_path,
-                    child_doctype,
-                    sync_on_migrate=sync_on_migrate,
-                    with_permissions=with_permissions,
-                    seen=seen,
-                )
+        if field.get("fieldtype") in {"Table", "Table MultiSelect"} and isinstance(
+            child_doctype, str
+        ):
+            child_targets, child_snapshot = _customization_export_snapshot(
+                module_path,
+                child_doctype,
+                with_permissions=with_permissions,
+                seen=seen,
             )
-    return payloads
+            targets.extend(child_targets)
+            snapshot.extend(child_snapshot)
+    return targets, snapshot
+
+
+def _assert_system_manager() -> None:
+    """Match Customize Form's System Manager access before calling its exporter."""
+    user = _request("GET", "/api/method/frappe.auth.get_logged_user")
+    roles = _request(
+        "GET",
+        "/api/method/frappe.core.doctype.user.user.get_roles",
+        params={"uid": user},
+    )
+    if not isinstance(roles, list) or "System Manager" not in roles:
+        raise PermissionError("Customize Form export requires the System Manager role")
 
 
 def _safe_app_file(app_path: Path, path: Path) -> Path:
@@ -875,36 +628,55 @@ def export_form_customizations(
     confirm: bool = False,
     expected_preview: str | None = None,
 ) -> dict[str, Any]:
-    """Export Customize Form data as native `module/custom/<doctype>.json` files.
+    """Preview, then call Frappe's native Customize Form export method.
 
-    The selected module is the destination app module and the Custom Field's
-    owner, so the source DocType may belong to Frappe or another app. By default
-    exported customizations are marked `sync_on_migrate` so Frappe reapplies
-    them when the app is migrated.
+    Frappe generates the files on the site host. The preview fingerprints the
+    current source records and lists expected paths; Frappe does not expose a
+    dry-run form of this method, so the MCP does not fabricate a file diff.
     """
     _assert_writable_app(app)
-    _, module_path = _assert_app_module(app, module)
+    app_path, module_path = _assert_app_module(app, module)
     if not _SAFE_NAME.fullmatch(doctype):
         raise ValueError("Invalid DocType name")
 
-    payloads = _doctype_customization_payloads(
+    targets, source_snapshot = _customization_export_snapshot(
         module_path,
         doctype,
-        sync_on_migrate=sync_on_migrate,
         with_permissions=with_permissions,
     )
-    if len(payloads) > 50:
+    if len(targets) > 50:
         raise ValueError("Customize Form export exceeds 50 files")
-
-    previews = []
-    total_size = 0
-    for path, content in payloads:
-        path = _safe_app_file(module_path.parents[1], path)
-        total_size += len(content.encode("utf-8"))
-        if total_size > 5_000_000:
-            raise ValueError("Customize Form export exceeds the 5 MB total output limit")
-        previews.append(_file_preview(path, content))
-    preview_id = hashlib.sha256(json.dumps(previews, sort_keys=True).encode()).hexdigest()
+    input_state = {
+        "app": app,
+        "module": module,
+        "doctype": doctype,
+        "sync_on_migrate": sync_on_migrate,
+        "with_permissions": with_permissions,
+        "source": source_snapshot,
+    }
+    file_previews = []
+    previous_contents: dict[Path, str | None] = {}
+    for target_doctype, path in targets:
+        path = _safe_app_file(app_path, path)
+        current = path.read_text(encoding="utf-8") if path.is_file() else None
+        previous_contents[path] = current
+        file_previews.append(
+            {
+                "doctype": target_doctype,
+                "path": str(path),
+                "exists": current is not None,
+                "current_sha256": (
+                    hashlib.sha256(current.encode()).hexdigest() if current else None
+                ),
+            }
+        )
+    input_state["destination"] = [
+        {key: item[key] for key in ("doctype", "path", "current_sha256")}
+        for item in file_previews
+    ]
+    preview_id = hashlib.sha256(
+        json.dumps(input_state, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
     if not confirm:
         return {
             "preview": True,
@@ -913,37 +685,39 @@ def export_form_customizations(
             "module": module,
             "doctype": doctype,
             "sync_on_migrate": sync_on_migrate,
-            "files": previews,
+            "with_permissions": with_permissions,
+            "files": file_previews,
+            "content_diff_available": False,
             "preview_id": preview_id,
             "requires_confirmation": True,
         }
     if expected_preview != preview_id:
         raise ValueError("Customize Form preview is missing or stale")
-    if not payloads:
-        return {
-            "exported": False,
-            "app": app,
+    _assert_system_manager()
+
+    native_result = _request(
+        "POST",
+        "/api/method/frappe.modules.utils.export_customizations",
+        data={
             "module": module,
             "doctype": doctype,
-            "files": [],
-            "message": "No Custom Fields, Property Setters, or selected permissions exist.",
-        }
+            "sync_on_migrate": int(sync_on_migrate),
+            "with_permissions": int(with_permissions),
+        },
+    )
 
-    app_path = module_path.parents[1]
-    backup_root = _safe_app_file(app_path, app_path / ".mcp-frappe-backups")
-    backup_root.mkdir(parents=True, exist_ok=True)
-    rollback_id = f"export-{preview_id[:32]}.json"
     manifest: list[dict[str, Any]] = []
-    for path, content in payloads:
-        path = _safe_app_file(app_path, path)
+    backup_root = _safe_app_file(app_path, app_path / ".mcp-frappe-backups")
+    for path, previous in previous_contents.items():
+        if not path.is_file():
+            continue
+        content = path.read_text(encoding="utf-8")
+        if content == previous:
+            continue
         backup_name = None
-        if path.exists():
+        if previous is not None:
             backup_name = f"{uuid.uuid4().hex}.bak"
-            _atomic_write(
-                backup_root / backup_name,
-                path.read_text(encoding="utf-8"),
-                mode=0o600,
-            )
+            _atomic_write(backup_root / backup_name, previous, mode=0o600)
         manifest.append(
             {
                 "path": str(path.relative_to(app_path.resolve())),
@@ -951,20 +725,41 @@ def export_form_customizations(
                 "exported_sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
             }
         )
-    _atomic_write(
-        backup_root / rollback_id,
-        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
-        mode=0o600,
+    rollback_id = None
+    if manifest:
+        backup_root.mkdir(parents=True, exist_ok=True)
+        rollback_id = f"export-{preview_id[:32]}.json"
+        _atomic_write(
+            backup_root / rollback_id,
+            json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+            mode=0o600,
+        )
+    local_files = [
+        str(path)
+        for path, previous in previous_contents.items()
+        if path.is_file() and path.read_text(encoding="utf-8") != previous
+    ]
+    native_path = native_result if isinstance(native_result, str) else None
+    native_path_matches_local = bool(
+        native_path
+        and Path(native_path).resolve(strict=False)
+        in {path.resolve(strict=False) for path in previous_contents}
     )
-    for path, content in payloads:
-        _atomic_write(_safe_app_file(app_path, path), content)
+    has_exportable_records = any(
+        item.get("resource") in {"Custom Field", "Property Setter", "Custom DocPerm"}
+        and item.get("records")
+        for item in source_snapshot
+    )
     return {
-        "exported": True,
+        "exported": bool(native_result or local_files or has_exportable_records),
         "app": app,
         "module": module,
         "doctype": doctype,
         "sync_on_migrate": sync_on_migrate,
-        "files": [str(path) for path, _ in payloads],
+        "files": local_files or ([native_path] if native_path else []),
+        "native_result": native_result,
+        "shared_app_tree_detected": bool(local_files or native_path_matches_local),
+        "changed_local_files": local_files,
         "rollback_id": rollback_id,
     }
 
@@ -1181,7 +976,7 @@ def run_report(
         params={
             "report_name": report_name,
             "filters": json.dumps(filters or {}),
-            "ignore_prepared_report": True,
+            "ignore_prepared_report": False,
         },
     )
     rows = result.get("result", [])
@@ -1285,19 +1080,7 @@ def create_doctype(
             "native_files_complete": None,
             "reconciled_after_server_reload": reconciled,
         }
-    # Stage the exact templates shipped with this Frappe checkout before the
-    # metadata request. Werkzeug watches Python files and can kill that request
-    # mid-transaction when Frappe itself creates the scaffolding.
     try:
-        _prepare_native_doctype_scaffolding(
-            app_path,
-            module_path,
-            doctype_path,
-            name,
-            is_child_table=is_child_table,
-            is_tree=is_tree,
-        )
-        _wait_for_server_ready()
         reconciled = _create_doctype_request(name, payload, expected_files)
         if not _doctype_exists(name):
             raise RuntimeError(
@@ -1499,108 +1282,6 @@ def set_field_property(
             "requires_confirmation": True,
         }
     return _request("POST", _resource("Property Setter"), json={"data": data})
-
-
-@server.tool()
-def export_customizations(
-    app: str,
-    module: str,
-    doctypes: list[str],
-    confirm: bool = False,
-    expected_preview: str | None = None,
-) -> dict[str, Any]:
-    """Preview or export DocType JSON and customization fixtures into an app, with rollback."""
-    _assert_writable_app(app)
-    app_path, module_path = _assert_app_module(app, module)
-    if not doctypes or len(doctypes) > 50:
-        raise ValueError("Select between 1 and 50 DocTypes")
-    payloads: list[tuple[Path, str]] = []
-    for doctype in doctypes:
-        schema = _doctype_raw(doctype)
-        if schema.get("module") != module:
-            raise ValueError(f"DocType does not belong to module {module}: {doctype}")
-        leaf = _slug(doctype)
-        dest = module_path / "doctype" / leaf / f"{leaf}.json"
-        payloads.append((dest, json.dumps(schema, ensure_ascii=False, indent=1) + "\n"))
-    for dt, parent in (
-        ("Custom Field", "dt"),
-        ("Property Setter", "doc_type"),
-        ("Client Script", "dt"),
-    ):
-        rows = _request(
-            "GET",
-            _resource(dt),
-            params={
-                "fields": '["*"]',
-                "filters": _filters([[parent, "in", doctypes], ["module", "=", module]]),
-                "limit_page_length": 1000,
-            },
-        )
-        if rows:
-            filename = dt.lower().replace(" ", "_") + ".json"
-            dest = module_path / "fixtures" / filename
-            payloads.append((dest, json.dumps(rows, ensure_ascii=False, indent=1) + "\n"))
-    hooks_path, hooks_content = _fixture_plan(app_path, doctypes, module)
-    payloads.append((hooks_path, hooks_content))
-    if len(payloads) > 55:
-        raise ValueError("Export produced too many files")
-    previews = []
-    total_size = 0
-    for path, content in payloads:
-        path = _safe_app_file(app_path, path)
-        total_size += len(content.encode("utf-8"))
-        if total_size > 5_000_000:
-            raise ValueError("Export exceeds the 5 MB total output limit")
-        previews.append(_file_preview(path, content))
-    preview_id = hashlib.sha256(json.dumps(previews, sort_keys=True).encode()).hexdigest()
-    if not confirm:
-        return {
-            "preview": True,
-            "app": app,
-            "module": module,
-            "doctypes": doctypes,
-            "files": previews,
-            "preview_id": preview_id,
-            "requires_confirmation": True,
-        }
-    if expected_preview != preview_id:
-        raise ValueError("Export preview is missing or stale")
-    backup_root = _safe_app_file(app_path, app_path / ".mcp-frappe-backups")
-    backup_root.mkdir(parents=True, exist_ok=True)
-    rollback_id = f"export-{preview_id[:32]}.json"
-    manifest: list[dict[str, Any]] = []
-    for path, content in payloads:
-        path = _safe_app_file(app_path, path)
-        backup_name = None
-        if path.exists():
-            backup_name = f"{uuid.uuid4().hex}.bak"
-            _atomic_write(
-                backup_root / backup_name,
-                path.read_text(encoding="utf-8"),
-                mode=0o600,
-            )
-        manifest.append(
-            {
-                "path": str(path.relative_to(app_path.resolve())),
-                "backup": backup_name,
-                "exported_sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
-            }
-        )
-    manifest_path = backup_root / rollback_id
-    _atomic_write(
-        manifest_path,
-        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
-        mode=0o600,
-    )
-    for path, content in payloads:
-        _atomic_write(_safe_app_file(app_path, path), content)
-    return {
-        "exported": True,
-        "app": app,
-        "module": module,
-        "files": [str(path) for path, _ in payloads],
-        "rollback_id": rollback_id,
-    }
 
 
 @server.tool()
