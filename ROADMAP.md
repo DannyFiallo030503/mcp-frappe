@@ -2,6 +2,8 @@
 
 Frappe MCP is a standalone stdio server. The roadmap separates implemented behavior from Frappe surfaces that still need explicit, permission-aware API wrappers.
 
+The staged execution plan, with confirmed bugs and the order of work, is in [docs/work-plan](docs/work-plan/README.md).
+
 See the [Frappe capability study](docs/frappe-capability-study.md) for the detailed framework/ERPNext inventory, coverage definitions, DocType visual-equivalence criteria, and test strategy.
 
 ## Implemented
