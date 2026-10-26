@@ -33,6 +33,10 @@ Unit tests isolate the remote site by monkeypatching `standalone._request`, `sta
 
 `legacy/` holds the old implementation that ran as an installed Frappe app. It is not packaged, linted, or tested; don't import from it or assume its tools exist. `UPSTREAM.md` describes that legacy vendored transport.
 
+## Work plan
+
+Planned work is split into sequential stages in `docs/work-plan/`, one stage per session. When asked to work on a stage, read `docs/work-plan/README.md` first. It sets the per-stage rules, and each stage ends by filling in its Handoff section and the status table.
+
 ## Docs to keep in sync
 
 When tool behavior changes, update `docs/tool-reference.md` and `docs/ai-agent-guide.md`, and update `docs/architecture.md`, `docs/security.md`, or `docs/compatibility-and-validation.md` when relevant. `llms.txt` and `README.md` link to these. Docs are in English and use placeholder or `.localhost` hostnames only.
