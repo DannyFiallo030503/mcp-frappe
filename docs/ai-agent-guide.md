@@ -122,6 +122,35 @@ Workflows and Notifications are configuration records. Use `upsert_workflow` and
 4. Confirm with `confirm=True` (plus `expected_modified` when replacing an existing rule; its `changes` show what moves).
 5. To ship it with the app, preview again with `is_standard=True` and `module` set to a module of the user's app, show `app_files`, and confirm. The site needs developer mode; Frappe writes the files.
 
+## Finish the module
+
+A module is usable once it has a saved report or two and a Workspace in the sidebar. Use `upsert_report` and `upsert_workspace`, not `create_document`: they check columns, filters, and targets, and build the Workspace layout so it matches its rows. Don't write a Query Report, Script Report, or custom HTML block another way; tell the user those hold SQL, Python, or JavaScript and belong in Desk.
+
+### Add a report and a Workspace for my new DocTypes
+
+1. Read each DocType with `get_doctype_schema` and pick the columns users need, in order. A child-table field is `<child DocType>.<fieldname>`.
+2. Preview the report:
+   ```text
+   upsert_report(name="Open Samples", ref_doctype="Lab Sample",
+       columns=["name", "title", "status", "modified"],
+       filters={"status": "Open"}, order_by="modified desc",
+       is_standard=True, module="Lab")
+   ```
+   Show the user `settings` and `app_files`. `is_standard` ships the report with the app and needs developer mode and Administrator; leave it off for a site-only report. For counts per value use `group_by={"field": "status", "aggregate_function": "count"}` with `columns=["status"]`.
+3. Confirm with `confirm=True` (plus `expected_modified` when replacing). Check `sample`: a few rows mean the report runs; `sample.error` means it saved but Frappe could not run it (often a permission), so tell the user.
+4. Check whether a Workspace already exists: `get_workspace(name="Lab")` (a not-found error means it doesn't). If it has `unmanaged_blocks`, the tool will refuse to replace it; tell the user to edit it in Desk.
+5. Preview the Workspace with shortcuts to the new DocTypes and the report, and optionally a link card per group:
+   ```text
+   upsert_workspace(name="Lab", module="Lab",
+       shortcuts=[{"label": "Samples", "type": "DocType", "link_to": "Lab Sample", "doc_view": "List"},
+                  {"label": "Open Samples", "type": "Report", "link_to": "Open Samples"}],
+       link_cards=[{"label": "Masters", "links": [
+           {"label": "Lab Sample", "type": "DocType", "link_to": "Lab Sample"},
+           {"label": "Lab Instrument", "type": "DocType", "link_to": "Lab Instrument"}]}])
+   ```
+   Show `layout`, `app_files`, `warnings`, and on replacement `changes` (added, removed, moved). Don't name the Workspace after one of its DocTypes: Desk routes both to the same URL and Frappe refuses it.
+6. Confirm with `confirm=True` (plus `expected_modified` when replacing). In developer mode Frappe writes `<module>/report/...` and `<module>/workspace/...`; show the user the new files in the Git diff and run `list_app_drift` if they want to check the rest of the app.
+
 ## Customize a site
 
 1. Discover the owning app and module on the remote site.

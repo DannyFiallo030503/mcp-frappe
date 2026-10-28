@@ -156,3 +156,40 @@ def test_upsert_notification_through_an_mcp_session_never_sends_a_condition(fake
     (post,) = fake_site.calls_to("POST", "/api/resource/Notification")
     assert post.json["data"]["condition"] is None
     assert post.json["data"]["subject"] == "{{ doc.title | upper }} saved"
+
+
+def test_upsert_workspace_through_an_mcp_session_never_sends_custom_blocks(fake_site) -> None:
+    fake_site.add(
+        "GET",
+        "/api/resource/Module%20Def",
+        [{"name": "Lab", "app_name": "lab_app", "custom": 0}],
+    )
+    fake_site.add(
+        "GET", "/api/resource/DocType", [{"name": "Lab Sample", "istable": 0}]
+    )
+    fake_site.add("GET", "/api/resource/Workspace", [])
+    fake_site.add("POST", "/api/resource/Workspace", {"name": "Lab"})
+    arguments = {
+        "name": "Lab",
+        "module": "Lab",
+        "shortcuts": [{"label": "Samples", "type": "DocType", "link_to": "Lab Sample"}],
+        # Not a parameter: FastMCP drops unknown arguments, so it must never reach Frappe.
+        "custom_blocks": [{"custom_block_name": "Banner"}],
+        "confirm": True,
+    }
+
+    async def run():
+        async with create_connected_server_and_client_session(
+            standalone.server._mcp_server
+        ) as client:
+            tools = (await client.list_tools()).tools
+            return tools, await client.call_tool("upsert_workspace", arguments)
+
+    tools, result = anyio.run(run)
+
+    (tool,) = [tool for tool in tools if tool.name == "upsert_workspace"]
+    assert "custom_blocks" not in tool.inputSchema["properties"]
+    assert not result.isError, result.content
+    (post,) = fake_site.calls_to("POST", "/api/resource/Workspace")
+    assert "custom_blocks" not in post.json["data"]
+    assert [block["type"] for block in json.loads(post.json["data"]["content"])] == ["shortcut"]
