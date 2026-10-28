@@ -41,7 +41,7 @@ Generic local server declaration:
       "args": ["--directory", "/absolute/path/to/mcp-frappe", "run", "mcp-frappe"],
       "env": {
         "FRAPPE_URL": "http://127.0.0.1:32783",
-        "FRAPPE_SITE": "cubazone.localhost",
+        "FRAPPE_SITE": "site1.localhost",
         "FRAPPE_USERNAME": "Administrator",
         "FRAPPE_PASSWORD": "${FRAPPE_PASSWORD}"
       }

@@ -3,7 +3,7 @@
 ## Repository structure
 
 - `frappe_mcp/standalone.py`: MCP stdio server, Frappe HTTP client, tools, and confined app exports.
-- `tests/`: isolated tests for standalone validation and path safety.
+- `tests/`: isolated tests for standalone validation and path safety. `tests/conftest.py` provides a `fake_site` fixture that stands in for the Frappe HTTP API, and `tests/test_mcp_contract.py` drives the server through a real MCP client session.
 - `e2e/`: MCP stdio acceptance runners and redacted evidence.
 - `legacy/`: previous Frappe-hosted app and transport, excluded from the installable standalone package.
 
@@ -12,8 +12,10 @@
 ```bash
 uv sync --extra dev
 uv run pytest -q
-uv run ruff check frappe_mcp/standalone.py tests e2e/run_standalone_*.py
+uv run ruff check frappe_mcp tests e2e/run_standalone_*.py
 ```
+
+CI (`.github/workflows/ci.yml`) runs `uv run pytest -q` and `uv run ruff check frappe_mcp tests` on Python 3.10 and 3.12. The `e2e/` runners are not lint-clean yet, so CI does not lint them; make sure your changes add no new errors there.
 
 The normal test configuration runs only standalone tests; the historical Frappe app tests require their Bench environment and are not part of this package test run.
 

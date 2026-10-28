@@ -14,7 +14,7 @@ uv run ruff check frappe_mcp tests e2e/run_standalone_*.py
 uv run mcp-frappe                                     # run the stdio server (or: uv run python -m frappe_mcp.standalone)
 ```
 
-Ruff: line length 100, target py310, rules `E,F,I,B,UP`; `legacy/` is excluded. The tree is not lint-clean yet (pre-existing E501/I001 hits, most of them in `e2e/`), so check only that your changes add no new errors.
+Ruff: line length 100, target py310, rules `E,F,I,B,UP`; `legacy/` is excluded. `frappe_mcp` and `tests` are lint-clean and CI (`.github/workflows/ci.yml`, Python 3.10 and 3.12) keeps them that way; `e2e/` still has pre-existing E501/I001 hits, so there check only that your changes add no new errors.
 
 The e2e runners in `e2e/run_standalone_*.py` launch a real MCP stdio session against a live site configured with `FRAPPE_*` env vars (see `docs/installation-and-configuration.md`). `run_standalone_smoke.py` is read-only; the mutation, customization, and DocType-matrix runners write temporary data, refuse non-loopback targets, and need opt-in env vars (`FRAPPE_ALLOW_MUTATION_TEST=YES`, `FRAPPE_ALLOW_CUSTOMIZATION_TEST=YES`). Run them only on a disposable dev site, and only when asked.
 
@@ -29,7 +29,7 @@ A standalone MCP server (FastMCP over stdio) that runs outside Frappe and talks 
 - **Filesystem writes** (standard `create_doctype`, `export_customizations`, `rollback_export`): `_app_path()` resolves `FRAPPE_APPS_PATH/<app>/<app>/<module_slug>` with strict resolution and `is_relative_to` checks against traversal and symlink escapes. `_assert_remote_module()` checks that the remote Module Def belongs to the app. `_assert_writable_app()` refuses `frappe`/`erpnext` (`_PROTECTED_APPS`). Writes go through `_atomic_write()`. Exports back up overwritten files and write a manifest under `<app>/.mcp-frappe-backups/`, maintain a managed block in `hooks.py` between `_HOOK_BEGIN`/`_HOOK_END`, and rollback refuses to proceed if exported files changed since the export.
 - **Bench reload tolerance**: standard DocType creation and exports can make a developer-mode Bench reload its web worker mid-request. Code such as `_wait_for_doctype`, `_wait_for_server_ready`, and `_wait_for_document_deleted` reconciles the remote state after an `httpx.TransportError` instead of assuming failure. Keep this pattern for new write paths that can trigger a reload.
 
-Unit tests isolate the remote site by monkeypatching `standalone._request`, `standalone._doctype`, etc., and use `tmp_path` with `FRAPPE_APPS_PATH` for filesystem cases. They never need a live site.
+Unit tests isolate the remote site with the `fake_site` fixture in `tests/conftest.py` (or by monkeypatching `standalone._request`, `standalone._doctype`, etc.), and use `tmp_path` with `FRAPPE_APPS_PATH` for filesystem cases. They never need a live site. `tests/test_mcp_contract.py` drives the server through a real in-memory MCP client session.
 
 `legacy/` holds the old implementation that ran as an installed Frappe app. It is not packaged, linted, or tested; don't import from it or assume its tools exist. `UPSTREAM.md` describes that legacy vendored transport.
 
