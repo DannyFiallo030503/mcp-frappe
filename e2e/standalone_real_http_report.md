@@ -1,5 +1,7 @@
 # Standalone Frappe MCP acceptance report
 
+> Historical run: it reflects the server as of 2026-10-16 (14 tools, 8 unit tests at the time) and is kept as a record, not as current evidence.
+
 **Run date:** 2026-10-16
 **Target:** local development Frappe site; URL and login secret intentionally omitted
 **Connection:** official MCP Python client over stdio, then Frappe HTTP API

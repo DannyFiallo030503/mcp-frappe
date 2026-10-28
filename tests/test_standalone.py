@@ -49,16 +49,16 @@ def test_readonly_field_is_rejected_for_write(monkeypatch) -> None:
         standalone._assert_fields("Example", {"status": "Open"}, writing=True)
 
 
-def test_get_document_always_returns_docstatus(monkeypatch) -> None:
-    monkeypatch.setattr(standalone, "_doctype", lambda _: {"fields": [{"fieldname": "title"}]})
-    monkeypatch.setattr(standalone, "_assert_fields", lambda *args, **kwargs: None)
-    monkeypatch.setattr(
-        standalone,
-        "_request",
-        lambda *args, **kwargs: {
+def test_get_document_always_returns_docstatus(fake_site) -> None:
+    fake_site.add_doctype("Example", [{"fieldname": "title"}, {"fieldname": "notes"}])
+    fake_site.add(
+        "GET",
+        "/api/resource/Example/EX-1",
+        {
             "doctype": "Example",
             "name": "EX-1",
             "title": "Submitted",
+            "notes": "not requested",
             "docstatus": 1,
             "modified": "2026-10-19 12:00:00",
         },
@@ -67,6 +67,8 @@ def test_get_document_always_returns_docstatus(monkeypatch) -> None:
     result = standalone.get_document("Example", "EX-1", fields=["title"])
 
     assert result["docstatus"] == 1
+    assert "notes" not in result
+    assert len(fake_site.calls_to("GET", "/api/resource/Example/EX-1")) == 1
 
 
 def test_generated_file_writes_refuse_frappe_core_apps() -> None:
@@ -114,15 +116,13 @@ def test_doctype_creation_does_not_blindly_replay_when_metadata_is_absent(
     assert generated.exists()
 
 
-def test_delete_reconciles_a_worker_reload_after_document_is_gone(monkeypatch) -> None:
-    def request(method, path, **kwargs):
-        if method == "GET" and path.endswith("/Example/EX-1"):
-            return {"name": "EX-1", "modified": "current"}
-        if method == "DELETE":
-            raise standalone.httpx.ConnectError("worker restarted")
-        raise AssertionError(f"Unexpected request: {method} {path}")
-
-    monkeypatch.setattr(standalone, "_request", request)
+def test_delete_reconciles_a_worker_reload_after_document_is_gone(
+    fake_site, monkeypatch
+) -> None:
+    fake_site.add("GET", "/api/resource/Example/EX-1", {"name": "EX-1", "modified": "current"})
+    fake_site.add(
+        "DELETE", "/api/resource/Example/EX-1", standalone.httpx.ConnectError("worker restarted")
+    )
     monkeypatch.setattr(standalone, "_wait_for_document_deleted", lambda *args: True)
 
     result = standalone.delete_document(
@@ -131,6 +131,7 @@ def test_delete_reconciles_a_worker_reload_after_document_is_gone(monkeypatch) -
 
     assert result["deleted"] is True
     assert result["reconciled_after_server_reload"] is True
+    assert len(fake_site.calls_to("DELETE")) == 1
 
 
 def test_app_module_paths_are_confined(tmp_path: Path, monkeypatch) -> None:
@@ -201,7 +202,7 @@ def test_doctype_payload_carries_native_fields_settings_and_permissions() -> Non
     permissions = [{"role": "System Manager", "read": 1, "write": 1, "create": 1}]
 
     payload = standalone._build_doctype_payload(
-        "CubaZone",
+        "Example Module",
         "Example Parent",
         fields,
         is_submittable=True,
@@ -229,12 +230,12 @@ def test_doctype_payload_carries_native_fields_settings_and_permissions() -> Non
 def test_doctype_payload_marks_custom_doctypes_and_rejects_custom_virtual() -> None:
     fields = [{"fieldname": "title", "fieldtype": "Data"}]
 
-    payload = standalone._build_doctype_payload("CubaZone", "Example", fields, is_custom=True)
+    payload = standalone._build_doctype_payload("Example Module", "Example", fields, is_custom=True)
 
     assert payload["custom"] == 1
     with pytest.raises(ValueError, match="custom Virtual"):
         standalone._build_doctype_payload(
-            "CubaZone", "Example", fields, is_custom=True, properties={"is_virtual": 1}
+            "Example Module", "Example", fields, is_custom=True, properties={"is_virtual": 1}
         )
 
 
@@ -317,11 +318,11 @@ def test_doctype_payload_rejects_duplicate_fields_unknown_properties_and_single_
         {"fieldname": "value", "fieldtype": "Int"},
     ]
     with pytest.raises(ValueError, match="unique"):
-        standalone._build_doctype_payload("CubaZone", "Example", duplicate_fields)
+        standalone._build_doctype_payload("Example Module", "Example", duplicate_fields)
 
     with pytest.raises(ValueError, match="Unsupported DocType properties"):
         standalone._build_doctype_payload(
-            "CubaZone",
+            "Example Module",
             "Example",
             [{"fieldname": "value", "fieldtype": "Data"}],
             properties={"custom": 1},
@@ -329,7 +330,7 @@ def test_doctype_payload_rejects_duplicate_fields_unknown_properties_and_single_
 
     with pytest.raises(ValueError, match="both a child table and a Single"):
         standalone._build_doctype_payload(
-            "CubaZone",
+            "Example Module",
             "Example",
             [{"fieldname": "value", "fieldtype": "Data"}],
             is_child_table=True,

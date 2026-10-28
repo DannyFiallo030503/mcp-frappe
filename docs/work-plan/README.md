@@ -53,7 +53,7 @@ If a stage turns out larger than one session, stop at a clean point (tests passi
 
 | # | Stage | Depends on | Status |
 |---|---|---|---|
-| 00 | [Baseline: CI, test harness, cleanup](stage-00-baseline.md) | none | todo |
+| 00 | [Baseline: CI, test harness, cleanup](stage-00-baseline.md) | none | done |
 | 01 | [Authentication and transport fixes](stage-01-auth-transport.md) | 00 | todo |
 | 02 | [Read validation and atomic updates](stage-02-read-validation.md) | 00 | todo |
 | 03 | [Customization tool fixes](stage-03-customization-fixes.md) | 00 | todo |

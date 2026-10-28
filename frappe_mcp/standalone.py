@@ -9,8 +9,8 @@ import json
 import logging
 import os
 import re
-import stat
 import shutil
+import stat
 import tempfile
 import time
 import uuid
@@ -467,9 +467,13 @@ def _remove_partial_doctype_tree(doctype_path: Path, generated_files: list[Path]
         for path in doctype_path.rglob("*"):
             if path.is_dir():
                 if path.name != "__pycache__":
-                    raise RuntimeError("Refusing to remove unexpected files from the DocType directory")
+                    raise RuntimeError(
+                        "Refusing to remove unexpected files from the DocType directory"
+                    )
                 continue
-            if path.name in expected or (path.parent.name == "__pycache__" and path.suffix == ".pyc"):
+            if path.name in expected or (
+                path.parent.name == "__pycache__" and path.suffix == ".pyc"
+            ):
                 continue
             raise RuntimeError("Refusing to remove unexpected files from the DocType directory")
         shutil.rmtree(doctype_path)
@@ -478,7 +482,9 @@ def _remove_partial_doctype_tree(doctype_path: Path, generated_files: list[Path]
 def _app_publisher(app_path: Path) -> str:
     hooks = app_path / app_path.name / "hooks.py"
     if not hooks.is_file():
-        raise ValueError("Target app hooks.py is missing; cannot prepare native DocType scaffolding")
+        raise ValueError(
+            "Target app hooks.py is missing; cannot prepare native DocType scaffolding"
+        )
     tree = ast.parse(hooks.read_text(encoding="utf-8"), filename=str(hooks))
     for node in tree.body:
         if isinstance(node, ast.Assign) and any(
@@ -489,7 +495,9 @@ def _app_publisher(app_path: Path) -> str:
                 return value
             if isinstance(value, (list, tuple)) and value and isinstance(value[0], str):
                 return value[0]
-    raise ValueError("Target app hooks.py must define a literal app_publisher for native scaffolding")
+    raise ValueError(
+        "Target app hooks.py must define a literal app_publisher for native scaffolding"
+    )
 
 
 def _prepare_native_doctype_scaffolding(
@@ -509,7 +517,8 @@ def _prepare_native_doctype_scaffolding(
         required.extend([templates / "test_controller._py", templates / "controller.js"])
     if any(not path.is_file() for path in required):
         raise ValueError(
-            "FRAPPE_APPS_PATH must include the installed Frappe source to generate native DocType files"
+            "FRAPPE_APPS_PATH must include the installed Frappe source "
+            "to generate native DocType files"
         )
 
     for directory in (module_path, module_path / "doctype", doctype_path):
