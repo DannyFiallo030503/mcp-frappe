@@ -25,9 +25,12 @@ The executable is `mcp-frappe`; alternatively run `uv run python -m frappe_mcp.s
 | `FRAPPE_USERNAME` | Password auth | Login username; defaults to `Administrator` |
 | `FRAPPE_PASSWORD` | Password auth | Password; never stored in this repository |
 | `FRAPPE_APPS_PATH` | DocType creation and export | Local Bench `apps/` directory visible to the MCP process |
-| `FRAPPE_TIMEOUT` | No | HTTP timeout in seconds; defaults to `30` |
+| `FRAPPE_TIMEOUT` | No | HTTP timeout in seconds; a positive number, defaults to `30`. The server refuses to start with any other value |
+| `FRAPPE_ALLOW_INSECURE_HTTP` | No | Set to `YES` to allow plain HTTP to non-local hosts on a trusted development network; logs a warning at startup |
 
-Use either both API token variables or a username/password. Token auth is preferred for remote sites. Password login uses Frappe's `/api/method/login` and is restricted to HTTPS except for loopback and `.localhost` URLs. Every request runs as the configured Frappe user. This setup uses `Administrator`; Frappe grants that user all DocType permissions independently of Developer Mode. An Administrator password is highly privileged; use it only in a trusted development environment, and supply it through the MCP host's secret store/environment.
+Use either both API token variables or a username/password. Token auth is preferred for remote sites. Password login uses Frappe's `/api/method/login`.
+
+Both auth modes require HTTPS unless `FRAPPE_URL` points at a loopback host (`localhost`, `127.0.0.1`, `::1`) or a `.localhost` name. If the site is only reachable over plain HTTP by another name, for example a Docker service such as `http://frontend:8080`, set `FRAPPE_ALLOW_INSECURE_HTTP=YES`; do this only on a development network you trust. With password auth, a failed login is not cached, and an expired session is renewed automatically: the server logs in again and retries the rejected request once. A real permission denial is never retried. See [security.md](security.md#sessions). Every request runs as the configured Frappe user. This setup uses `Administrator`; Frappe grants that user all DocType permissions independently of Developer Mode. An Administrator password is highly privileged; use it only in a trusted development environment, and supply it through the MCP host's secret store/environment.
 
 ## MCP host configuration
 

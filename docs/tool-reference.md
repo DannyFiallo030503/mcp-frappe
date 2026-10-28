@@ -1,6 +1,6 @@
 # Tool reference
 
-All tools execute in the standalone MCP process and use the configured Frappe HTTP session. Native Frappe permissions apply to every remote call. List tools cap result sizes; mutation tools preview before acting unless noted.
+All tools execute in the standalone MCP process and use the configured Frappe HTTP session. Native Frappe permissions apply to every remote call. With password auth, an expired session is renewed and the rejected call retried once without any action from the caller; a real permission denial is returned unchanged. List tools cap result sizes; mutation tools preview before acting unless noted.
 
 ## Discovery and records
 

@@ -22,7 +22,7 @@ The MCP server runs as an independent Python process launched by the MCP host. I
 
 ## Authentication and permissions
 
-The process supports Frappe API token authentication or the standard login endpoint. HTTP password login is accepted only for loopback or `.localhost`; other hosts require HTTPS. Credentials are read at process start and are never stored in the repository. Every API operation is made as that Frappe user, so native permissions and validation remain authoritative.
+The process supports Frappe API token authentication or the standard login endpoint. Both auth modes require HTTPS for hosts other than loopback or `.localhost`, unless `FRAPPE_ALLOW_INSECURE_HTTP=YES` is set for a trusted development network. A password session is created only after a successful login; when it expires, `_request()` confirms the expiry with `frappe.auth.get_logged_user`, logs in again, and retries the request once. Credentials are read at process start and are never stored in the repository. Every API operation is made as that Frappe user, so native permissions and validation remain authoritative.
 
 ## Customization and exports
 
