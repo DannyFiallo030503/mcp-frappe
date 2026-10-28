@@ -79,6 +79,7 @@ All conditions are combined with AND. In the four-element form, `doctype` must b
 | `create_doctype` | Create a standard app DocType or a site-custom DocType through Frappe's native controller | `fields`, `is_submittable`, `is_child_table`, `is_single`, `is_tree`, `is_custom`, `properties`, and `permissions`; preview, inspect, then confirm |
 | `update_doctype` | Change an existing DocType of your own app, or a site-custom DocType: add, change, remove, and move fields, and set DocType settings | `doctype`, `operations`; preview, then confirm with the same operations and `expected_modified` |
 | `delete_doctype` | Delete a DocType created by mistake during development | Preview, then confirm with `expected_modified` |
+| `promote_custom_doctype` | Turn a site-custom DocType into a standard DocType of an app module, so Frappe writes its files into the app | `doctype`, `app`, `module`; preview, then confirm with `expected_modified` |
 | `set_role_permissions` | Add or update role permissions through Frappe's native Permission Manager | `doctype`, `role`, `permissions`, `permlevel`; preview, then confirm |
 | `create_custom_field` | Add a Custom Field | `doctype`, `field`, optional `app`/`module`; preview, then confirm |
 | `set_field_property` | Create or update the Property Setter for an allowlisted form property | `doctype`, `property`, `value`, optional `fieldname`/`property_type`/`app`/`module`; preview, then confirm (with `expected_modified` when the setter exists) |
@@ -157,6 +158,35 @@ Confirmation re-reads the DocType, refuses if `modified` moved, and sends `modif
 
 `set_role_permissions` uses Frappe's System Manager-only Permission Manager methods. The connected account must have the System Manager role, and the target DocType and role must already exist. The tool does not create roles or assign roles to users.
 
+## Site and app sync
+
+A developer has two copies of a schema: the site's database and the app's files. These tools compare them. They never write anything, and they read local files only below `FRAPPE_APPS_PATH`, with the same path checks as the export tools (traversal and escaping symlinks are refused).
+
+| Tool | Purpose | Arguments |
+|---|---|---|
+| `diff_doctype` | Compare one DocType with `<app>/<app>/<module>/doctype/<doctype>/<doctype>.json`, and its Custom Fields and Property Setters with the app's `<module>/custom/<doctype>.json` files | `doctype`, optional `app` (default: the app that owns the DocType's module) |
+| `list_app_drift` | One verdict per DocType for every DocType folder of the app and every site DocType in the app's modules | `app`, optional `module`, `limit` (1-200, default 50), `offset` |
+
+Verdicts:
+
+| Verdict | Meaning | What to do |
+|---|---|---|
+| `in_sync` | The site and the file hold the same DocType | Nothing |
+| `site_ahead` | They differ and the site was saved after the file's `modified` | Export the site's version: save the DocType once with developer mode on (`update_doctype` or Desk), and Frappe rewrites the file |
+| `app_ahead` | They differ and the file is newer (or was edited by hand since the last migrate) | `bench migrate` |
+| `diverged` | Both changed since the last migrate, or the timestamps can't tell | Reconcile by hand; `bench migrate` would replace the site's changes |
+| `missing_in_app` | The site has a standard DocType (or customizations) the app has no file for | Export it, or delete it if it was a mistake |
+| `missing_on_site` | The app has a DocType folder the site lacks (`list_app_drift` only) | `bench migrate` |
+| `site_custom` | A site-custom DocType (`custom=1`), which has no app files by design | `promote_custom_doctype` if it should ship with the app |
+
+How the verdict is decided: both sides are normalized first. System keys (`name`, `owner`, `creation`, `modified`, `modified_by`, `docstatus`, `idx`, `migration_hash`, child-row `parent`/`parenttype`/`parentfield`), `_` columns, and blank values (`null`, `""`, `0`, `[]`) are dropped, because Frappe's export drops them. Field order comes from the file's `field_order`, and a moved field is still reported. If anything else differs, `modified` decides which side is newer. `bench migrate` re-imports a DocType's JSON whenever the file's MD5 differs from the site's `DocType.migration_hash` (or none is stored), whatever the timestamps say, so a site that is newer while the file has also changed since the last migrate is `diverged`. `doctype_file.migrate_imports_file` says whether migrate would re-import the file; when it would and the site is ahead, the result warns that migrate will replace the site's changes.
+
+`diff_doctype` returns `verdict`, a one-line `summary`, and `doctype_file` with `path`, `site_modified`, `app_modified`, `newer`, `migrate_imports_file`, and `changes`. `changes` has the shape of `update_doctype`'s preview, read from the site (`from`) to the app file (`to`), which is the change `bench migrate` would make: `added` (fields only in the file, with `insert_after`), `removed` (only on the site), `moved`, `changed`, `properties`, and `tables` (other child tables such as `permissions`, as `only_on_site` / `only_in_app` rows). `customizations` has one entry per custom file found, with `only_on_site`, `only_in_app`, and `changed` for `custom_fields` (keyed by fieldname) and `property_setters` (keyed by `field:property`), and a verdict. Site rows whose `module` belongs to another app are left out unless the file holds them. With no file, site customizations of this app (or with no module) are reported as `missing_in_app`. Lists, objects, and long strings are capped; `truncated` says so.
+
+`list_app_drift` reads the site's DocType list once. A DocType whose file MD5 matches its `migration_hash` and whose `modified` matches the file is `in_sync` without another request; every other pair costs one DocType read. It returns `items` (`doctype`, `module`, `verdict`), `counts` for the page, `total`, `next_offset`, and `modules_missing_locally`.
+
+`promote_custom_doctype` ships a DocType prototyped on the site with an app. It saves the DocType with `custom: 0` and the target `module`; in developer mode Frappe's `on_update` then writes the DocType JSON and controller boilerplate into `<app>/<app>/<module>/doctype/<doctype>/`. It refuses `frappe` and `erpnext`, a module that belongs to another app or is a custom module (Frappe exports those into the site folder), a DocType that is already standard, one with a `default_print_format` (Frappe refuses that on a standard DocType), and an existing target folder. The preview lists the files Frappe will create and warns about Link and Table fields that point to other site-custom DocTypes, and about Custom Fields and Property Setters that stay site customizations (export them with `export_customizations`). Confirmation, like standard `create_doctype`, first writes Frappe's own controller templates (so `FRAPPE_APPS_PATH` must include the Frappe source and the app's `hooks.py` must define `app_publisher`), waits for the Bench to settle, then sends the save with `modified`. If the Bench reloads mid-save, the tool re-reads the DocType and reports `reconciled_after_server_reload: true` only when it is no longer custom; if the DocType is still custom, the staged files are removed. The result has `file_status` and `native_files_complete`.
+
 ## File export details
 
 `FRAPPE_APPS_PATH` must point to a local Bench `apps/` directory. The requested app and module must exist below it, and the corresponding remote Module Def must name that app as owner. Path traversal and escaping symlinks are rejected. Source export refuses the protected `frappe` and `erpnext` apps. The export preview reports destination paths, bounded diffs, and content hashes. Existing files are backed up under the selected app's `.mcp-frappe-backups/` directory; inspect and commit the resulting files with Git. A successful rollback consumes its manifest and backup files.
@@ -169,7 +199,7 @@ Confirmation re-reads the DocType, refuses if `modified` moved, and sends `modif
 
 The export may target any DocType, including one owned by another app such as `Customer`; `module` only chooses where the file goes. Client Scripts for the exported DocTypes whose `module` is the selected module go to the app-level `<app>/<app>/fixtures/client_script.json`, in the row format of `bench export-fixtures`. Rows already in that file for other DocTypes or modules are kept. Only then does the exporter add or update a clearly marked block in the app's `hooks.py` that registers a `Client Script` fixture filter; text outside the block is preserved, and fixture entries for other DocTypes left there by older exports are dropped from it. Without Client Scripts, `hooks.py` is not touched.
 
-DocType JSON is never written: in developer mode Frappe writes standard DocType files itself, and `create_doctype` relies on that.
+DocType JSON is never written: in developer mode Frappe writes standard DocType files itself, and `create_doctype` and `promote_custom_doctype` rely on that. Folder names follow Frappe's `scrub` (lower case, each space and hyphen replaced by `_`).
 
 The exporter creates local backups and a rollback manifest, and `rollback_export` refuses if an exported file changed after export. Rollback restores overwritten files, deletes created files, and removes the directories the export created once they are empty. Manifests from older exports, which wrote to `<module>/fixtures/`, still roll back. The MCP does not deploy files, run migrations, or roll back remote database changes.
 

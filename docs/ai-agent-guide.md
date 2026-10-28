@@ -72,6 +72,28 @@ Things to tell the user before confirming:
 
 `delete_doctype` is only for a DocType created by mistake. It refuses a DocType that other DocTypes link to and lists them. Its preview says what Frappe removes (in Developer Mode, the whole folder with controller code) and what stays (the database table and its records). Ask the user before confirming.
 
+## Keep the site and the app in sync
+
+### What changed between my site and my app
+
+1. Start broad: `list_app_drift(app="my_app")`. Each item has a verdict; page with `offset=next_offset` when `next_offset` is set.
+2. For each DocType that isn't `in_sync`, call `diff_doctype(doctype=...)` and read `summary`, `doctype_file.changes`, and `warnings`. `changes` reads from the site (`from`) to the app file (`to`): `added` fields exist only in the file, `removed` only on the site.
+3. Tell the user what to do for each verdict:
+   - `app_ahead` or `missing_on_site`: run `bench migrate`.
+   - `site_ahead`: the site has the newer DocType. With developer mode on, save it once (any `update_doctype` change, or Desk) so Frappe rewrites the file, then commit it. If the result warns that migrate would re-import the file, do this before anyone migrates.
+   - `diverged`: both sides changed. Show the user the changes and let them decide; don't migrate or export until they have.
+   - `missing_in_app` on customizations: export them with `export_customizations`.
+   - `site_custom`: see the next recipe.
+4. Never run Bench commands yourself; the MCP doesn't, and the user's site may hold work that `bench migrate` would replace.
+
+### Ship a prototype DocType with my app
+
+1. Check the DocType is site-custom: `diff_doctype(doctype="Lab Sample")` says `site_custom`.
+2. Pick the app and a module of it (`list_installed_apps`). The module folder must exist under `FRAPPE_APPS_PATH`.
+3. Preview: `promote_custom_doctype(doctype="Lab Sample", app="my_app", module="My Module")`. Read `files` and every `warnings` entry to the user: other site-custom DocTypes it links to (promote those first, or the app ships a broken Link), and Custom Fields or Property Setters that stay customizations.
+4. Confirm with `confirm=True` and `expected_modified` set to the preview's `modified`. The site needs developer mode.
+5. Check `native_files_complete`, then run `diff_doctype` again: it should say `in_sync`. Show the user the new folder in the Git diff.
+
 ## Customize a site
 
 1. Discover the owning app and module on the remote site.
@@ -94,4 +116,4 @@ Things to tell the user before confirming:
 - Pass `with_permissions=True` only when the user wants Custom DocPerms in the app; on migrate they replace the site's Custom DocPerms for that DocType.
 - Pass `apply_module_filter=True` to export only the Custom Fields and Property Setters created with that `module`. Set `module` when you create them if you plan to use this.
 - Client Scripts with a matching `module` go to `my_app/my_app/fixtures/client_script.json`, and only then is `hooks.py` changed.
-- The exporter never writes DocType JSON; Frappe writes standard DocType files itself in developer mode. It doesn't export site-custom DocTypes, arbitrary Frappe state, or app code.
+- The exporter never writes DocType JSON; Frappe writes standard DocType files itself in developer mode. It doesn't export site-custom DocTypes (use `promote_custom_doctype`), arbitrary Frappe state, or app code.

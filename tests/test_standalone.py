@@ -20,6 +20,9 @@ def test_server_registers_expected_tools() -> None:
         "create_doctype",
         "update_doctype",
         "delete_doctype",
+        "diff_doctype",
+        "list_app_drift",
+        "promote_custom_doctype",
         "set_role_permissions",
         "create_custom_field",
         "set_field_property",
@@ -140,9 +143,10 @@ def test_symlink_escape_is_rejected(tmp_path: Path, monkeypatch) -> None:
         standalone._app_path("example_app", "module")
 
 
-def test_doctype_slugs_are_filesystem_safe() -> None:
-    assert standalone._slug("Purchase Order / Item") == "purchase_order_item"
-    assert standalone._slug("áé漢字") == "áé漢字"
+def test_doctype_folders_use_frappe_scrub() -> None:
+    assert standalone._scrub("Purchase Order Item") == "purchase_order_item"
+    assert standalone._scrub("Lab-Sample") == "lab_sample"
+    assert standalone._scrub("áé漢字") == "áé漢字"
 
 
 def test_fixture_plan_preserves_existing_hooks(tmp_path: Path) -> None:
