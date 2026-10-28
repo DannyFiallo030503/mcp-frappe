@@ -18,6 +18,8 @@ def test_server_registers_expected_tools() -> None:
         "delete_document",
         "run_report",
         "create_doctype",
+        "update_doctype",
+        "delete_doctype",
         "set_role_permissions",
         "create_custom_field",
         "set_field_property",

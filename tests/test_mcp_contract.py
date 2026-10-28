@@ -62,3 +62,32 @@ def test_schema_tool_exposes_the_detail_choice() -> None:
 
     assert detail["enum"] == ["compact", "full"]
     assert detail["default"] == "compact"
+
+
+def test_update_doctype_takes_an_operation_list_through_an_mcp_session(fake_site) -> None:
+    record = {
+        "name": "Lab Sample",
+        "module": "Lab",
+        "custom": 1,
+        "modified": "2026-10-20 09:00:00.000001",
+        "fields": [{"name": "df-title", "fieldname": "title", "fieldtype": "Data", "idx": 1}],
+    }
+    fake_site.add("GET", "/api/resource/DocType/Lab%20Sample", record)
+    fake_site.add("GET", "/api/resource/Module%20Def", [{"name": "Lab", "app_name": "lab_app"}])
+    fake_site.add_doctype("Lab Sample", record["fields"])
+    operations = [{"op": "update_field", "fieldname": "title", "set": {"reqd": True}}]
+    fake_site.add("GET", "/api/method/frappe.client.get_count", 0)
+
+    async def call_tool():
+        async with create_connected_server_and_client_session(
+            standalone.server._mcp_server
+        ) as client:
+            return await client.call_tool(
+                "update_doctype", {"doctype": "Lab Sample", "operations": operations}
+            )
+
+    result = anyio.run(call_tool)
+
+    assert not result.isError
+    preview = json.loads(result.content[0].text)
+    assert preview["changes"]["changed"] == {"title": {"reqd": {"from": None, "to": 1}}}

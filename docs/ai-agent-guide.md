@@ -46,6 +46,32 @@ Filters may use the standard columns (`docstatus`, `creation`, `modified`, `owne
 
 Use the same preview-first pattern for creation/deletion. Do not pass `name`, `docstatus`, `owner`, or other standard columns as values; they are rejected. The exception is `name` on `create_document` for a DocType whose `autoname` is `Prompt`. Do not create records in a live system without explicit user authorization.
 
+## Change a DocType
+
+Pick the tool by who owns the DocType. Read its `module` from `get_doctype_schema`, and its app from `list_installed_apps`:
+
+- **Your own app's DocType, or a site-custom DocType** (`custom` is set): change it directly with `update_doctype`. A standard DocType needs Developer Mode on the site, and Frappe then rewrites the DocType JSON in the app; commit that file with the app.
+- **A Frappe or ERPNext DocType** (`Customer`, `User`, `Sales Invoice`, ...): `update_doctype` refuses it. Add fields with `create_custom_field` and change properties with `set_field_property` (see below), then export them with `export_customizations`.
+
+### Add a field to my DocType
+
+1. Read the schema: `get_doctype_schema(doctype="Lab Sample")`. Pick where the field goes (`insert_after`) and check its fieldname is free.
+2. Preview: `update_doctype(doctype="Lab Sample", operations=[{"op": "add_field", "insert_after": "title", "field": {"fieldname": "customer", "fieldtype": "Link", "options": "Customer", "label": "Customer"}}])`.
+3. Check `changes` lists only what you meant, and read every `warnings` entry to the user.
+4. Confirm: the same call with the same `operations`, `confirm=True`, and `expected_modified` set to the preview's `modified`.
+5. Read the schema again to verify. For a standard DocType, the app's `<doctype>.json` now has the field; show the user the Git diff.
+
+Put several changes in one `operations` list rather than calling the tool once per change: each confirmation is one save, and a standard DocType save can make the Bench reload. Other operations: `update_field` (`set` the properties to change), `remove_field`, `move_field` (`insert_after: null` moves to the top), and `set_properties` for DocType settings such as `track_changes` or `title_field`.
+
+Things to tell the user before confirming:
+
+- Removing a field hides its data but doesn't delete it; the column stays until `bench trim-tables`. The preview says how many records have a value.
+- A fieldtype change that could lose data is refused. Suggest a new field instead, or clearing the old values first.
+- Making a field mandatory when records leave it empty means those records fail to save until filled; the preview counts them.
+- Renaming a field is not supported. Don't simulate it with remove plus add: the data stays under the old column.
+
+`delete_doctype` is only for a DocType created by mistake. It refuses a DocType that other DocTypes link to and lists them. Its preview says what Frappe removes (in Developer Mode, the whole folder with controller code) and what stays (the database table and its records). Ask the user before confirming.
+
 ## Customize a site
 
 1. Discover the owning app and module on the remote site.

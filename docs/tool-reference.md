@@ -19,7 +19,7 @@ The generic resource API is the common access path for standard and custom app D
 
 The record tools (`list_documents`, `get_document`, `create_document`, `update_document`) and `get_doctype_schema` read DocType metadata from Frappe's form loader, `frappe.desk.form.load.getdoctype`. It returns `frappe.get_meta` for the DocType and its child tables, with Custom Fields, Property Setters, and Frappe's own field order already applied, to any logged-in user. The record tools never read the `DocType`, `Custom Field`, or `Property Setter` resources, which only System Manager can list. So they work for any user who has permission on the DocType; Frappe still checks that permission on every record read and write.
 
-Metadata is cached in the MCP process for `FRAPPE_META_TTL` seconds (default 300; `0` turns the cache off). `create_doctype`, `create_custom_field`, `set_field_property`, and `set_role_permissions` drop the affected DocType, and any DocType that uses it as a child table, from the cache. Creating, updating, or deleting a `DocType`, `DocField`, `DocPerm`, `Custom Field`, `Property Setter`, or `Custom DocPerm` record through the record tools clears the whole cache. A change made outside the MCP (in Desk, say) shows up once its cache entry expires.
+Metadata is cached in the MCP process for `FRAPPE_META_TTL` seconds (default 300; `0` turns the cache off). `create_doctype`, `update_doctype`, `delete_doctype`, `create_custom_field`, `set_field_property`, and `set_role_permissions` drop the affected DocType, and any DocType that uses it as a child table, from the cache. Creating, updating, or deleting a `DocType`, `DocField`, `DocPerm`, `Custom Field`, `Property Setter`, or `Custom DocPerm` record through the record tools clears the whole cache. A change made outside the MCP (in Desk, say) shows up once its cache entry expires.
 
 ### Schema detail
 
@@ -77,6 +77,8 @@ All conditions are combined with AND. In the four-element form, `doctype` must b
 | `update_document` | Update a record using the native resource API | Confirm with `expected_modified` from the preview |
 | `delete_document` | Delete a record | Confirm with `expected_modified` from the preview |
 | `create_doctype` | Create a standard app DocType or a site-custom DocType through Frappe's native controller | `fields`, `is_submittable`, `is_child_table`, `is_single`, `is_tree`, `is_custom`, `properties`, and `permissions`; preview, inspect, then confirm |
+| `update_doctype` | Change an existing DocType of your own app, or a site-custom DocType: add, change, remove, and move fields, and set DocType settings | `doctype`, `operations`; preview, then confirm with the same operations and `expected_modified` |
+| `delete_doctype` | Delete a DocType created by mistake during development | Preview, then confirm with `expected_modified` |
 | `set_role_permissions` | Add or update role permissions through Frappe's native Permission Manager | `doctype`, `role`, `permissions`, `permlevel`; preview, then confirm |
 | `create_custom_field` | Add a Custom Field | `doctype`, `field`, optional `app`/`module`; preview, then confirm |
 | `set_field_property` | Create or update the Property Setter for an allowlisted form property | `doctype`, `property`, `value`, optional `fieldname`/`property_type`/`app`/`module`; preview, then confirm (with `expected_modified` when the setter exists) |
@@ -94,6 +96,47 @@ Frappe still decides whether the user may perform the operation. A preview is no
 By default, `is_custom: false` creates a standard DocType. It requires Developer Mode, and the app/module must exist on the site and under `FRAPPE_APPS_PATH`. Frappe writes the standard JSON and controller scaffolding; it also creates JavaScript/test scaffolds for non-child DocTypes. The MCP stages Frappe's own templates before the metadata request and reconciles a development-server restart against the site's DocType record. It refuses source writes to the protected `frappe` and `erpnext` apps.
 
 Set `is_custom: true` to create a site-custom DocType. Frappe stores that definition in site metadata and does not generate app JSON/Python/JavaScript files; this path still requires an existing remote Module Def belonging to `app`, but does not require a local checkout, `FRAPPE_APPS_PATH`, or Developer Mode. Frappe rejects custom Virtual DocTypes. The live v15 matrix verified site-custom metadata and record CRUD; see the [manual report](../e2e/manual_functional_report.md).
+
+### Editing DocTypes
+
+`update_doctype` changes a DocType of your own app (a standard DocType, which needs Developer Mode) or a site-custom DocType (`custom = 1`). It refuses standard DocTypes of `frappe` and `erpnext`; customize those with `create_custom_field` and `set_field_property`. The tool reads the DocType record, applies `operations` in order to a copy, and saves the whole field list in one request. Fields that are not touched keep their row `name`, so Frappe updates them in place instead of recreating them.
+
+| Operation | Shape | Notes |
+|---|---|---|
+| `add_field` | `{"op": "add_field", "field": {...}, "insert_after": "fieldname"}` | `field` needs `fieldname` (lowercase letters, digits, `_`, starting with a letter) and `fieldtype`. Without `insert_after` the field goes last; `null` puts it first. The fieldname may not exist on the DocType, Custom Fields included. |
+| `update_field` | `{"op": "update_field", "fieldname": "...", "set": {...}}` | `fieldname` can't be changed (renames are not supported). |
+| `remove_field` | `{"op": "remove_field", "fieldname": "..."}` | See the data note below. |
+| `move_field` | `{"op": "move_field", "fieldname": "...", "insert_after": "fieldname"}` | `insert_after: null` moves the field to the top. |
+| `set_properties` | `{"op": "set_properties", "set": {...}}` | DocType settings from the same allowlist as `create_doctype`'s `properties`, except the tables `actions`, `links`, and `states`. |
+
+```json
+{
+  "doctype": "Lab Sample",
+  "operations": [
+    {"op": "add_field", "insert_after": "title",
+     "field": {"fieldname": "customer", "fieldtype": "Link", "options": "Customer",
+               "label": "Customer", "reqd": 1}},
+    {"op": "update_field", "fieldname": "status", "set": {"in_list_view": 1}},
+    {"op": "move_field", "fieldname": "notes", "insert_after": "customer"},
+    {"op": "set_properties", "set": {"track_changes": 1}}
+  ]
+}
+```
+
+Field values may be DocField properties such as `label`, `fieldtype`, `options`, `reqd`, `hidden`, `read_only`, `default`, `description`, `in_list_view`, `in_standard_filter`, `unique`, `fetch_from`, `precision`, `length`, `permlevel`, and the other DocField settings; values are strings, numbers, booleans (stored as `0`/`1`), or `null`. `depends_on`, `mandatory_depends_on`, and `read_only_depends_on` are accepted, as in `set_field_property`. `collapsible_depends_on`, `ignore_xss_filter`, and `options` on HTML and Button fields are refused, because Frappe evaluates or renders them as code. Every fieldtype needs to be one Frappe knows; Link, Select, Table, and Table MultiSelect need `options`; Link and Table targets must exist, and a Table or Table MultiSelect target must be a child table DocType.
+
+The preview returns:
+
+- `changes`: `added` (with `insert_after`), `removed`, `moved`, `changed` (per field, `{property: {"from": old, "to": new}}`), and `properties` (DocType settings, in the same form);
+- `warnings`: removed fields and how many records have a value in them, fieldtype changes, `reqd` added to a field that records leave empty (with the count), and `unique` added;
+- `modified`, which confirmation must send back as `expected_modified`;
+- for standard DocTypes, `app_files` (the DocType JSON Frappe rewrites, resolved under `FRAPPE_APPS_PATH` when that is set) and `requires_developer_mode`.
+
+Removing a field doesn't delete data: Frappe keeps the database column and its values until `bench trim-tables`, but forms, reports, and the API stop showing them. A fieldtype change between related types (the groups Customize Form allows, such as Data/Small Text/Text or Currency/Float/Percent) only warns. Any other change of a field that holds data is refused; clear the values or add a new field. Counts come from `frappe.client.get_count` and follow the user's permissions; Single and Virtual DocTypes have no counts.
+
+Confirmation re-reads the DocType, refuses if `modified` moved, and sends `modified` in the save so Frappe checks it again under a row lock. If a developer-mode Bench reloads during the save, the tool waits for the site, re-reads the DocType, and reports `reconciled_after_server_reload: true` only when the saved DocType holds the change; it never sends the change twice. The DocType's metadata, and that of any child table whose Table field changed, is dropped from the cache.
+
+`delete_doctype` deletes a DocType created by mistake. It refuses `frappe` and `erpnext` DocTypes and any DocType that another DocType uses through a Link, Table, or Table MultiSelect field, Custom Fields included (the error lists them). The preview gives the record count and says what Frappe removes (the DocType record with its fields and permissions, Table-type Custom Fields that point to it, its global search entries, and for a standard DocType in Developer Mode its whole folder in the app, controller code included) and what it keeps (the `tab<DocType>` database table with its records, and the Custom Fields and Property Setters defined on the DocType, counted in `customizations_left`). Only Administrator can delete a standard DocType. Confirm with `expected_modified`.
 
 `create_custom_field` and `set_field_property` are database-backed site customizations. They need no local app checkout, `FRAPPE_APPS_PATH`, or Developer Mode. `app` and `module` are optional: `module` only tags the record for a later export. When `module` is given, its Module Def must exist on the site; when `app` is given too, the module must belong to it. `app` alone is rejected.
 
