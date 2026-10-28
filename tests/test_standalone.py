@@ -26,29 +26,6 @@ def test_server_registers_expected_tools() -> None:
     }
 
 
-def test_read_validation_allows_name_but_write_validation_rejects_it(monkeypatch) -> None:
-    monkeypatch.setattr(standalone, "_doctype", lambda _: {"fields": [{"fieldname": "title"}]})
-
-    standalone._assert_fields("Example", {"name": None, "title": None})
-    with pytest.raises(ValueError, match="name"):
-        standalone._assert_fields("Example", {"name": "x"}, writing=True)
-
-
-def test_readonly_field_is_rejected_for_write(monkeypatch) -> None:
-    monkeypatch.setattr(
-        standalone,
-        "_doctype",
-        lambda _: {
-            "fields": [
-                {"fieldname": "status", "read_only": 1},
-            ]
-        },
-    )
-
-    with pytest.raises(ValueError, match="Read-only"):
-        standalone._assert_fields("Example", {"status": "Open"}, writing=True)
-
-
 def test_get_document_always_returns_docstatus(fake_site) -> None:
     fake_site.add_doctype("Example", [{"fieldname": "title"}, {"fieldname": "notes"}])
     fake_site.add(

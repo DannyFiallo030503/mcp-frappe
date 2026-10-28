@@ -9,11 +9,44 @@ All tools execute in the standalone MCP process and use the configured Frappe HT
 | `list_installed_apps` | Group Module Def records by owning app | none |
 | `list_doctypes` | List site DocTypes | `app`, `module`, `include_child_tables`, `limit` (max 1000) |
 | `get_doctype_schema` | Read one DocType definition merged with Custom Fields and Property Setters | `doctype` |
-| `list_documents` | List records through Frappe REST | `doctype`, `filters`, `fields`, `limit` (max 100) |
-| `get_document` | Read a record through Frappe REST, including system `docstatus` when present | `doctype`, `name` |
+| `list_documents` | List records through Frappe REST | `doctype`, `filters` (object or list), `fields` (max 40), `limit` (max 100) |
+| `get_document` | Read a record through Frappe REST; always returns `name`, `modified`, and `docstatus` | `doctype`, `name`, `fields`, `child_row_limit` (max 200) |
 | `run_report` | Run a report through Frappe's Query Report endpoint | `report_name`, `filters`, `limit` (max 500) |
 
-The generic resource API is the common access path for standard and custom app DocTypes. A custom DocType or field that the connected user cannot read remains inaccessible. Filter expressions are passed to Frappe's REST resource endpoint and must be appropriate for that endpoint.
+The generic resource API is the common access path for standard and custom app DocTypes. A custom DocType or field that the connected user cannot read remains inaccessible.
+
+### Readable fields
+
+`fields` and filters accept the DocType's fields (including Custom Fields) plus these standard columns: `name`, `owner`, `creation`, `modified`, `modified_by`, `docstatus`, and `idx`. Filters on a child table may also use `parent`, `parenttype`, and `parentfield`. Any other name is rejected before the request is sent.
+
+```json
+{"doctype": "Sales Invoice", "fields": ["name", "modified", "docstatus"], "filters": {"docstatus": 1}}
+```
+
+### Filter shapes
+
+`list_documents` accepts the filter shapes Frappe's REST API accepts:
+
+| Shape | Example |
+|---|---|
+| Object, equality | `{"status": "Open"}` |
+| Object, operator | `{"grand_total": [">", 100]}` |
+| List of `[field, operator, value]` | `[["status", "=", "Open"], ["creation", ">=", "2026-10-01"]]` |
+| List of `[doctype, field, operator, value]` | `[["Sales Invoice Item", "item_code", "=", "ITEM-001"]]` |
+
+All conditions are combined with AND. In the four-element form, `doctype` must be the listed DocType itself or the `options` of one of its `Table` or `Table MultiSelect` fields, and the field must exist on that DocType; the filter then matches parents with at least one such child row.
+
+### Filter operators
+
+`=`, `!=`, `<`, `>`, `<=`, `>=`, `like`, `not like`, `in`, `not in`, `between`, `is`, `timespan`. Operators are matched case-insensitively; anything else is rejected with the allowed list.
+
+| Operator | Example |
+|---|---|
+| `like` / `not like` | `["title", "like", "%invoice%"]` |
+| `in` / `not in` | `["status", "in", ["Open", "Overdue"]]` |
+| `between` | `["posting_date", "between", ["2026-10-01", "2026-10-31"]]` |
+| `is` | `["due_date", "is", "set"]` (or `"not set"`) |
+| `timespan` | `["creation", "timespan", "this week"]` (also `today`, `last month`, `this year`, ...) |
 
 ## Mutations
 
@@ -30,6 +63,10 @@ The generic resource API is the common access path for standard and custom app D
 | `rollback_export` | Restore or remove files from one prior export | Preview, then confirm with the current rollback `preview_id` |
 
 Frappe still decides whether the user may perform the operation. A preview is not a substitute for checking permissions, and a confirmed mutation may trigger native hooks or side effects.
+
+`create_document` and `update_document` accept only the DocType's own fields: standard columns (`name`, `owner`, `docstatus`, `modified`, child-table `parent` columns, ...) and read-only fields are rejected. The one exception is `name` on `create_document` when the DocType's `autoname` is `Prompt` (naming rule "Set by user"); it is sent to Frappe as `__newname`, the way Desk does.
+
+`update_document` checks `expected_modified` before writing and also sends it in the update, so Frappe compares it with the stored value under a row lock. If the document changed in between, the update fails with "Document changed since preview"; request a fresh preview.
 
 `create_doctype` accepts native DocField objects in `fields`, so Frappe's DocType controller validates field types and properties. DocType-level values such as `autoname`, `track_changes`, `title_field`, `search_fields`, `sort_field`, and `sort_order` go in `properties`; the MCP restricts this object to recognized DocType settings. Role rules go in `permissions`.
 

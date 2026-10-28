@@ -22,7 +22,8 @@ Administrator is a full-privilege account. If used for local development, supply
 
 - There is no arbitrary Python, SQL, or unrestricted dotted-method tool.
 - Lists and report output have explicit caps.
-- Document changes preview first; update/delete confirmations require the current `modified` token.
+- Document changes preview first; update/delete confirmations require the current `modified` token. Updates also send that token to Frappe, which re-checks it under a row lock (`check_if_latest`), so a change between the check and the write is refused.
+- Field names in reads, filters, and writes are checked against the merged DocType schema; filter operators are allowlisted, and four-element filters may only name the DocType's own child tables. Writes refuse standard columns and read-only fields.
 - Frappe's API validates writes and applies the connected user's roles and permissions.
 - Schema creation uses native `DocType`, `Custom Field`, and `Property Setter` resources and remains subject to server permissions. DocType field types and validation are handled by Frappe's controller.
 - `set_role_permissions` calls Frappe's System Manager-only Permission Manager endpoints; it requires an existing role and DocType.

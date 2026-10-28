@@ -42,6 +42,29 @@ _RESERVED_FIELDS = {
     "parenttype",
     "parentfield",
 }
+# Columns every record has; reads and filters may use them even though writes may not.
+_STANDARD_COLUMNS = frozenset(
+    {"name", "owner", "creation", "modified", "modified_by", "docstatus", "idx"}
+)
+_CHILD_COLUMNS = frozenset({"parent", "parenttype", "parentfield"})
+_TABLE_FIELDTYPES = {"Table", "Table MultiSelect"}
+# A subset of the operators Frappe's get_filter accepts; tree operators are left out for now.
+_FILTER_OPERATORS = (
+    "=",
+    "!=",
+    "<",
+    ">",
+    "<=",
+    ">=",
+    "like",
+    "not like",
+    "in",
+    "not in",
+    "between",
+    "is",
+    "timespan",
+)
+_STALE_DOCUMENT = "Document changed since preview; request a fresh preview"
 _DOCTYPE_PROPERTIES = {
     "editable_grid",
     "quick_entry",
@@ -221,18 +244,29 @@ def _session_expired(client: httpx.Client) -> bool:
     return user == "Guest"
 
 
+class FrappeError(RuntimeError):
+    """An error response from Frappe; `exc_type` names the server-side exception class."""
+
+    def __init__(self, message: str, exc_type: str | None = None) -> None:
+        super().__init__(message)
+        self.exc_type = exc_type
+
+
 def _check(response: httpx.Response) -> Any:
     try:
         payload = response.json()
     except ValueError:
         payload = None
+    exc_type = payload.get("exc_type") if isinstance(payload, dict) else None
     if response.is_error:
         message = payload.get("_server_messages") if isinstance(payload, dict) else None
         if not message and isinstance(payload, dict):
             message = payload.get("exception") or payload.get("message")
-        raise RuntimeError(f"Frappe HTTP {response.status_code}: {message or 'request failed'}")
+        raise FrappeError(
+            f"Frappe HTTP {response.status_code}: {message or 'request failed'}", exc_type
+        )
     if isinstance(payload, dict) and payload.get("exc"):
-        raise RuntimeError("Frappe returned an application error")
+        raise FrappeError("Frappe returned an application error", exc_type)
     if isinstance(payload, dict):
         if "data" in payload:
             return payload["data"]
@@ -382,26 +416,103 @@ def _doctype(doctype: str) -> dict[str, Any]:
     return schema
 
 
-def _assert_fields(doctype: str, values: dict[str, Any], *, writing: bool = False) -> None:
+def _schema_fields(schema: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return {row["fieldname"]: row for row in schema.get("fields", []) if row.get("fieldname")}
+
+
+def _assert_readable_fields(
+    schema: dict[str, Any], fields: Any, *, child_table: bool = False
+) -> None:
+    """Allow DocType fields plus the standard columns, and parent columns on child tables."""
+    readable = set(_schema_fields(schema)) | _STANDARD_COLUMNS
+    if child_table or schema.get("istable"):
+        readable |= _CHILD_COLUMNS
+    for field in fields:
+        if not isinstance(field, str) or field not in readable:
+            raise ValueError(f"Unknown field for {schema.get('name')}: {field}")
+
+
+def _assert_writable_fields(
+    schema: dict[str, Any], values: dict[str, Any], *, allow_name: bool = False
+) -> None:
+    """Allow only DocType fields that are not reserved columns or read-only."""
     if not isinstance(values, dict) or not values:
         raise ValueError("values must be a non-empty object")
-    schema = _doctype(doctype)
-    allowed = {row.get("fieldname") for row in schema.get("fields", []) if row.get("fieldname")}
+    fields = _schema_fields(schema)
     for key in values:
-        if key in _RESERVED_FIELDS and (writing or key != "name"):
-            raise ValueError(f"Field cannot be used: {key}")
-        if key != "name" and key not in allowed:
-            raise ValueError(f"Field cannot be used: {key}")
-        if writing and next(
-            (f for f in schema.get("fields", []) if f.get("fieldname") == key), {}
-        ).get("read_only"):
+        if key == "name" and allow_name:
+            continue
+        if key in _RESERVED_FIELDS or key not in fields:
+            raise ValueError(f"Field cannot be written: {key}")
+        if fields[key].get("read_only"):
             raise ValueError(f"Read-only field cannot be written: {key}")
+
+
+def _assert_operator(operator: Any) -> None:
+    if not isinstance(operator, str) or operator.strip().lower() not in _FILTER_OPERATORS:
+        raise ValueError(
+            f"Unsupported filter operator {operator!r}; use one of: {', '.join(_FILTER_OPERATORS)}"
+        )
+
+
+def _assert_filters(schema: dict[str, Any], filters: dict[str, Any] | list[Any] | None) -> None:
+    """Check every Frappe filter shape against the DocType and its child tables.
+
+    Accepted: `{field: value}`, `{field: [operator, value]}`, and a list of
+    `[field, operator, value]` or `[doctype, field, operator, value]` conditions, where
+    `doctype` is this DocType or the `options` of one of its Table fields.
+    """
+    if not filters:
+        return
+    if isinstance(filters, dict):
+        for field, value in filters.items():
+            _assert_readable_fields(schema, [field])
+            if isinstance(value, dict) or (
+                isinstance(value, list | tuple) and len(value) != 2
+            ):
+                raise ValueError(f"Filter for {field} must be a value or [operator, value]")
+            if isinstance(value, list | tuple):
+                _assert_operator(value[0])
+        return
+    if not isinstance(filters, list | tuple):
+        raise ValueError("filters must be an object or a list of conditions")
+
+    doctype = schema.get("name")
+    tables = {
+        row.get("options")
+        for row in schema.get("fields", [])
+        if row.get("fieldtype") in _TABLE_FIELDTYPES and row.get("options")
+    }
+    child_schemas: dict[str, dict[str, Any]] = {}
+    for condition in filters:
+        if not isinstance(condition, list | tuple) or len(condition) not in (3, 4):
+            raise ValueError(
+                "Each list filter must be [field, operator, value] "
+                "or [doctype, field, operator, value]"
+            )
+        if len(condition) == 3:
+            field, operator, _ = condition
+            _assert_readable_fields(schema, [field])
+        else:
+            target, field, operator, _ = condition
+            if target == doctype:
+                _assert_readable_fields(schema, [field])
+            elif target in tables:
+                if target not in child_schemas:
+                    child_schemas[target] = _doctype(target)
+                _assert_readable_fields(child_schemas[target], [field], child_table=True)
+            else:
+                choices = ", ".join(sorted(tables)) or "none"
+                raise ValueError(
+                    f"{target} is not a child table of {doctype}; child tables: {choices}"
+                )
+        _assert_operator(operator)
 
 
 def _expected_modified(doctype: str, name: str, expected: str | None) -> dict[str, Any]:
     doc = _request("GET", _resource(doctype, name))
     if not expected or str(doc.get("modified")) != expected:
-        raise ValueError("Document changed since preview; request a fresh preview")
+        raise ValueError(_STALE_DOCUMENT)
     return doc
 
 
@@ -919,19 +1030,27 @@ def get_doctype_schema(doctype: str) -> dict[str, Any]:
 @server.tool()
 def list_documents(
     doctype: str,
-    filters: dict[str, Any] | None = None,
+    filters: dict[str, Any] | list[list[Any]] | None = None,
     fields: list[str] | None = None,
     limit: int = 20,
 ) -> list[dict[str, Any]]:
-    """List permission-filtered records and fields through the standard Frappe REST API."""
+    """List permission-filtered records and fields through the standard Frappe REST API.
+
+    `fields` and `filters` may use the DocType's fields plus the standard columns `name`,
+    `owner`, `creation`, `modified`, `modified_by`, `docstatus`, and `idx`. `filters` is
+    either an object (`{"status": "Open"}`, `{"grand_total": [">", 100]}`) or a list of
+    `[field, operator, value]` / `[child_doctype, field, operator, value]` conditions, where
+    `child_doctype` is the DocType of one of this DocType's Table fields. Operators: =, !=,
+    <, >, <=, >=, like, not like, in, not in, between, is, timespan.
+    """
     if not 1 <= limit <= 100:
         raise ValueError("limit must be between 1 and 100")
-    _doctype(doctype)
+    schema = _doctype(doctype)
     requested = fields or ["name"]
-    if len(requested) > 40:
-        raise ValueError("Request no more than 40 fields")
-    _assert_fields(doctype, {name: None for name in requested})
-    _assert_fields(doctype, filters or {}) if filters else None
+    if not isinstance(requested, list) or len(requested) > 40:
+        raise ValueError("fields must be a list of no more than 40 field names")
+    _assert_readable_fields(schema, requested)
+    _assert_filters(schema, filters)
     return _request(
         "GET",
         _resource(doctype),
@@ -948,15 +1067,18 @@ def list_documents(
 def get_document(
     doctype: str, name: str, fields: list[str] | None = None, child_row_limit: int = 100
 ) -> dict[str, Any]:
-    """Read one document, selecting fields and bounding any returned child-table rows."""
+    """Read one document, selecting fields and bounding any returned child-table rows.
+
+    `fields` may name the DocType's fields and the standard columns (`owner`, `creation`,
+    `modified`, `modified_by`, `docstatus`, `idx`); `name`, `modified`, and `docstatus` are
+    always returned.
+    """
     if not 1 <= child_row_limit <= 200:
         raise ValueError("child_row_limit must be between 1 and 200")
     schema = _doctype(doctype)
-    requested = set(
-        fields or [row.get("fieldname") for row in schema.get("fields", []) if row.get("fieldname")]
-    )
+    requested = set(fields or _schema_fields(schema))
     requested.add("name")
-    _assert_fields(doctype, {field: None for field in requested})
+    _assert_readable_fields(schema, requested)
     doc = _request("GET", _resource(doctype, name))
     result = {
         key: value
@@ -979,8 +1101,18 @@ def get_document(
 
 @server.tool()
 def create_document(doctype: str, values: dict[str, Any], confirm: bool = False) -> dict[str, Any]:
-    """Preview or create a document via the native REST resource API."""
-    _assert_fields(doctype, values, writing=True)
+    """Preview or create a document via the native REST resource API.
+
+    `values` may include `name` only when the DocType's autoname is `Prompt` (naming rule
+    "Set by user"); otherwise Frappe names the record itself.
+    """
+    schema = _doctype(doctype)
+    prompt_named = str(schema.get("autoname") or "").lower() == "prompt"
+    if isinstance(values, dict) and "name" in values and not prompt_named:
+        raise ValueError(
+            f"{doctype} names its records itself (autoname is not Prompt); leave out name"
+        )
+    _assert_writable_fields(schema, values, allow_name=prompt_named)
     if not confirm:
         return {
             "preview": True,
@@ -989,7 +1121,12 @@ def create_document(doctype: str, values: dict[str, Any], confirm: bool = False)
             "fields": sorted(values),
             "requires_confirmation": True,
         }
-    return _request("POST", _resource(doctype), json={"data": {"doctype": doctype, **values}})
+    data = dict(values)
+    if "name" in data:
+        # Desk sends a prompted name as __newname; Document.set_new_name uses it only when
+        # autoname is "prompt", the condition checked above.
+        data["__newname"] = data.pop("name")
+    return _request("POST", _resource(doctype), json={"data": {"doctype": doctype, **data}})
 
 
 @server.tool()
@@ -1001,7 +1138,7 @@ def update_document(
     confirm: bool = False,
 ) -> dict[str, Any]:
     """Preview or update a record; confirmation requires the preview's modified token."""
-    _assert_fields(doctype, values, writing=True)
+    _assert_writable_fields(_doctype(doctype), values)
     doc = _request("GET", _resource(doctype, name))
     if not confirm:
         return {
@@ -1014,7 +1151,19 @@ def update_document(
             "requires_confirmation": True,
         }
     _expected_modified(doctype, name, expected_modified)
-    return _request("PUT", _resource(doctype, name), json={"data": values})
+    # Callers may not write `modified`, but sending the preview's value closes the gap after
+    # the check above: update_doc locks the row, and Document.check_if_latest compares this
+    # value with the stored one and raises TimestampMismatchError if they differ.
+    try:
+        return _request(
+            "PUT",
+            _resource(doctype, name),
+            json={"data": {**values, "modified": expected_modified}},
+        )
+    except FrappeError as error:
+        if error.exc_type == "TimestampMismatchError":
+            raise ValueError(_STALE_DOCUMENT) from error
+        raise
 
 
 @server.tool()
