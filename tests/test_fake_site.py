@@ -30,9 +30,10 @@ def test_fake_site_matches_params_and_prefers_the_latest_route(fake_site) -> Non
 def test_fake_site_returns_copies_so_callers_cannot_mutate_registered_data(fake_site) -> None:
     fake_site.add_doctype("Example", [{"fieldname": "title"}])
 
-    standalone._doctype("Example")["fields"].append({"fieldname": "leaked"})
+    standalone._meta_bundle("Example")["doctype"]["fields"].append({"fieldname": "leaked"})
 
-    assert [row["fieldname"] for row in standalone._doctype("Example")["fields"]] == ["title"]
+    fields = standalone._meta_bundle("Example")["doctype"]["fields"]
+    assert [row["fieldname"] for row in fields] == ["title"]
 
 
 def test_fake_site_blocks_real_http_clients(fake_site) -> None:

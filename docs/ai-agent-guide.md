@@ -14,9 +14,11 @@
 ## Read a record type
 
 1. Call `list_doctypes` with an app or module filter.
-2. Call `get_doctype_schema` for the selected DocType.
+2. Call `get_doctype_schema` for the selected DocType. The default `compact` detail gives the data fields with their type, options, and flags, plus child tables; use it for reading and writing records. Ask for `detail="full"` only when editing a DocType needs every property (layout fields, permissions, depends_on, and so on).
 3. Call `list_documents` with explicit fields, filters, and a small limit.
-4. Call `get_document` only for records that need full detail.
+4. Call `get_document` only for records that need full detail. Without `fields` it returns only fields that have a value; pass `fields` when you need specific ones, empty values, or whole child rows.
+
+Schema reads are cached for a few minutes (`FRAPPE_META_TTL`). The MCP refreshes a DocType after changing it with its own schema tools; if the developer just changed a DocType in Desk, the old schema may show until the cache expires.
 
 Filters may use the standard columns (`docstatus`, `creation`, `modified`, `owner`, ...) as well as DocType fields. For example, submitted invoices created in October (results come back most recently modified first):
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import copy
 import difflib
 import hashlib
 import json
@@ -16,7 +17,7 @@ import tempfile
 import time
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import quote, urlparse
 
 import httpx
@@ -48,6 +49,49 @@ _STANDARD_COLUMNS = frozenset(
 )
 _CHILD_COLUMNS = frozenset({"parent", "parenttype", "parentfield"})
 _TABLE_FIELDTYPES = {"Table", "Table MultiSelect"}
+# Frappe's `display_fieldtypes` (frappe/model/__init__.py): layout and display-only fields
+# that hold no value.
+_LAYOUT_FIELDTYPES = frozenset(
+    {
+        "Section Break",
+        "Column Break",
+        "Tab Break",
+        "Attachment Gallery",
+        "HTML",
+        "Button",
+        "Image",
+        "Fold",
+        "Heading",
+    }
+)
+_GETDOCTYPE = "/api/method/frappe.desk.form.load.getdoctype"
+# DocTypes whose records shape other DocTypes' metadata; writing one clears the whole cache.
+_SCHEMA_DOCTYPES = frozenset(
+    {"DocType", "DocField", "DocPerm", "Custom Field", "Property Setter", "Custom DocPerm"}
+)
+_COMPACT_DOCTYPE_KEYS = (
+    "name",
+    "module",
+    "istable",
+    "issingle",
+    "is_submittable",
+    "is_tree",
+    "autoname",
+    "title_field",
+    "custom",
+)
+_COMPACT_FIELD_KEYS = (
+    "fieldname",
+    "label",
+    "fieldtype",
+    "options",
+    "reqd",
+    "read_only",
+    "hidden",
+    "default",
+    "unique",
+    "permlevel",
+)
 # A subset of the operators Frappe's get_filter accepts; tree operators are left out for now.
 _FILTER_OPERATORS = (
     "=",
@@ -205,6 +249,19 @@ def _timeout() -> float:
     return timeout
 
 
+def _meta_ttl() -> float:
+    raw = os.environ.get("FRAPPE_META_TTL", "300")
+    try:
+        ttl = float(raw)
+    except ValueError:
+        ttl = math.nan
+    if not math.isfinite(ttl) or ttl < 0:
+        raise RuntimeError(
+            f"FRAPPE_META_TTL must be zero or a positive number of seconds, got {raw!r}"
+        )
+    return ttl
+
+
 def _password_auth() -> bool:
     return not (os.environ.get("FRAPPE_API_KEY") or os.environ.get("FRAPPE_API_SECRET"))
 
@@ -320,125 +377,56 @@ def _filters(filters: dict[str, Any] | list[list[Any]] | None) -> str:
     return json.dumps(filters or {}, separators=(",", ":"))
 
 
-def _doctype_raw(doctype: str) -> dict[str, Any]:
-    if not _SAFE_NAME.fullmatch(doctype):
+# DocType name -> (monotonic time fetched, bundle). One process serves one Frappe user, so
+# per-user parts of the metadata (masked fields) stay correct.
+_meta_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+
+
+def _meta_bundle(doctype: str) -> dict[str, Any]:
+    """Return `{"doctype": meta, "children": {child_doctype: meta}}` from Frappe's form loader.
+
+    `getdoctype` returns `frappe.get_meta`, which already holds Custom Fields, Property
+    Setters, and Frappe's field order, for any logged-in user; record permissions are still
+    checked when records are read or written. Form assets (`__js`, print formats, templates)
+    are dropped. Bundles are cached for `FRAPPE_META_TTL` seconds.
+    """
+    if not isinstance(doctype, str) or not _SAFE_NAME.fullmatch(doctype):
         raise ValueError("Invalid DocType name")
-    result = _request("GET", _resource("DocType", doctype))
-    if not isinstance(result, dict):
-        raise RuntimeError("Unexpected DocType response")
-    return result
-
-
-def _sort_merged_fields(schema: dict[str, Any]) -> None:
-    """Apply Frappe's field_order and Custom Field insert_after rules to metadata."""
-    fields = schema.get("fields", [])
-    if not fields:
-        return
-    by_name = {row.get("fieldname"): row for row in fields if row.get("fieldname")}
-    if not by_name:
-        return
-
-    explicit_order = schema.get("field_order")
-    if isinstance(explicit_order, str):
-        try:
-            explicit_order = json.loads(explicit_order)
-        except json.JSONDecodeError:
-            explicit_order = []
-    order = [name for name in explicit_order or [] if name in by_name]
-    if not order:
-        order = [
-            row["fieldname"] for row in fields
-            if row.get("fieldname") and not row.get("is_custom_field")
-        ]
-
-    insert_after: dict[str, list[str]] = {}
-    for row in fields:
-        name = row.get("fieldname")
-        if not name or name in order or not row.get("is_custom_field"):
-            continue
-        anchor = row.get("insert_after")
-        if anchor:
-            insert_after.setdefault(str(anchor), []).append(name)
-        else:
-            order.insert(0, name)
-
-    # Frappe resolves chains such as a custom field inserted after another
-    # custom field in repeated passes, preserving each anchor's creation order.
-    while True:
-        changed = False
-        for anchor in list(insert_after):
-            if anchor not in order:
-                continue
-            index = order.index(anchor) + 1
-            for name in insert_after.pop(anchor):
-                order.insert(index, name)
-                index += 1
-            changed = True
-        if not changed:
-            break
-    for remaining in insert_after.values():
-        order.extend(name for name in remaining if name not in order)
-
-    order.extend(name for name in by_name if name not in order)
-    schema["fields"] = [by_name[name] for name in order]
-    for index, row in enumerate(schema["fields"], 1):
-        row["idx"] = index
-
-
-def _doctype(doctype: str) -> dict[str, Any]:
-    """Return the base DocType merged with site-level Custom Fields and Property Setters."""
-    schema = _doctype_raw(doctype)
-    fields = schema.setdefault("fields", [])
-    known = {row.get("fieldname") for row in fields if row.get("fieldname")}
-    custom_fields = _request(
-        "GET",
-        _resource("Custom Field"),
-        params={
-            "fields": '["*"]',
-            "filters": _filters({"dt": doctype}),
-            "limit_page_length": 500,
-            "order_by": "idx asc",
-        },
+    ttl = _meta_ttl()
+    cached = _meta_cache.get(doctype)
+    if ttl and cached and time.monotonic() - cached[0] < ttl:
+        return copy.deepcopy(cached[1])
+    fetched_at = time.monotonic()
+    payload = _request("GET", _GETDOCTYPE, params={"doctype": doctype})
+    docs = payload.get("docs") if isinstance(payload, dict) else None
+    if not isinstance(docs, list) or not docs or any(not isinstance(doc, dict) for doc in docs):
+        raise RuntimeError("Unexpected getdoctype response")
+    main, *children = (
+        {key: value for key, value in doc.items() if not key.startswith("__")} for doc in docs
     )
-    for custom_field in custom_fields:
-        fieldname = custom_field.get("fieldname")
-        if fieldname and fieldname not in known:
-            custom_field["is_custom_field"] = 1
-            fields.append(dict(custom_field))
-            known.add(fieldname)
+    bundle = {"doctype": main, "children": {child.get("name"): child for child in children}}
+    if ttl:
+        _meta_cache[doctype] = (fetched_at, bundle)
+    return copy.deepcopy(bundle)
 
-    setters = _request(
-        "GET",
-        _resource("Property Setter"),
-        params={
-            "fields": '["field_name","property","value","property_type","doctype_or_field"]',
-            "filters": _filters({"doc_type": doctype}),
-            "limit_page_length": 500,
-            "order_by": "creation asc",
-        },
-    )
-    by_field = {row.get("fieldname"): row for row in fields if row.get("fieldname")}
-    for setter in setters:
-        key = setter.get("property")
-        if not key:
-            continue
-        value = setter.get("value")
-        kind = setter.get("property_type")
-        try:
-            if kind == "Check":
-                value = bool(int(value))
-            elif kind == "Int":
-                value = int(value)
-            elif kind in {"Float", "Currency", "Percent"}:
-                value = float(value)
-        except (TypeError, ValueError):
-            continue
-        fieldname = setter.get("field_name")
-        target = by_field.get(fieldname) if fieldname else schema
-        if target is not None:
-            target[key] = value
-    _sort_merged_fields(schema)
-    return schema
+
+def _forget_meta(doctype: str | None = None) -> None:
+    """Drop cached metadata for `doctype` and every bundle that holds it as a child table."""
+    if doctype is None:
+        _meta_cache.clear()
+        return
+    for key, (_, bundle) in list(_meta_cache.items()):
+        if key == doctype or doctype in bundle["children"]:
+            _meta_cache.pop(key, None)
+
+
+def _forget_meta_after_write(doctype: str) -> None:
+    if doctype in _SCHEMA_DOCTYPES:
+        _forget_meta()
+
+
+def _is_empty(value: Any) -> bool:
+    return value is None or value == "" or value == []
 
 
 def _schema_fields(schema: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -480,8 +468,8 @@ def _assert_operator(operator: Any) -> None:
         )
 
 
-def _assert_filters(schema: dict[str, Any], filters: dict[str, Any] | list[Any] | None) -> None:
-    """Check every Frappe filter shape against the DocType and its child tables.
+def _assert_filters(bundle: dict[str, Any], filters: dict[str, Any] | list[Any] | None) -> None:
+    """Check every Frappe filter shape against a `_meta_bundle` DocType and its child tables.
 
     Accepted: `{field: value}`, `{field: [operator, value]}`, and a list of
     `[field, operator, value]` or `[doctype, field, operator, value]` conditions, where
@@ -489,6 +477,7 @@ def _assert_filters(schema: dict[str, Any], filters: dict[str, Any] | list[Any] 
     """
     if not filters:
         return
+    schema, children = bundle["doctype"], bundle["children"]
     if isinstance(filters, dict):
         for field, value in filters.items():
             _assert_readable_fields(schema, [field])
@@ -503,12 +492,6 @@ def _assert_filters(schema: dict[str, Any], filters: dict[str, Any] | list[Any] 
         raise ValueError("filters must be an object or a list of conditions")
 
     doctype = schema.get("name")
-    tables = {
-        row.get("options")
-        for row in schema.get("fields", [])
-        if row.get("fieldtype") in _TABLE_FIELDTYPES and row.get("options")
-    }
-    child_schemas: dict[str, dict[str, Any]] = {}
     for condition in filters:
         if not isinstance(condition, list | tuple) or len(condition) not in (3, 4):
             raise ValueError(
@@ -522,12 +505,10 @@ def _assert_filters(schema: dict[str, Any], filters: dict[str, Any] | list[Any] 
             target, field, operator, _ = condition
             if target == doctype:
                 _assert_readable_fields(schema, [field])
-            elif target in tables:
-                if target not in child_schemas:
-                    child_schemas[target] = _doctype(target)
-                _assert_readable_fields(child_schemas[target], [field], child_table=True)
+            elif isinstance(target, str) and target in children:
+                _assert_readable_fields(children[target], [field], child_table=True)
             else:
-                choices = ", ".join(sorted(tables)) or "none"
+                choices = ", ".join(sorted(children)) or "none"
                 raise ValueError(
                     f"{target} is not a child table of {doctype}; child tables: {choices}"
                 )
@@ -999,11 +980,7 @@ def _customized_doctypes(doctypes: list[str]) -> list[str]:
         if len(ordered) >= _EXPORT_MAX_FILES:
             raise ValueError("Export covers too many DocTypes; select fewer")
         ordered.append(doctype)
-        children = [
-            row.get("options")
-            for row in _doctype(doctype).get("fields", [])
-            if row.get("fieldtype") in _TABLE_FIELDTYPES and row.get("options")
-        ]
+        children = list(_meta_bundle(doctype)["children"])
         pending[:0] = [child for child in children if child not in ordered]
     return ordered
 
@@ -1179,10 +1156,42 @@ def list_doctypes(
     return rows
 
 
+def _compact_fields(meta: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        {key: row[key] for key in _COMPACT_FIELD_KEYS if row.get(key)}
+        for row in meta.get("fields", [])
+        if row.get("fieldname") and row.get("fieldtype") not in _LAYOUT_FIELDTYPES
+    ]
+
+
 @server.tool()
-def get_doctype_schema(doctype: str) -> dict[str, Any]:
-    """Read the DocType schema and field metadata visible through Frappe's API."""
-    return _doctype(doctype)
+def get_doctype_schema(
+    doctype: str, detail: Literal["compact", "full"] = "compact"
+) -> dict[str, Any]:
+    """Read a DocType's schema as Frappe's form sees it, with Custom Fields and Property Setters.
+
+    Any logged-in user can read it. `compact` (the default) returns the DocType flags (`name`,
+    `module`, `istable`, `issingle`, `is_submittable`, `is_tree`, `autoname`, `title_field`,
+    `custom`) and its data fields, leaving out layout fields such as Section Break, Column
+    Break, Tab Break, HTML, and Button. Each field has only `fieldname`, `label`, `fieldtype`,
+    `options`, `reqd`, `read_only`, `hidden`, `default`, `unique`, and `permlevel`, and false or
+    empty values are left out. `child_tables` maps each Table field's DocType to its fields in
+    the same form. `full` returns every metadata property as `{"doctype": ..., "children":
+    {child_doctype: ...}}`; use it only when editing a DocType needs every property.
+    """
+    if detail not in ("compact", "full"):
+        raise ValueError('detail must be "compact" or "full"')
+    bundle = _meta_bundle(doctype)
+    if detail == "full":
+        return bundle
+    meta = bundle["doctype"]
+    compact = {key: meta[key] for key in _COMPACT_DOCTYPE_KEYS if meta.get(key)}
+    compact["fields"] = _compact_fields(meta)
+    if bundle["children"]:
+        compact["child_tables"] = {
+            name: _compact_fields(child) for name, child in bundle["children"].items()
+        }
+    return compact
 
 
 @server.tool()
@@ -1203,12 +1212,12 @@ def list_documents(
     """
     if not 1 <= limit <= 100:
         raise ValueError("limit must be between 1 and 100")
-    schema = _doctype(doctype)
+    bundle = _meta_bundle(doctype)
     requested = fields or ["name"]
     if not isinstance(requested, list) or len(requested) > 40:
         raise ValueError("fields must be a list of no more than 40 field names")
-    _assert_readable_fields(schema, requested)
-    _assert_filters(schema, filters)
+    _assert_readable_fields(bundle["doctype"], requested)
+    _assert_filters(bundle, filters)
     return _request(
         "GET",
         _resource(doctype),
@@ -1227,31 +1236,64 @@ def get_document(
 ) -> dict[str, Any]:
     """Read one document, selecting fields and bounding any returned child-table rows.
 
-    `fields` may name the DocType's fields and the standard columns (`owner`, `creation`,
-    `modified`, `modified_by`, `docstatus`, `idx`); `name`, `modified`, and `docstatus` are
-    always returned.
+    Without `fields`, returns the DocType's data fields that have a value (`null`, `""`, and
+    empty tables are left out; `0` is kept), and child rows keep only their data fields with
+    a value plus `name` and `idx`. `fields` may name the DocType's fields and the standard
+    columns (`owner`, `creation`, `modified`, `modified_by`, `docstatus`, `idx`). `doctype`,
+    `name`, `modified`, and `docstatus` are always returned. Table and Table MultiSelect
+    fields return at most `child_row_limit` rows; cut tables are listed in
+    `_truncated_child_tables`.
     """
     if not 1 <= child_row_limit <= 200:
         raise ValueError("child_row_limit must be between 1 and 200")
-    schema = _doctype(doctype)
-    requested = set(fields or _schema_fields(schema))
+    bundle = _meta_bundle(doctype)
+    schema = bundle["doctype"]
+    by_name = _schema_fields(schema)
+    compact = not fields
+    if compact:
+        requested = {
+            fieldname
+            for fieldname, row in by_name.items()
+            if row.get("fieldtype") not in _LAYOUT_FIELDTYPES
+        }
+    else:
+        requested = set(fields)
+        _assert_readable_fields(schema, requested)
     requested.add("name")
-    _assert_readable_fields(schema, requested)
     doc = _request("GET", _resource(doctype, name))
     result = {
         key: value
         for key, value in doc.items()
-        if key in requested or key in {"doctype", "name", "modified", "docstatus"}
+        if key in {"doctype", "name", "modified", "docstatus"}
+        or (key in requested and not (compact and _is_empty(value)))
     }
     truncated = []
-    child_tables = {
-        row.get("fieldname") for row in schema.get("fields", []) if row.get("fieldtype") == "Table"
-    }
-    for field in child_tables & requested:
+    for field in sorted(requested):
+        row = by_name.get(field)
         rows = result.get(field)
-        if isinstance(rows, list) and len(rows) > child_row_limit:
-            result[field] = rows[:child_row_limit]
+        if not row or row.get("fieldtype") not in _TABLE_FIELDTYPES or not isinstance(rows, list):
+            continue
+        if len(rows) > child_row_limit:
+            rows = rows[:child_row_limit]
             truncated.append(field)
+        child = bundle["children"].get(row.get("options"))
+        if compact and child is not None:
+            kept = {
+                fieldname
+                for fieldname, child_row in _schema_fields(child).items()
+                if child_row.get("fieldtype") not in _LAYOUT_FIELDTYPES
+            } | {"name", "idx"}
+            rows = [
+                {
+                    key: value
+                    for key, value in child_doc.items()
+                    if key in kept and not _is_empty(value)
+                }
+                if isinstance(child_doc, dict)
+                else child_doc
+                for child_doc in rows
+            ]
+        result[field] = rows
     if truncated:
         result["_truncated_child_tables"] = sorted(truncated)
     return result
@@ -1264,7 +1306,7 @@ def create_document(doctype: str, values: dict[str, Any], confirm: bool = False)
     `values` may include `name` only when the DocType's autoname is `Prompt` (naming rule
     "Set by user"); otherwise Frappe names the record itself.
     """
-    schema = _doctype(doctype)
+    schema = _meta_bundle(doctype)["doctype"]
     prompt_named = str(schema.get("autoname") or "").lower() == "prompt"
     if isinstance(values, dict) and "name" in values and not prompt_named:
         raise ValueError(
@@ -1284,7 +1326,10 @@ def create_document(doctype: str, values: dict[str, Any], confirm: bool = False)
         # Desk sends a prompted name as __newname; Document.set_new_name uses it only when
         # autoname is "prompt", the condition checked above.
         data["__newname"] = data.pop("name")
-    return _request("POST", _resource(doctype), json={"data": {"doctype": doctype, **data}})
+    try:
+        return _request("POST", _resource(doctype), json={"data": {"doctype": doctype, **data}})
+    finally:
+        _forget_meta_after_write(doctype)
 
 
 @server.tool()
@@ -1296,7 +1341,7 @@ def update_document(
     confirm: bool = False,
 ) -> dict[str, Any]:
     """Preview or update a record; confirmation requires the preview's modified token."""
-    _assert_writable_fields(_doctype(doctype), values)
+    _assert_writable_fields(_meta_bundle(doctype)["doctype"], values)
     doc = _request("GET", _resource(doctype, name))
     if not confirm:
         return {
@@ -1322,6 +1367,8 @@ def update_document(
         if error.exc_type == "TimestampMismatchError":
             raise ValueError(_STALE_DOCUMENT) from error
         raise
+    finally:
+        _forget_meta_after_write(doctype)
 
 
 @server.tool()
@@ -1350,6 +1397,8 @@ def delete_document(
                 "refresh state before retrying."
             ) from error
         reconciled = True
+    finally:
+        _forget_meta_after_write(doctype)
     result = {"deleted": True, "doctype": doctype, "name": name}
     if reconciled:
         result["reconciled_after_server_reload"] = True
@@ -1460,6 +1509,7 @@ def create_doctype(
         }
     if is_custom:
         reconciled = _create_doctype_request(name, payload, expected_files)
+        _forget_meta(name)
         if not _doctype_exists(name):
             raise RuntimeError("Frappe did not persist the custom DocType record")
         return {
@@ -1487,6 +1537,7 @@ def create_doctype(
         )
         _wait_for_server_ready()
         reconciled = _create_doctype_request(name, payload, expected_files)
+        _forget_meta(name)
         if not _doctype_exists(name):
             raise RuntimeError(
                 "Frappe did not persist the DocType record. Check the target app before retrying."
@@ -1545,7 +1596,7 @@ def set_role_permissions(
     if any(not isinstance(value, bool) for value in permissions.values()):
         raise ValueError("Permission values must be booleans")
 
-    schema = _doctype_raw(doctype)
+    schema = _meta_bundle(doctype)["doctype"]
     if schema.get("istable") or schema.get("is_virtual"):
         raise ValueError("Child-table and virtual DocTypes cannot use Role Permission Manager")
     role_rows = _request(
@@ -1584,21 +1635,24 @@ def set_role_permissions(
         },
     )
     base_url = "/api/method/frappe.core.page.permission_manager.permission_manager"
-    if not permission_rows:
-        _request("POST", f"{base_url}.add", json={
-            "parent": doctype,
-            "role": role,
-            "permlevel": permlevel,
-        })
-    for flag, value in permissions.items():
-        _request("POST", f"{base_url}.update", json={
-            "doctype": doctype,
-            "role": role,
-            "permlevel": permlevel,
-            "ptype": flag,
-            "value": int(value),
-            "if_owner": 0,
-        })
+    try:
+        if not permission_rows:
+            _request("POST", f"{base_url}.add", json={
+                "parent": doctype,
+                "role": role,
+                "permlevel": permlevel,
+            })
+        for flag, value in permissions.items():
+            _request("POST", f"{base_url}.update", json={
+                "doctype": doctype,
+                "role": role,
+                "permlevel": permlevel,
+                "ptype": flag,
+                "value": int(value),
+                "if_owner": 0,
+            })
+    finally:
+        _forget_meta(doctype)
     return {
         "updated": True,
         "doctype": doctype,
@@ -1634,7 +1688,7 @@ def create_custom_field(
             f"field may not set {', '.join(fixed)}; pass the DocType and module as arguments"
         )
     _assert_optional_module(app, module)
-    schema = _doctype(doctype)
+    schema = _meta_bundle(doctype)["doctype"]
     existing = {row.get("fieldname") for row in schema.get("fields", [])}
     if field["fieldname"] in existing:
         raise ValueError("Field already exists")
@@ -1650,7 +1704,10 @@ def create_custom_field(
             "field": data,
             "requires_confirmation": True,
         }
-    return _request("POST", _resource("Custom Field"), json={"data": data})
+    try:
+        return _request("POST", _resource("Custom Field"), json={"data": data})
+    finally:
+        _forget_meta(doctype)
 
 
 def _property_value(property: str, value: Any, property_type: str) -> str:
@@ -1701,7 +1758,7 @@ def set_field_property(
         raise ValueError(f"property_type for {property} is {inferred}")
     stored = _property_value(property, value, inferred)
     _assert_optional_module(app, module)
-    schema = _doctype(doctype)
+    schema = _meta_bundle(doctype)["doctype"]
     if fieldname and fieldname not in {row.get("fieldname") for row in schema.get("fields", [])}:
         raise ValueError("Unknown fieldname")
 
@@ -1749,7 +1806,19 @@ def set_field_property(
             preview["replaces_field_setters"] = replaced
     if not confirm:
         return preview
+    try:
+        return _save_property_setter(preview, existing, expected_modified)
+    finally:
+        _forget_meta(doctype)
 
+
+def _save_property_setter(
+    preview: dict[str, Any], existing: dict[str, Any] | None, expected_modified: str | None
+) -> Any:
+    """Create the previewed Property Setter, or update the existing one under its token."""
+    doctype, fieldname, module = preview["doctype"], preview["fieldname"], preview["module"]
+    stored, inferred = preview["value"], preview["property_type"]
+    property = preview["property"]
     if not existing:
         if expected_modified is not None:
             raise ValueError("The Property Setter no longer exists; request a fresh preview")
@@ -2007,6 +2076,7 @@ def main() -> None:
     """Run the standalone server using the MCP stdio transport."""
     try:
         _timeout()
+        _meta_ttl()
     except RuntimeError as error:
         raise SystemExit(str(error)) from None
     if _insecure_http_allowed():

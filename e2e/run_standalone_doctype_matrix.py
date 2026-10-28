@@ -47,6 +47,12 @@ async def call(session, tool: str, arguments: dict):
     return result_value(await session.call_tool(tool, arguments))
 
 
+async def full_schema(session, doctype: str) -> dict:
+    """Read every metadata property; the compact default leaves out layout fields and flags."""
+    schema = await call(session, "get_doctype_schema", {"doctype": doctype, "detail": "full"})
+    return schema["doctype"]
+
+
 async def create_doctype(session, name: str, fields: list[dict], **flags):
     payload = {"app": "erp_app", "module": "CubaZone", "name": name, "fields": fields, **flags}
     preview = await call(session, "create_doctype", payload)
@@ -110,7 +116,7 @@ async def cleanup_doctype(session, name: str) -> bool:
             )
             if not rows:
                 return True
-            schema = await call(session, "get_doctype_schema", {"doctype": name})
+            schema = await full_schema(session, name)
             if schema.get("is_virtual") or schema.get("istable"):
                 records = []
             elif schema.get("issingle"):
@@ -280,7 +286,7 @@ async def run() -> dict:
                     ],
                 )
                 created_names.append(names["table"])
-                schema = await call(session, "get_doctype_schema", {"doctype": names["table"]})
+                schema = await full_schema(session, names["table"])
                 schema_field_types = {row.get("fieldtype") for row in schema.get("fields", [])}
                 missing_types = sorted(set(FIELD_TYPES) - schema_field_types)
                 generated_json_path = Path(normal["files"]["json"])
@@ -340,9 +346,7 @@ async def run() -> dict:
                 custom_created = await call(
                     session, "create_doctype", {**site_custom_payload, "confirm": True}
                 )
-                custom_schema = await call(
-                    session, "get_doctype_schema", {"doctype": names["site_custom"]}
-                )
+                custom_schema = await full_schema(session, names["site_custom"])
                 evidence["doctype_variants"]["site_custom"] = {
                     "preview_without_source_path": custom_preview.get("destination") is None
                     and custom_preview.get("expected_native_files") == [],
@@ -423,7 +427,7 @@ async def run() -> dict:
                     properties={"is_virtual": 1},
                 )
                 created_names.append(names["virtual"])
-                virtual_schema = await call(session, "get_doctype_schema", {"doctype": names["virtual"]})
+                virtual_schema = await full_schema(session, names["virtual"])
                 evidence["doctype_variants"]["virtual"] = {
                     "parent_created": bool(virtual["native_files_complete"]),
                     "child_created": bool(vchild["native_files_complete"]),
@@ -531,9 +535,7 @@ async def run() -> dict:
                 })
                 custom_results.append((fold_name, "Fold", bool(fold_created.get("name"))))
                 custom_field_coverage = sorted({row[1] for row in custom_results})
-                custom_schema = await call(
-                    session, "get_doctype_schema", {"doctype": names["custom"]}
-                )
+                custom_schema = await full_schema(session, names["custom"])
                 field_order = [row.get("fieldname") for row in custom_schema.get("fields", [])]
                 fold_index = field_order.index(fold_name) if fold_name in field_order else -1
                 evidence["custom_field_types"] = {
@@ -583,7 +585,7 @@ async def run() -> dict:
                         raise AssertionError(f"No Property Setter preview for {prop}")
                     saved = await call(session, "set_field_property", {**args, "confirm": True})
                     property_results[prop] = bool(saved.get("name"))
-                merged = await call(session, "get_doctype_schema", {"doctype": names["table"]})
+                merged = await full_schema(session, names["table"])
                 merged_fields = {row.get("fieldname"): row for row in merged.get("fields", [])}
                 mismatches = {}
                 for index, (prop, prop_value) in enumerate(setter_values.items()):
@@ -603,7 +605,7 @@ async def run() -> dict:
                 doc_property_setter = await call(
                     session, "set_field_property", {**doc_property_args, "confirm": True}
                 )
-                doc_property_schema = await call(session, "get_doctype_schema", {"doctype": names["table"]})
+                doc_property_schema = await full_schema(session, names["table"])
                 evidence["property_setters"]["doctype_level_description"] = (
                     bool(doc_property_setter.get("name"))
                     and doc_property_schema.get("description") == doc_property_args["value"]
@@ -623,7 +625,7 @@ async def run() -> dict:
                         "fieldname": fieldname, "property": "label", "value": f"Updated {key}",
                         "property_type": "Data", "confirm": True,
                     })
-                    variant_schema = await call(session, "get_doctype_schema", {"doctype": names[key]})
+                    variant_schema = await full_schema(session, names[key])
                     variant_fields = {row.get("fieldname"): row for row in variant_schema.get("fields", [])}
                     variant_results[key] = bool(
                         created_cf.get("name") and setter.get("name")

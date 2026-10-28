@@ -250,46 +250,6 @@ def test_custom_doctype_creation_does_not_require_local_files(monkeypatch) -> No
     assert result["native_files_complete"] is None
 
 
-def test_merged_custom_fields_follow_insert_after_order() -> None:
-    schema = {
-        "fields": [
-            {"fieldname": "title", "fieldtype": "Data", "idx": 1},
-            {"fieldname": "section", "fieldtype": "Section Break", "idx": 2},
-            {"fieldname": "custom_after_title", "fieldtype": "Data", "is_custom_field": 1,
-             "insert_after": "title", "idx": 1},
-            {"fieldname": "custom_after_custom", "fieldtype": "Fold", "is_custom_field": 1,
-             "insert_after": "custom_after_title", "idx": 2},
-            {"fieldname": "custom_append", "fieldtype": "Data", "is_custom_field": 1,
-             "insert_after": "append", "idx": 3},
-        ]
-    }
-
-    standalone._sort_merged_fields(schema)
-
-    assert [row["fieldname"] for row in schema["fields"]] == [
-        "title",
-        "custom_after_title",
-        "custom_after_custom",
-        "section",
-        "custom_append",
-    ]
-    assert [row["idx"] for row in schema["fields"]] == [1, 2, 3, 4, 5]
-
-
-def test_merged_fields_respect_explicit_field_order() -> None:
-    schema = {
-        "field_order": '["second", "first"]',
-        "fields": [
-            {"fieldname": "first", "fieldtype": "Data", "idx": 1},
-            {"fieldname": "second", "fieldtype": "Data", "idx": 2},
-        ],
-    }
-
-    standalone._sort_merged_fields(schema)
-
-    assert [row["fieldname"] for row in schema["fields"]] == ["second", "first"]
-
-
 def test_doctype_payload_rejects_duplicate_fields_unknown_properties_and_single_table() -> None:
     duplicate_fields = [
         {"fieldname": "value", "fieldtype": "Data"},
@@ -321,8 +281,8 @@ def test_set_role_permissions_previews_then_calls_native_permission_manager(monk
 
     monkeypatch.setattr(
         standalone,
-        "_doctype_raw",
-        lambda _: {"name": "Example", "istable": 0, "is_virtual": 0},
+        "_meta_bundle",
+        lambda _: {"doctype": {"name": "Example", "istable": 0, "is_virtual": 0}, "children": {}},
     )
 
     def request(method, path, **kwargs):
