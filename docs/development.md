@@ -41,7 +41,7 @@ Run only on a development site. The runner cleans up in a `finally` block and pr
 
 ## Customization and export acceptance
 
-This temporarily creates a Custom Field and Property Setter, verifies the merged schema, exports standard JSON/fixtures/hooks, previews and confirms rollback, then removes the temporary records. It refuses non-loopback targets:
+This temporarily creates a Custom Field and Property Setter, verifies the merged schema, exports the native `custom/` customization file, previews and confirms rollback, then removes the temporary records. It refuses non-loopback targets:
 
 ```bash
 FRAPPE_ALLOW_CUSTOMIZATION_TEST=YES uv run python e2e/run_standalone_customization_acceptance.py

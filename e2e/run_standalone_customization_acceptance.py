@@ -242,6 +242,9 @@ async def run() -> dict:
                 rollback_id = exported.get("rollback_id") or rollback_id
                 if not exported.get("exported"):
                     raise AssertionError("Export did not return a rollback ID")
+                native_file = f"/custom/{doctype.lower().replace(' ', '_')}.json"
+                if not any(path.endswith(native_file) for path in exported.get("files", [])):
+                    raise AssertionError("Export did not write the native custom/ file")
                 rollback_preview = await read_tool(
                     session,
                     "rollback_export",
@@ -276,7 +279,7 @@ async def run() -> dict:
                     "schema_reflects_custom_field": True,
                     "schema_reflects_property_setter": True,
                     "export_preview_and_confirm": True,
-                    "managed_hooks_and_fixture_export": True,
+                    "native_custom_file_export": True,
                     "rollback_preview_and_confirm": rolled_back,
                     "temporary_custom_field_deleted": field_deleted,
                     "field_absent_from_schema": absent,

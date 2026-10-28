@@ -631,26 +631,34 @@ async def run() -> dict:
                     )
                 evidence["property_setters"]["doctype_variant_roundtrip"] = variant_results
 
-                # Export all test definitions and fixture-backed customizations,
+                # Export the test DocTypes' native customization files,
                 # then roll back to the exact prior app state.
                 export_args = {"app": "erp_app", "module": "CubaZone", "doctypes": created_names}
                 export_preview = await call(session, "export_customizations", export_args)
-                exported = await call(session, "export_customizations", {
-                    **export_args, "confirm": True, "expected_preview": export_preview["preview_id"],
-                })
-                rollback_id = exported.get("rollback_id")
-                rollback_preview = await call(session, "rollback_export", {
-                    "app": "erp_app", "module": "CubaZone", "rollback_id": rollback_id,
-                })
-                rolled = await call(session, "rollback_export", {
-                    "app": "erp_app", "module": "CubaZone", "rollback_id": rollback_id,
-                    "expected_preview": rollback_preview["preview_id"], "confirm": True,
-                })
-                evidence["export_rollback"] = {
-                    "previewed": bool(export_preview.get("preview_id")),
-                    "exported": bool(rollback_id),
-                    "rolled_back": bool(rolled.get("rolled_back")),
-                }
+                if export_preview.get("nothing_to_export"):
+                    evidence["export_rollback"] = {"nothing_to_export": True}
+                else:
+                    exported = await call(session, "export_customizations", {
+                        **export_args, "confirm": True,
+                        "expected_preview": export_preview["preview_id"],
+                    })
+                    rollback_id = exported.get("rollback_id")
+                    rollback_preview = await call(session, "rollback_export", {
+                        "app": "erp_app", "module": "CubaZone", "rollback_id": rollback_id,
+                    })
+                    rolled = await call(session, "rollback_export", {
+                        "app": "erp_app", "module": "CubaZone", "rollback_id": rollback_id,
+                        "expected_preview": rollback_preview["preview_id"], "confirm": True,
+                    })
+                    evidence["export_rollback"] = {
+                        "previewed": bool(export_preview.get("preview_id")),
+                        "exported": bool(rollback_id),
+                        "native_custom_files": all(
+                            "/custom/" in path or path.endswith(("client_script.json", "hooks.py"))
+                            for path in exported.get("files", [])
+                        ),
+                        "rolled_back": bool(rolled.get("rolled_back")),
+                    }
             except Exception as error:
                 evidence["errors"].append(f"{type(error).__name__}: {str(error)[:500]}")
             finally:

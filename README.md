@@ -11,7 +11,7 @@ It discovers installed apps and DocTypes at runtime, so the same server can work
 - Discover apps, modules, DocTypes, fields, schemas, and records from the connected site.
 - Create, update, and delete documents through Frappe's standard resource API, with previews and stale-document checks.
 - Create standard DocTypes with native field definitions, DocType settings, role permissions, and Frappe-generated app files; create Custom Fields and Property Setters through the REST API.
-- Export standard DocType JSON and customization fixtures into a configured local app tree, with a preview hash, managed `hooks.py` block, backups, and rollback.
+- Export site customizations into a configured local app tree as Frappe's native `custom/` files, which `bench migrate` applies, with a preview hash, backups, and rollback.
 - Run permitted Query and Script Reports through Frappe's report API.
 - Connect to custom apps without maintaining app-specific catalogs.
 

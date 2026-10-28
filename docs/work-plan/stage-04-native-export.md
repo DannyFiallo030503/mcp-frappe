@@ -65,11 +65,20 @@ Exporting site-custom DocTypes (backlog). Running migrate from the MCP; that's n
 
 ## Handoff
 
-_Fill this in at the end of the session._
-
-- Status:
-- Branch / commits:
+- Status: done.
+- Branch / commits: `stage-04-native-export`, based on `origin/main` at `1504d79`; one commit, "Export customizations to Frappe's native custom/ files".
 - What changed:
+  - `export_customizations` writes `<app>/<app>/<module_slug>/custom/<scrub(doctype)>.json` with the keys of Frappe v16.33.1's `frappe.modules.utils.export_customizations`: `custom_fields`, `property_setters`, `custom_perms`, `links`, `doctype`, `sync_on_migrate`. Rows are read over REST with `fields=["*"]` and `order_by="name asc"`, like Frappe's `get_all`. The file is serialized like `frappe.as_json` (indent 1, sorted keys, ASCII-escaped, no trailing newline). DocType Link is a child table, so it is listed with `parent=DocType`.
+  - It recurses through table fields of the merged schema (`_doctype()`, so custom table fields count), skips DocTypes with nothing to export (`empty` in the result), and returns `nothing_to_export: true` with no `preview_id` when no file is left. Confirming then raises.
+  - New arguments: `with_permissions` (default false), `apply_module_filter` (default false), `sync_on_migrate` (default true). The tool docstring now documents every argument.
+  - DocType JSON is no longer exported. The old check that each DocType belongs to `module` was dropped: Frappe's export allows any DocType (the usual case is customizing another app's DocType), and `module` only picks the folder.
+  - Client Scripts (filtered by `dt` in the covered DocTypes and `module`) go to `<app>/<app>/fixtures/client_script.json` in `bench export-fixtures` row format (adds `doctype`, drops `owner`, `creation`, `modified_by`, `idx`, `lft`, `rgt` and `_`-columns). Rows already in that file for other DocTypes or modules are kept. `_fixture_plan` now manages only a `Client Script` entry and drops entries for other DocTypes left by older exports. `hooks.py` is untouched when there are no Client Scripts.
+  - Manifest entries gain `created_dirs`; `rollback_export` removes those directories once empty, so export plus rollback restores the tree byte for byte. Old manifests (no `created_dirs`, paths under `<module>/fixtures/`) still roll back. The file cap is `_EXPORT_MAX_FILES = 200` for both export and rollback (was 55); rows per read are capped at 1,000 and a larger result is refused rather than truncated.
+  - Tests: `tests/test_export.py` (18 tests). e2e runners updated for the new return shape (`nothing_to_export`, native `custom/` path check). Docs: tool reference, AI agent guide, architecture, security, compatibility, development, README.
 - Deviations from this plan:
-- Live migrate check result (if run):
+  - System columns are **not** stripped from the native file. Frappe's own export writes full `fields="*"` rows, and no Frappe-exported reference file was available (no live site run), so the plan's fallback applies.
+  - Child-table recursion goes as deep as the schema does, with a visited set, instead of exactly one level; Frappe recurses the same way.
+- Live migrate check result (if run): not run; the user chose unit tests only. `docs/compatibility-and-validation.md` says the migrate round trip is unverified.
 - Notes for the next stage:
+  - `_app_path` still uses `_slug(module)` for the module folder, while Frappe uses `scrub(module)`. They agree for ordinary module names (letters, digits, spaces, hyphens, underscores) but differ for names with other characters such as `.`. Stage 07 (app sync) should switch to `scrub` when it compares files.
+  - Each export calls `_doctype()` for every covered DocType (3 requests each) plus 3-4 row reads; stage 05's metadata cache will cut that.
