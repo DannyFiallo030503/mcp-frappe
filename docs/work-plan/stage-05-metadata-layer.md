@@ -1,14 +1,14 @@
-# Stage 05: Metadata layer (non-admin access, cache, compact schema)
+# Stage 05: Metadata layer (cache, compact schema, fewer requests)
 
 **Depends on:** 02 · **Size:** large · **Fixes:** structural gaps 1 and 2 in [assessment.md](assessment.md)
 
 ## Why
 
-This is the most important stage for usefulness:
+Every developer tool starts by reading a schema, and stages 06–09 read it even more often:
 
-- Every record tool reads metadata through REST resources that only System Manager can read, so ordinary users get 403 on everything.
-- The schema is returned with all 63 DocField properties per field, nulls included. Large ERPNext DocTypes cost tens of thousands of tokens.
+- The schema is returned with all 63 DocField properties per field, nulls included. Large ERPNext DocTypes cost tens of thousands of tokens, which crowds out the developer's own code in the model's context.
 - Nothing is cached, so one filtered list makes 10 HTTP requests.
+- Record tools read metadata through REST resources that only System Manager can read. Developers usually connect as Administrator, so this matters less for them, but `getdoctype` fixes it for free: the record tools then work for any user with permission on the DocType.
 
 ## Read first
 
@@ -42,7 +42,7 @@ This is the most important stage for usefulness:
 
 - A filtered `list_documents` makes at most 2 HTTP requests cold and 1 warm (assert it with `fake_site`).
 - Compact schema output for a 100-field sample DocType is at least 5 times smaller than `full`. Assert the ratio in a test.
-- `docs/tool-reference.md`, `docs/architecture.md`, and `docs/security.md` say that record tools now work for any user with permissions on the DocType. `docs/ai-agent-guide.md` says to use `compact` by default.
+- `docs/tool-reference.md`, `docs/architecture.md`, and `docs/security.md` say that record tools now work for any user with permissions on the DocType. `docs/ai-agent-guide.md` says to use `compact` by default and `full` only when editing a DocType needs every property.
 - **Optional live check (only if the user asks):** on a disposable site, read a DocType and a record as a non-System-Manager user who has read permission. Record the result.
 
 ## Verification
@@ -54,7 +54,7 @@ uv run ruff check frappe_mcp tests
 
 ## Out of scope
 
-New tools (stage 06). Changing how `create_doctype` works internally.
+New tools (stages 06 and 10). Editing DocTypes (stage 06).
 
 ## Handoff
 

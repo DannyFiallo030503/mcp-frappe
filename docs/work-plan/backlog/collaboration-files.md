@@ -1,6 +1,8 @@
-# Stage 09: Collaboration and files
+# Backlog: Collaboration and files
 
-**Depends on:** 08 · **Size:** medium · **Fixes:** structural gap 4 (collaboration) in [assessment.md](assessment.md)
+> **Unscheduled.** This was stage 09 before the plan was refocused on developers (2026-10-27). Stage numbers below refer to the old plan. When you schedule it, give it a stage number and update the references.
+
+**Depends on (old plan):** see note · **Size:** medium · **Fixes:** structural gap 4 (collaboration) in [assessment.md](../assessment.md)
 
 ## Why
 
