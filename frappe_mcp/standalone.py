@@ -3915,8 +3915,8 @@ def _save_config_record(
     """Create (no `expected_modified`) or update one configuration record and its child tables.
 
     Updates send `modified` in the body, so Frappe refuses a record changed since the preview.
-    A developer-mode save of a standard record (a Notification, and in stage 09 a Report or
-    Workspace) writes files and can make the Bench reload mid-request. Then the record is
+    A developer-mode save of a standard record (a Notification, Report, or Workspace) writes
+    files and can make the Bench reload mid-request. Then the record is
     re-read, and the save counts only if it holds `values` and, on update, `modified` moved;
     nothing is sent twice. Returns the saved record and whether it was reconciled. The
     metadata cache is cleared for `doctype` and every DocType in `forget`.
@@ -4488,21 +4488,46 @@ def _notification_recipients(
     return rows
 
 
-def _notification_files(app: str, module: str, name: str) -> dict[str, Any]:
-    """List what Frappe's `export_module_json` writes for a standard Notification."""
+def _record_files(
+    app: str, module: str, doctype: str, name: str, suffixes: tuple[str, ...], init: bool
+) -> dict[str, Any]:
+    """List the files Frappe's `export_to_files` writes for a standard record of `doctype`.
+
+    They go to `<module>/<scrub(doctype)>/<scrub(name)>/`, shown in the local checkout when
+    FRAPPE_APPS_PATH has one; `init` adds the `__init__.py` Frappe creates there.
+    """
     slug = _scrub(name)
     try:
         _, module_path = _app_path(app, module)
     except (RuntimeError, ValueError):
-        folder, local = f"{app}/{app}/{_scrub(module)}/notification/{slug}", False
+        folder, local = f"{app}/{app}/{_scrub(module)}/{_scrub(doctype)}/{slug}", False
     else:
-        folder, local = str(module_path / "notification" / slug), True
+        folder, local = str(module_path / _scrub(doctype) / slug), True
     return {
         "folder": folder,
-        "files": [f"{folder}/{slug}{suffix}" for suffix in (".json", ".md", ".py")]
-        + [f"{folder}/__init__.py"],
+        "files": [f"{folder}/{slug}{suffix}" for suffix in suffixes]
+        + ([f"{folder}/__init__.py"] if init else []),
         "local_checkout": local,
     }
+
+
+def _notification_files(app: str, module: str, name: str) -> dict[str, Any]:
+    """List what Frappe's `export_module_json` writes for a standard Notification."""
+    return _record_files(app, module, "Notification", name, (".json", ".md", ".py"), True)
+
+
+def _standard_module(module: Any, what: str) -> str:
+    """Check the Module Def of a standard record and return its app, refusing core apps."""
+    if module is None:
+        raise ValueError(f"A standard {what} needs module")
+    if not isinstance(module, str):
+        raise ValueError("Invalid app or module name")
+    module_row = _assert_remote_module(None, module)
+    if module_row.get("custom"):
+        raise ValueError(f"{module} is a custom Module Def; Frappe has no app folder for it")
+    app = module_row.get("app_name") or ""
+    _assert_writable_app(app)
+    return app
 
 
 @server.tool()
@@ -4612,13 +4637,7 @@ def upsert_notification(
     _assert_roles(row["receiver_by_role"] for row in recipient_rows if row["receiver_by_role"])
     app = None
     if is_standard:
-        if module is None:
-            raise ValueError("A standard Notification needs module")
-        module_row = _assert_remote_module(None, module)
-        if module_row.get("custom"):
-            raise ValueError(f"{module} is a custom Module Def; Frappe has no app folder for it")
-        app = module_row.get("app_name") or ""
-        _assert_writable_app(app)
+        app = _standard_module(module, "Notification")
     elif module is not None:
         raise ValueError("module applies to standard Notifications only; set is_standard")
     current = _config_record("Notification", name)
@@ -4710,6 +4729,812 @@ def upsert_notification(
     if is_standard:
         result["app_files"] = _notification_files(app or "", module or "", name)
     return result
+
+
+_REPORT_MAX_COLUMNS = 50
+_REPORT_MAX_FILTERS = 50
+_REPORT_SAMPLE_ROWS = 5
+_REPORT_PAGE_LENGTH = 20
+_REPORT_AGGREGATES = ("count", "sum", "avg")
+_REPORT_GROUP_BY_KEYS = ("field", "aggregate_function", "aggregate_on")
+_REPORT_NUMERIC_FIELDTYPES = frozenset({"Int", "Float", "Currency", "Percent", "Duration"})
+_ORDER_TERM = re.compile(r"\s*([A-Za-z_][A-Za-z0-9_]*)(?:\s+(asc|desc))?\s*", re.I)
+_ORDER_MAX_TERMS = 3
+_AGGREGATE_COLUMN = "_aggregate_column"
+
+
+def _assert_value_column(
+    schema: dict[str, Any], fieldname: Any, *, child_table: bool = False
+) -> dict[str, Any] | None:
+    """Check a report column is a stored field or standard column; return its DocField."""
+    _assert_readable_fields(schema, [fieldname], child_table=child_table)
+    row = _schema_fields(schema).get(fieldname)
+    fieldtype = (row or {}).get("fieldtype")
+    if fieldtype in _LAYOUT_FIELDTYPES or fieldtype in _TABLE_FIELDTYPES:
+        raise ValueError(
+            f"{fieldname} is a {fieldtype} field of {schema.get('name')}, not a column"
+        )
+    return row
+
+
+def _report_column(bundle: dict[str, Any], column: Any) -> list[str]:
+    """Turn `fieldname` or `<child DocType>.<fieldname>` into Frappe's `[fieldname, doctype]`."""
+    if not isinstance(column, str) or not column:
+        raise ValueError("Each column must be a fieldname or <child DocType>.<fieldname>")
+    schema, children = bundle["doctype"], bundle["children"]
+    doctype = schema.get("name")
+    target, dot, fieldname = column.rpartition(".")
+    if not dot:
+        _assert_value_column(schema, fieldname)
+        return [fieldname, doctype]
+    if target not in children:
+        choices = ", ".join(sorted(children)) or "none"
+        raise ValueError(f"{target} is not a child table of {doctype}; child tables: {choices}")
+    _assert_value_column(children[target], fieldname, child_table=True)
+    return [fieldname, target]
+
+
+def _report_filters(bundle: dict[str, Any], filters: Any) -> list[list[Any]]:
+    """Validate filters like `list_documents` and store them as `[doctype, field, op, value]`."""
+    if not filters:
+        return []
+    _assert_filters(bundle, filters)
+    if len(filters) > _REPORT_MAX_FILTERS:
+        raise ValueError(f"A report takes at most {_REPORT_MAX_FILTERS} filters")
+    doctype = bundle["doctype"].get("name")
+    if isinstance(filters, dict):
+        return [
+            [doctype, field, *(value if isinstance(value, list | tuple) else ("=", value))]
+            for field, value in filters.items()
+        ]
+    return [list(row) if len(row) == 4 else [doctype, *row] for row in filters]
+
+
+def _report_order_by(schema: dict[str, Any], order_by: Any) -> str | None:
+    """Rebuild `field [asc|desc], ...` as Frappe's quoted sort string; no raw SQL passes."""
+    if order_by is None:
+        return None
+    rule = f"order_by must be '<fieldname> [asc|desc]', up to {_ORDER_MAX_TERMS} joined by commas"
+    if not isinstance(order_by, str) or not order_by.strip():
+        raise ValueError(rule)
+    terms = order_by.split(",")
+    if len(terms) > _ORDER_MAX_TERMS:
+        raise ValueError(rule)
+    doctype = schema.get("name")
+    sort = []
+    for term in terms:
+        match = _ORDER_TERM.fullmatch(term)
+        if not match:
+            raise ValueError(f"{rule}; got {term.strip()!r}")
+        _assert_value_column(schema, match[1])
+        sort.append(f"`tab{doctype}`.`{match[1]}` {(match[2] or 'asc').lower()}")
+    return ", ".join(sort)
+
+
+def _report_group_by(schema: dict[str, Any], group_by: Any) -> dict[str, str] | None:
+    """Build the `group_by` settings Frappe's Report Builder saves (backquoted columns)."""
+    if group_by is None:
+        return None
+    if not isinstance(group_by, dict):
+        raise ValueError("group_by must be an object with field and aggregate_function")
+    unknown = sorted(set(group_by) - set(_REPORT_GROUP_BY_KEYS))
+    if unknown:
+        raise ValueError(
+            f"Unknown group_by keys: {', '.join(map(str, unknown))}; "
+            f"allowed: {', '.join(_REPORT_GROUP_BY_KEYS)}"
+        )
+    doctype = schema.get("name")
+    field = group_by.get("field")
+    _assert_value_column(schema, field)
+    function = group_by.get("aggregate_function")
+    if function not in _REPORT_AGGREGATES:
+        raise ValueError(f"aggregate_function must be one of: {', '.join(_REPORT_AGGREGATES)}")
+    aggregate_on = group_by.get("aggregate_on")
+    settings = {"group_by": f"`tab{doctype}`.`{field}`", "aggregate_function": function}
+    if function == "count":
+        if aggregate_on is not None:
+            raise ValueError("aggregate_on applies to sum and avg only")
+        return settings
+    if aggregate_on is None:
+        raise ValueError(f"{function} needs aggregate_on, a numeric field of {doctype}")
+    row = _assert_value_column(schema, aggregate_on)
+    if (row or {}).get("fieldtype") not in _REPORT_NUMERIC_FIELDTYPES:
+        raise ValueError(f"aggregate_on must name a numeric field of {doctype}")
+    settings["aggregate_on"] = f"`tab{doctype}`.`{aggregate_on}`"
+    return settings
+
+
+def _report_sample(doctype: str, settings: dict[str, Any]) -> dict[str, Any]:
+    """Run a saved report's settings the way the Report Builder does, for a few rows.
+
+    `query_report.run` returns nothing for Report Builder reports, so this calls the
+    permission-checked `frappe.desk.reportview.get_list` with the same columns and filters.
+    """
+    doctype_columns = [
+        f"`tab{dt}`.`{field}`" for field, dt in settings["fields"] if field != _AGGREGATE_COLUMN
+    ]
+    params: dict[str, Any] = {
+        "doctype": doctype,
+        "fields": json.dumps(doctype_columns),
+        "filters": json.dumps(settings["filters"]),
+        "order_by": settings.get("order_by") or f"`tab{doctype}`.`creation` desc",
+        "start": 0,
+        "page_length": _REPORT_SAMPLE_ROWS + 1,
+        "view": "Report",
+    }
+    group_by = settings.get("group_by")
+    if group_by:
+        aggregate_on = group_by.get("aggregate_on")
+        params.update(
+            group_by=group_by["group_by"],
+            aggregate_function=group_by["aggregate_function"],
+            aggregate_on_field=aggregate_on.split(".")[-1].strip("`") if aggregate_on else "name",
+            aggregate_on_doctype=doctype,
+        )
+    try:
+        rows = _request("GET", "/api/method/frappe.desk.reportview.get_list", params=params)
+    except (RuntimeError, httpx.HTTPError) as error:
+        return {"error": str(error)[:_DRIFT_MAX_TEXT]}
+    rows = rows if isinstance(rows, list) else []
+    state = {"truncated": False}
+    return {
+        "rows": _bounded(rows[:_REPORT_SAMPLE_ROWS], state),
+        "truncated": len(rows) > _REPORT_SAMPLE_ROWS or state["truncated"],
+    }
+
+
+@server.tool()
+def upsert_report(
+    name: str,
+    ref_doctype: str,
+    columns: list[str],
+    filters: dict[str, Any] | list[list[Any]] | None = None,
+    order_by: str | None = None,
+    group_by: dict[str, str] | None = None,
+    add_totals_row: bool = False,
+    is_standard: bool = False,
+    module: str | None = None,
+    expected_modified: str | None = None,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Preview or create/replace a saved Report Builder report on a DocType.
+
+    Args:
+        name: Report name; an existing Report Builder report with this name is replaced.
+        ref_doctype: The DocType the report lists (not a child table or Single).
+        columns: 1-50 columns, in order: fieldnames of `ref_doctype` or standard columns
+            (name, owner, creation, modified, modified_by, docstatus, idx), or
+            `<child DocType>.<fieldname>` for a field of one of its child tables.
+        filters: Saved filters, same shapes and operators as `list_documents`.
+        order_by: `<fieldname> [asc|desc]`, up to 3 joined by commas; fields of `ref_doctype`.
+        group_by: `{"field": <fieldname>, "aggregate_function": "count"|"sum"|"avg",
+            "aggregate_on": <numeric fieldname, for sum/avg>}`. With it, `columns` must be
+            exactly `[field]` and `order_by` is not allowed (Frappe sorts by the aggregate).
+        add_totals_row: Add Frappe's totals row.
+        is_standard: Ship it with an app: Frappe writes it to the module's `report/` folder
+            in developer mode (Administrator only). Needs `module`, of an app other than
+            frappe/erpnext.
+        module: The Module Def of a standard report.
+        expected_modified: The preview's `modified`, required to confirm a replacement.
+        confirm: False returns a preview; True saves and returns a few sample rows.
+
+    Query Reports and Script Reports run SQL or Python, so this tool never creates or edits
+    them.
+    """
+    if not isinstance(name, str) or not _SAFE_NAME.fullmatch(name):
+        raise ValueError("Invalid Report name")
+    bundle = _meta_bundle(ref_doctype)
+    schema = bundle["doctype"]
+    if schema.get("istable"):
+        raise ValueError(f"{ref_doctype} is a child table; build the report on its parent DocType")
+    if schema.get("issingle"):
+        raise ValueError(f"{ref_doctype} is a Single DocType; it has no list to report on")
+    if not isinstance(columns, list) or not 1 <= len(columns) <= _REPORT_MAX_COLUMNS:
+        raise ValueError(f"columns must be a list of 1-{_REPORT_MAX_COLUMNS} column names")
+    fields = [_report_column(bundle, column) for column in columns]
+    seen: set[tuple[str, str]] = set()
+    for column, field in zip(columns, fields, strict=True):
+        if tuple(field) in seen:
+            raise ValueError(f"Duplicate column: {column}")
+        seen.add(tuple(field))
+    filter_rows = _report_filters(bundle, filters)
+    sort = _report_order_by(schema, order_by)
+    grouping = _report_group_by(schema, group_by)
+    if grouping:
+        if columns != [group_by["field"]]:
+            raise ValueError(
+                f"With group_by, columns must be exactly [{group_by['field']!r}]; Frappe shows "
+                "the group field and the aggregate"
+            )
+        if sort is not None:
+            raise ValueError("order_by cannot be combined with group_by; Frappe sorts by the "
+                             "aggregate")
+        fields.append([_AGGREGATE_COLUMN, ref_doctype])
+        sort = f"{_AGGREGATE_COLUMN} desc"
+    app = None
+    if is_standard:
+        app = _standard_module(module, "report")
+    elif module is not None:
+        raise ValueError("module applies to standard reports only; set is_standard")
+    current = _config_record("Report", name)
+    if current:
+        report_type = current.get("report_type")
+        if report_type != "Report Builder":
+            raise ValueError(
+                f"{name} is a {report_type}; this tool edits Report Builder reports only, "
+                "and the report type cannot be changed"
+            )
+        if current.get("is_standard") == "Yes" and not is_standard:
+            raise ValueError(
+                f"{name} is a standard report; Frappe refuses to make it site-only. "
+                "Pass is_standard with its module, or use another name"
+            )
+    if confirm and current and (
+        not expected_modified or str(current.get("modified")) != expected_modified
+    ):
+        raise ValueError(_STALE_DOCUMENT)
+    try:
+        old_settings = json.loads((current or {}).get("json") or "{}")
+    except ValueError:
+        old_settings = {}
+    if not isinstance(old_settings, dict):
+        old_settings = {}
+    # Keys this tool does not manage (column widths, chart settings) are kept.
+    settings = {
+        **old_settings,
+        "fields": fields,
+        "filters": filter_rows,
+        "order_by": sort,
+        "add_totals_row": int(add_totals_row),
+        "group_by": grouping,
+    }
+    settings.setdefault("page_length", _REPORT_PAGE_LENGTH)
+    record: dict[str, Any] = {
+        "ref_doctype": ref_doctype,
+        "report_type": "Report Builder",
+        # Sent explicitly: left empty, Frappe makes an Administrator's report standard in
+        # developer mode and writes it into the DocType's module.
+        "is_standard": "Yes" if is_standard else "No",
+    }
+    if is_standard:
+        record["module"] = module
+    values = {**record, "json": json.dumps(settings)}
+    files = (
+        _record_files(app or "", module or "", "Report", name, (".json",), True)
+        if is_standard
+        else None
+    )
+    if not confirm:
+        preview: dict[str, Any] = {
+            "preview": True,
+            "action": "upsert_report",
+            "report": name,
+            "exists": current is not None,
+            "modified": current.get("modified") if current else None,
+            "record": record,
+            "settings": settings,
+            "requires_confirmation": True,
+        }
+        if current:
+            state = {"truncated": False}
+            changes = {
+                key: {"from": current.get(key), "to": value}
+                for key, value in record.items()
+                if not _same(current.get(key), value)
+            }
+            changes.update(
+                {
+                    key: {"from": old_settings.get(key), "to": value}
+                    for key, value in settings.items()
+                    if not _same(old_settings.get(key), value)
+                }
+            )
+            preview["changes"] = _bounded(changes, state)
+            preview["changes_truncated"] = state["truncated"]
+        if files:
+            preview["app_files"] = files
+            preview["requires_developer_mode"] = True
+            preview["notes"] = [
+                "Frappe saves a standard report only for Administrator in developer mode, then "
+                "writes these files. A developer-mode Bench may reload.",
+            ]
+        return preview
+    saved, reconciled = _save_config_record(
+        "Report",
+        values if current else {"report_name": name, **values},
+        name,
+        expected_modified if current else None,
+    )
+    result: dict[str, Any] = {
+        "saved": True,
+        "created": current is None,
+        "report": name,
+        "modified": saved.get("modified") if isinstance(saved, dict) else None,
+        "reconciled_after_server_reload": reconciled,
+        "sample": _report_sample(ref_doctype, settings),
+    }
+    if files:
+        result["app_files"] = files
+    return result
+
+
+_WORKSPACE_TARGET_TYPES = ("DocType", "Report", "Page")
+_WORKSPACE_MAX_ITEMS = 50
+_WORKSPACE_LABEL_MAX = 140
+_WORKSPACE_DOC_VIEWS = ("List", "Report Builder", "Dashboard", "Tree", "New", "Calendar", "Image")
+_WORKSPACE_COLOR = re.compile(r"[A-Za-z]{1,20}|#[0-9A-Fa-f]{3,8}")
+_WORKSPACE_SHORTCUT_KEYS = ("label", "type", "link_to", "color", "doc_view")
+_WORKSPACE_CARD_KEYS = ("label", "links")
+_WORKSPACE_LINK_KEYS = ("label", "type", "link_to")
+# Columns of existing rows that this tool does not set but carries over on replacement.
+_WORKSPACE_SHORTCUT_KEPT = ("icon", "stats_filter", "format", "restrict_to_domain")
+_WORKSPACE_LINK_KEPT = ("icon", "description", "dependencies", "only_for", "onboard", "hidden")
+_WORKSPACE_BLOCK_KEYS = {
+    "shortcut": "shortcut_name",
+    "card": "card_name",
+    "number_card": "number_card_name",
+    "chart": "chart_name",
+    "quick_list": "quick_list_name",
+    "custom_block": "custom_block_name",
+    "onboarding": "onboarding_name",
+}
+# Blocks backed by records this tool does not manage; custom blocks hold HTML and JavaScript.
+_WORKSPACE_UNMANAGED_BLOCKS = ("chart", "quick_list", "custom_block", "onboarding")
+_WORKSPACE_TEXT_BLOCKS = ("header", "paragraph")
+
+
+def _workspace_blocks(content: Any) -> list[dict[str, Any]]:
+    try:
+        blocks = json.loads(content or "[]")
+    except (TypeError, ValueError):
+        return []
+    return [block for block in blocks if isinstance(block, dict)] if isinstance(
+        blocks, list
+    ) else []
+
+
+def _workspace_layout(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    layout = []
+    for block in blocks:
+        kind = block.get("type")
+        if kind == "spacer":
+            continue
+        data = block.get("data") if isinstance(block.get("data"), dict) else {}
+        layout.append({"block": kind, "name": data.get(_WORKSPACE_BLOCK_KEYS.get(kind, ""))})
+    return layout
+
+
+def _workspace_cards(links: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Group Workspace Link rows into cards: each Card Break row starts one."""
+    cards: list[dict[str, Any]] = []
+    for row in links:
+        if row.get("type") == "Card Break":
+            cards.append({"label": row.get("label"), "row": row, "links": []})
+        elif cards:
+            cards[-1]["links"].append(row)
+        else:
+            cards.append({"label": None, "row": {}, "links": [row]})
+    return cards
+
+
+@server.tool()
+def get_workspace(name: str) -> dict[str, Any]:
+    """Return a Workspace: module, visibility, shortcuts, link cards, number cards, and layout.
+
+    `layout` lists the blocks in the order Desk shows them (spacers left out);
+    `unmanaged_blocks` names block types (charts, quick lists, custom HTML blocks,
+    onboarding) that `upsert_workspace` cannot rebuild.
+    """
+    if not isinstance(name, str) or not _SAFE_NAME.fullmatch(name):
+        raise ValueError("Invalid Workspace name")
+    doc = _request("GET", _resource("Workspace", name))
+    blocks = _workspace_blocks(doc.get("content"))
+    state = {"truncated": False}
+    view = {
+        "name": doc.get("name"),
+        "label": doc.get("label"),
+        "title": doc.get("title"),
+        "module": doc.get("module"),
+        "app": doc.get("app"),
+        "public": bool(doc.get("public")),
+        "private": bool(doc.get("for_user")),
+        "is_hidden": bool(doc.get("is_hidden")),
+        "modified": doc.get("modified"),
+        "shortcuts": [
+            {key: row.get(key) for key in _WORKSPACE_SHORTCUT_KEYS if not _blank(row.get(key))}
+            for row in doc.get("shortcuts") or []
+        ],
+        "link_cards": [
+            {
+                "label": card["label"],
+                "links": [
+                    {"label": row.get("label"), "type": row.get("link_type"),
+                     "link_to": row.get("link_to")}
+                    for row in card["links"]
+                ],
+            }
+            for card in _workspace_cards(doc.get("links") or [])
+        ],
+        "number_cards": [
+            row.get("number_card_name") for row in doc.get("number_cards") or []
+        ],
+        "layout": _workspace_layout(blocks),
+        "unmanaged_blocks": sorted(
+            {block.get("type") for block in blocks}.intersection(_WORKSPACE_UNMANAGED_BLOCKS)
+        ),
+    }
+    bounded = _bounded(view, state)
+    bounded["truncated"] = state["truncated"]
+    return bounded
+
+
+def _workspace_item(item: Any, where: str, keys: tuple[str, ...]) -> dict[str, Any]:
+    if not isinstance(item, dict):
+        raise ValueError(f"{where} must be an object")
+    unknown = sorted(set(item) - set(keys))
+    if unknown:
+        raise ValueError(
+            f"{where}: Unknown keys: {', '.join(map(str, unknown))}; allowed: {', '.join(keys)}"
+        )
+    label = item.get("label")
+    if not isinstance(label, str) or not label.strip() or len(label) > _WORKSPACE_LABEL_MAX:
+        raise ValueError(f"{where}: label must be non-empty text of at most "
+                         f"{_WORKSPACE_LABEL_MAX} characters")
+    if "links" in keys:
+        return item
+    if item.get("type") not in _WORKSPACE_TARGET_TYPES:
+        raise ValueError(
+            f"{where}: type must be DocType, Report, or Page, got {item.get('type')!r} "
+            "(URL and other targets are refused)"
+        )
+    link_to = item.get("link_to")
+    if not isinstance(link_to, str) or not _SAFE_NAME.fullmatch(link_to):
+        raise ValueError(f"{where}: link_to must name an existing {item['type']}")
+    return item
+
+
+def _unique_labels(items: list[dict[str, Any]], what: str) -> None:
+    seen: set[str] = set()
+    for item in items:
+        if item["label"] in seen:
+            raise ValueError(f"Duplicate {what} label: {item['label']}")
+        seen.add(item["label"])
+
+
+def _records_by_name(doctype: str, names: set[str], fields: list[str]) -> dict[str, Any]:
+    """Read the named records of `doctype` in one list request; refuse any that is missing."""
+    if not names:
+        return {}
+    wanted = sorted(names)
+    rows = _request(
+        "GET",
+        _resource(doctype),
+        params={
+            "fields": json.dumps(["name", *fields]),
+            "filters": _filters([["name", "in", wanted]]),
+            "limit_page_length": len(wanted),
+        },
+    )
+    found = {row.get("name"): row for row in rows}
+    missing = [name for name in wanted if name not in found]
+    if missing:
+        raise ValueError(f"Unknown {doctype} on the target site: {', '.join(missing)}")
+    return found
+
+
+def _workspace_targets(items: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    names: dict[str, set[str]] = {kind: set() for kind in _WORKSPACE_TARGET_TYPES}
+    for item in items:
+        names[item["type"]].add(item["link_to"])
+    found = {
+        "DocType": _records_by_name("DocType", names["DocType"], ["istable"]),
+        "Report": _records_by_name("Report", names["Report"], ["report_type", "ref_doctype"]),
+        "Page": _records_by_name("Page", names["Page"], []),
+    }
+    for item in items:
+        if item["type"] == "DocType" and found["DocType"][item["link_to"]].get("istable"):
+            raise ValueError(
+                f"{item['label']}: {item['link_to']} is a child table; link its parent DocType"
+            )
+    return found
+
+
+def _kept(old: dict[str, Any] | None, keys: tuple[str, ...]) -> dict[str, Any]:
+    return {key: old[key] for key in keys if old and not _is_empty(old.get(key))}
+
+
+def _block_id(kind: str, label: str) -> str:
+    # Stable ids, so the same layout gives the same content and diffs stay small.
+    return hashlib.sha1(f"{kind}\0{label}".encode(), usedforsecurity=False).hexdigest()[:10]
+
+
+def _workspace_content(
+    number_cards: list[str], shortcuts: list[str], cards: list[str]
+) -> str:
+    """Lay out number cards, then shortcuts, then link cards, as Desk's editor blocks."""
+    blocks: list[dict[str, Any]] = []
+    for kind, labels, col in (
+        ("number_card", number_cards, 4),
+        ("shortcut", shortcuts, 3),
+        ("card", cards, 4),
+    ):
+        if not labels:
+            continue
+        if blocks:
+            blocks.append(
+                {"id": _block_id("spacer", kind), "type": "spacer", "data": {"col": 12}}
+            )
+        blocks.extend(
+            {
+                "id": _block_id(kind, label),
+                "type": kind,
+                "data": {_WORKSPACE_BLOCK_KEYS[kind]: label, "col": col},
+            }
+            for label in labels
+        )
+    return json.dumps(blocks)
+
+
+def _order_changes(before: list[str], after: list[str]) -> dict[str, list[str]]:
+    """Name the items added, removed, and moved (kept but in a new relative order)."""
+    kept_before = [label for label in before if label in after]
+    kept_after = [label for label in after if label in before]
+    return {
+        "added": [label for label in after if label not in before],
+        "removed": [label for label in before if label not in after],
+        "moved": [
+            label
+            for index, label in enumerate(kept_after)
+            if kept_before.index(label) != index
+        ],
+    }
+
+
+@server.tool()
+def upsert_workspace(
+    name: str,
+    module: str,
+    shortcuts: list[dict[str, str]],
+    link_cards: list[dict[str, Any]] | None = None,
+    number_cards: list[str] | None = None,
+    expected_modified: str | None = None,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Preview or create/replace a public, standard Workspace that ships with an app module.
+
+    Args:
+        name: Workspace name, also its label and title (the sidebar entry).
+        module: Its Module Def, of an app other than frappe/erpnext. Frappe writes the
+            Workspace to `<module>/workspace/<name>/` in developer mode.
+        shortcuts: 0-50 tiles, in order: `{"label", "type": "DocType"|"Report"|"Page",
+            "link_to", "color"?, "doc_view"?}`. `link_to` must exist; `doc_view` (List,
+            Report Builder, Dashboard, Tree, New, Calendar, Image) applies to DocTypes only.
+        link_cards: 0-50 cards, in order: `{"label", "links": [{"label", "type", "link_to"}]}`
+            with 1-50 links each, same types and checks as shortcuts.
+        number_cards: Names of existing Number Card records, in order.
+        expected_modified: The preview's `modified`, required to confirm a replacement.
+        confirm: False returns a preview; True saves.
+
+    The tool builds the Workspace layout itself: number cards, then shortcuts, then link
+    cards. URL shortcuts, custom HTML blocks, charts, and private Workspaces are refused.
+    """
+    if not isinstance(name, str) or not _SAFE_NAME.fullmatch(name):
+        raise ValueError("Invalid Workspace name")
+    link_cards = link_cards or []
+    number_cards = number_cards or []
+    for what, items in (("shortcuts", shortcuts), ("link_cards", link_cards),
+                        ("number_cards", number_cards)):
+        if not isinstance(items, list) or len(items) > _WORKSPACE_MAX_ITEMS:
+            raise ValueError(f"{what} must be a list of at most {_WORKSPACE_MAX_ITEMS} entries")
+    if not (shortcuts or link_cards or number_cards):
+        raise ValueError("Give at least one shortcut, link card, or number card")
+    shortcut_items = [
+        _workspace_item(item, f"shortcuts[{index}]", _WORKSPACE_SHORTCUT_KEYS)
+        for index, item in enumerate(shortcuts)
+    ]
+    for item in shortcut_items:
+        doc_view = item.get("doc_view")
+        if doc_view is not None:
+            if item["type"] != "DocType":
+                raise ValueError(f"{item['label']}: doc_view applies to DocType shortcuts only")
+            if doc_view not in _WORKSPACE_DOC_VIEWS:
+                raise ValueError(
+                    f"{item['label']}: doc_view must be one of: {', '.join(_WORKSPACE_DOC_VIEWS)}"
+                )
+        color = item.get("color")
+        if color is not None and (
+            not isinstance(color, str) or not _WORKSPACE_COLOR.fullmatch(color)
+        ):
+            raise ValueError(f"{item['label']}: color must be a color name or a #hex value")
+    _unique_labels(shortcut_items, "shortcut")
+    cards = [
+        _workspace_item(card, f"link_cards[{index}]", _WORKSPACE_CARD_KEYS)
+        for index, card in enumerate(link_cards)
+    ]
+    _unique_labels(cards, "link card")
+    card_links: list[list[dict[str, Any]]] = []
+    for index, card in enumerate(cards):
+        links = card.get("links")
+        if not isinstance(links, list) or not 1 <= len(links) <= _WORKSPACE_MAX_ITEMS:
+            raise ValueError(
+                f"{card['label']}: links must be a list of 1-{_WORKSPACE_MAX_ITEMS} links"
+            )
+        card_links.append(
+            [
+                _workspace_item(link, f"link_cards[{index}].links[{position}]",
+                                _WORKSPACE_LINK_KEYS)
+                for position, link in enumerate(links)
+            ]
+        )
+    if any(not isinstance(card, str) or not _SAFE_NAME.fullmatch(card) for card in number_cards):
+        raise ValueError("number_cards must be names of existing Number Card records")
+    if len(set(number_cards)) != len(number_cards):
+        raise ValueError("Duplicate number card in number_cards")
+    app = _standard_module(module, "Workspace")
+    found = _workspace_targets(shortcut_items + [link for links in card_links for link in links])
+    _records_by_name("Number Card", set(number_cards), [])
+
+    current = _config_record("Workspace", name)
+    warnings: list[str] = []
+    old_blocks: list[dict[str, Any]] = []
+    if current:
+        if current.get("for_user") or not current.get("public"):
+            raise ValueError(
+                f"Workspace {name} is private (for one user); this tool manages public "
+                "Workspaces only"
+            )
+        if current.get("module") != module:
+            if current.get("module"):
+                _standard_module(current.get("module"), "Workspace")
+            warnings.append(
+                f"Moves the Workspace from module {current.get('module')!r} to {module!r}; "
+                "Frappe deletes the old module's Workspace folder"
+            )
+        old_blocks = _workspace_blocks(current.get("content"))
+        kinds = {block.get("type") for block in old_blocks}
+        unmanaged = sorted(kinds.intersection(_WORKSPACE_UNMANAGED_BLOCKS))
+        if unmanaged:
+            raise ValueError(
+                f"Workspace {name} has {', '.join(unmanaged)} blocks that this tool cannot "
+                "rebuild; edit it in Desk"
+            )
+        text = sorted(kinds.intersection(_WORKSPACE_TEXT_BLOCKS))
+        if text:
+            warnings.append(
+                f"Removes the {' and '.join(text)} blocks from the layout; their text is lost"
+            )
+    if confirm and current and (
+        not expected_modified or str(current.get("modified")) != expected_modified
+    ):
+        raise ValueError(_STALE_DOCUMENT)
+
+    old_shortcuts = {row.get("label"): row for row in (current or {}).get("shortcuts") or []}
+    shortcut_rows = [
+        {**_kept(old_shortcuts.get(item["label"]), _WORKSPACE_SHORTCUT_KEPT), **item}
+        for item in shortcut_items
+    ]
+    old_cards = {
+        card["label"]: card for card in _workspace_cards((current or {}).get("links") or [])
+    }
+    link_rows: list[dict[str, Any]] = []
+    for card, links in zip(cards, card_links, strict=True):
+        old_card = old_cards.get(card["label"])
+        old_links = {row.get("label"): row for row in (old_card or {}).get("links", [])}
+        link_rows.append(
+            {
+                **_kept((old_card or {}).get("row"), _WORKSPACE_LINK_KEPT),
+                "type": "Card Break",
+                "label": card["label"],
+                "link_count": len(links),
+            }
+        )
+        for link in links:
+            target = found[link["type"]].get(link["link_to"]) or {}
+            link_rows.append(
+                {
+                    **_kept(old_links.get(link["label"]), _WORKSPACE_LINK_KEPT),
+                    "type": "Link",
+                    "label": link["label"],
+                    "link_type": link["type"],
+                    "link_to": link["link_to"],
+                    "is_query_report": int(
+                        link["type"] == "Report"
+                        and target.get("report_type") != "Report Builder"
+                    ),
+                }
+            )
+    number_card_rows = [{"number_card_name": card, "label": card} for card in number_cards]
+    content = _workspace_content(
+        number_cards, [item["label"] for item in shortcut_items], [card["label"] for card in cards]
+    )
+    values: dict[str, Any] = {
+        "label": name,
+        "title": name,
+        "module": module,
+        "public": 1,
+        "for_user": "",
+        "type": "Workspace",
+        "content": content,
+        "shortcuts": shortcut_rows,
+        "links": link_rows,
+        "number_cards": number_card_rows,
+    }
+    files = _record_files(app, module, "Workspace", name, (".json",), False)
+    if not confirm:
+        preview: dict[str, Any] = {
+            "preview": True,
+            "action": "upsert_workspace",
+            "workspace": name,
+            "exists": current is not None,
+            "modified": current.get("modified") if current else None,
+            "record": {key: value for key, value in values.items() if key != "content"},
+            "content": content,
+            "layout": _workspace_layout(json.loads(content)),
+            "warnings": warnings,
+            "app_files": files,
+            "requires_developer_mode": True,
+            "notes": [
+                "Frappe writes a public Workspace to its module only in developer mode, and "
+                "saving one needs the Workspace Manager role. A developer-mode Bench may reload.",
+            ],
+            "requires_confirmation": True,
+        }
+        if current:
+            old_layout = _workspace_layout(old_blocks)
+
+            def placed(kind: str, rows: list[dict[str, Any]], key: str) -> list[str]:
+                # Order as laid out; rows missing from the layout follow in table order.
+                labels = [block["name"] for block in old_layout if block["block"] == kind]
+                return labels + [
+                    row.get(key) for row in rows if row.get(key) not in labels and row.get(key)
+                ]
+
+            card_changes = _order_changes(
+                placed("card", [card["row"] for card in old_cards.values()], "label"),
+                [card["label"] for card in cards],
+            )
+            card_changes["changed"] = [
+                card["label"]
+                for card, links in zip(cards, card_links, strict=True)
+                if card["label"] in old_cards
+                and [
+                    (row.get("label"), row.get("link_type"), row.get("link_to"))
+                    for row in old_cards[card["label"]]["links"]
+                ]
+                != [(link["label"], link["type"], link["link_to"]) for link in links]
+            ]
+            preview["changes"] = {
+                "shortcuts": _order_changes(
+                    placed("shortcut", current.get("shortcuts") or [], "label"),
+                    [item["label"] for item in shortcut_items],
+                ),
+                "link_cards": card_changes,
+                "number_cards": _order_changes(
+                    placed("number_card", current.get("number_cards") or [], "label"),
+                    number_cards,
+                ),
+            }
+        return preview
+    try:
+        saved, reconciled = _save_config_record(
+            "Workspace", values, name, expected_modified if current else None
+        )
+    except FrappeError as error:
+        if error.exc_type == "NameError":
+            raise ValueError(
+                f"Frappe refused the name {name!r}: a Page, DocType, or Workspace already uses "
+                "the same Desk route; choose another name"
+            ) from error
+        raise
+    return {
+        "saved": True,
+        "created": current is None,
+        "workspace": name,
+        "modified": saved.get("modified") if isinstance(saved, dict) else None,
+        "warnings": warnings,
+        "reconciled_after_server_reload": reconciled,
+        "app_files": files,
+    }
 
 
 def main() -> None:

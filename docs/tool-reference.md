@@ -11,7 +11,7 @@ All tools execute in the standalone MCP process and use the configured Frappe HT
 | `get_doctype_schema` | Read one DocType's metadata as Frappe's form sees it, Custom Fields and Property Setters applied | `doctype`, `detail` (`compact` or `full`) |
 | `list_documents` | List records through Frappe REST | `doctype`, `filters` (object or list), `fields` (max 40), `limit` (max 100) |
 | `get_document` | Read a record through Frappe REST; always returns `doctype`, `name`, `modified`, and `docstatus` | `doctype`, `name`, `fields`, `child_row_limit` (max 200) |
-| `run_report` | Run a report through Frappe's Query Report endpoint | `report_name`, `filters`, `limit` (max 500) |
+| `run_report` | Run a Query, Script, or Custom report through Frappe's Query Report endpoint (it returns no rows for Report Builder reports; `upsert_report` returns a sample of those) | `report_name`, `filters`, `limit` (max 500) |
 
 The generic resource API is the common access path for standard and custom app DocTypes. A custom DocType or field that the connected user cannot read remains inaccessible.
 
@@ -245,6 +245,66 @@ The preview returns `record` (what will be saved), `warnings`, and, when the rul
 
 Both upsert tools save through `_save_config_record`: an update sends `modified`, so Frappe refuses a record that changed since the preview, and if a developer-mode Bench reloads while Frappe writes a standard Notification's files, the record is re-read and the save counts only if it holds the change.
 
+## Reports and Workspaces
+
+Saved reports and Workspaces finish a module: they give users a list to work from and a sidebar page with shortcuts. Only Report Builder reports are supported; Query and Script Reports run SQL or Python, and custom HTML blocks carry HTML and JavaScript, so they are refused (see [security](security.md#code-fields-and-templates)).
+
+| Tool | Purpose | Arguments |
+|---|---|---|
+| `upsert_report` | Create or replace a Report Builder report | `name`, `ref_doctype`, `columns`, optional `filters`, `order_by`, `group_by`, `add_totals_row`, `is_standard`, `module`; preview, then confirm (with `expected_modified` when it exists) |
+| `get_workspace` | A Workspace's module, visibility, shortcuts, link cards, number cards, and block `layout` in display order; `unmanaged_blocks` names blocks `upsert_workspace` cannot rebuild | `name` |
+| `upsert_workspace` | Create or replace a public, standard Workspace of an app module | `name`, `module`, `shortcuts`, optional `link_cards`, `number_cards`; preview, then confirm (with `expected_modified` when it exists) |
+
+### `upsert_report`
+
+```json
+{
+  "name": "Open Samples",
+  "ref_doctype": "Lab Sample",
+  "columns": ["name", "title", "status", "Lab Reading.value"],
+  "filters": {"status": "Open"},
+  "order_by": "modified desc"
+}
+```
+
+| Argument | Rule |
+|---|---|
+| `ref_doctype` | A DocType that is neither a child table nor a Single. |
+| `columns` | 1-50 distinct columns, in order: a stored field of `ref_doctype` or a standard column (`name`, `owner`, `creation`, `modified`, `modified_by`, `docstatus`, `idx`), or `<child DocType>.<fieldname>` for one of its child tables. Layout and Table fields are not columns. |
+| `filters` | The `list_documents` shapes and operators, up to 50; saved as `[doctype, field, operator, value]` rows. |
+| `order_by` | `<fieldname> [asc|desc]`, up to 3 joined by commas, on fields of `ref_doctype`. The tool rebuilds Frappe's quoted sort string; no other text passes. |
+| `group_by` | `{"field", "aggregate_function": "count"|"sum"|"avg", "aggregate_on"}` (`aggregate_on`, a numeric field, for sum and avg only). With it, `columns` must be exactly `[field]` and `order_by` is refused: Frappe shows the group field plus the aggregate and sorts by it. |
+| `is_standard`, `module` | A standard report ships with the app: in developer mode Frappe writes `<module>/report/<name>/<name>.json` and `__init__.py` files. Frappe lets only Administrator save one. `module` must be a non-custom Module Def of an app other than `frappe` and `erpnext`. The preview lists `app_files`. Without `is_standard` the report is saved with `is_standard: No` explicitly, because Frappe would otherwise make an Administrator's report standard in developer mode and write it into the DocType's module. |
+
+The report's settings go to the Report `json` field with the keys Frappe's Report Builder saves: `fields` (`[fieldname, doctype]` pairs), `filters`, `order_by`, `add_totals_row`, `page_length`, and `group_by` (`group_by`, `aggregate_function`, `aggregate_on`, as backquoted columns). Other keys already in the record, such as `column_widths` and `chart_args`, are kept. An existing report must be a Report Builder report (its type never changes), and a standard report cannot be made site-only.
+
+The preview returns `record`, `settings`, and, when the report exists, `modified` and `changes` (`{key: {from, to}}`, bounded). After a confirmed save, `sample` holds up to 5 rows read with the report's columns, filters, and sort through `frappe.desk.reportview.get_list` (the call the Report Builder makes; `run_report`'s query-report endpoint returns nothing for Report Builder reports), with `truncated`; a failed sample run is returned as `sample.error` and does not undo the save.
+
+### `upsert_workspace`
+
+```json
+{
+  "name": "Lab",
+  "module": "Lab",
+  "shortcuts": [
+    {"label": "Samples", "type": "DocType", "link_to": "Lab Sample", "doc_view": "List", "color": "Blue"},
+    {"label": "Open Samples", "type": "Report", "link_to": "Open Samples"}
+  ],
+  "link_cards": [
+    {"label": "Masters", "links": [{"label": "Lab Sample", "type": "DocType", "link_to": "Lab Sample"}]}
+  ],
+  "number_cards": ["Open Samples Count"]
+}
+```
+
+- **Targets.** Shortcut and link `type` is `DocType`, `Report`, or `Page`, and `link_to` must exist (one list read per type). A DocType target can't be a child table. `URL`, `Dashboard`, and other shortcut types are refused. `doc_view` (`List`, `Report Builder`, `Dashboard`, `Tree`, `New`, `Calendar`, `Image`) applies to DocType shortcuts; `Kanban` needs a Kanban Board and is refused. `color` is a color name or a `#hex` value. Labels are unique among shortcuts and among cards. `number_cards` name existing Number Card records; creating them is out of scope. Up to 50 shortcuts, 50 cards with 1-50 links each, and 50 number cards.
+- **Layout.** The tool writes `content`, the JSON list of editor blocks Desk renders: number cards (`number_card` blocks), then shortcuts (`shortcut`), then link cards (`card`), separated by spacers. Each block names its row by label (`number_card_name`, `shortcut_name`, `card_name`), so the layout always matches the rows. Block ids are derived from the label, so the same input gives the same `content`.
+- **Rows.** Link cards are saved as Frappe's `links` table: a `Card Break` row with `link_count`, then one `Link` row per link; a link to a Query, Script, or Custom report gets `is_query_report: 1` so Desk opens it as a query report. On replacement, columns this tool doesn't set (shortcut `icon`, `stats_filter`, `format`; link `description`, `dependencies`, `onboard`, ...) are carried over from the row with the same label.
+- **Module.** `module` must be a non-custom Module Def of an app other than `frappe` and `erpnext`; when replacing, so must the Workspace's current module. The Workspace is saved `public` with no `for_user`, so in developer mode Frappe writes `<module>/workspace/<name>/<name>.json` (`app_files` in the preview). Saving a public Workspace needs the Workspace Manager role.
+- **Refused on replacement:** a private Workspace, and one whose layout has chart, quick list, custom HTML block, or onboarding blocks (edit those in Desk). Header and paragraph blocks are dropped from the layout with a warning.
+- **Preview** returns `record`, `content`, `layout`, `warnings`, `app_files`, and, when the Workspace exists, `modified` and `changes`: for `shortcuts`, `link_cards`, and `number_cards`, the labels `added`, `removed`, and `moved` (kept, but in a different order), plus `changed` for cards whose links differ.
+- A name whose Desk route is taken by a Page, DocType, or another Workspace (Frappe's `validate_route_conflict`, which compares names lower-cased with spaces as hyphens) is refused by Frappe; the error says so.
+
 ## File export details
 
 `FRAPPE_APPS_PATH` must point to a local Bench `apps/` directory. The requested app and module must exist below it, and the corresponding remote Module Def must name that app as owner. Path traversal and escaping symlinks are rejected. Source export refuses the protected `frappe` and `erpnext` apps. The export preview reports destination paths, bounded diffs, and content hashes. Existing files are backed up under the selected app's `.mcp-frappe-backups/` directory; inspect and commit the resulting files with Git. A successful rollback consumes its manifest and backup files.
@@ -265,4 +325,4 @@ The exporter creates local backups and a rollback manifest, and `rollback_export
 
 ## Deliberate exclusions
 
-There is no arbitrary Python execution, SQL execution, or unrestricted whitelisted-method dispatcher. Other Frappe features such as applying workflow actions to documents, Notification conditions, Slack and SMS channels, file downloads, translations, print rendering, and arbitrary app-specific method calls require explicit wrappers and are not exposed by this standalone release yet. Do not infer a tool exists from the retained legacy source tree.
+There is no arbitrary Python execution, SQL execution, or unrestricted whitelisted-method dispatcher. Query Reports, Script Reports, custom HTML blocks, Dashboard Charts, and private Workspaces are not written. Other Frappe features such as applying workflow actions to documents, Notification conditions, Slack and SMS channels, file downloads, translations, print rendering, and arbitrary app-specific method calls require explicit wrappers and are not exposed by this standalone release yet. Do not infer a tool exists from the retained legacy source tree.
