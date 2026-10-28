@@ -411,7 +411,7 @@ def test_compact_schema_is_at_least_five_times_smaller_than_full(sales_order) ->
 def test_full_schema_returns_the_bundle(sales_order) -> None:
     schema = standalone.get_doctype_schema("Sales Order", detail="full")
 
-    assert set(schema) == {"doctype", "children"}
+    assert set(schema) == {"doctype", "children", "workflow"}
     assert len(schema["doctype"]["fields"]) == 100
     assert "Sales Order Item" in schema["children"]
 

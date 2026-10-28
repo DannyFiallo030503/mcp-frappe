@@ -68,9 +68,9 @@ All settings are described in [installation and configuration](docs/installation
 
 ## First-use workflow
 
-1. Call `list_installed_apps` and `list_doctypes` to discover the target site.
+1. Call `get_site_info`, then `list_doctypes(search=...)`, to discover the target site.
 2. Call `get_doctype_schema` before constructing filters or write payloads.
-3. Read with `list_documents` or `get_document`, requesting only needed data.
+3. Read with `list_documents` (paged with `offset` and `has_more`), `count_documents`, `search_records`, or `get_document`, requesting only needed data.
 4. For a mutation, call the tool with `confirm: false`, review the preview, then confirm with its current `modified` token when required.
 5. For schema changes, preview the operation first and verify the configured app/module ownership.
 6. Call `export_customizations` to preview filesystem changes. Confirm with the returned `preview_id`, then inspect and commit the app files through normal source control.

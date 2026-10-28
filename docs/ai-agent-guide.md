@@ -2,7 +2,7 @@
 
 ## Operating principles
 
-- Begin with `list_installed_apps`, `list_doctypes`, and `get_doctype_schema`; do not assume an ERPNext, HRMS, or custom app catalog.
+- Begin with `get_site_info` (who you are connected as, the Frappe major version, installed apps, and which apps have a local checkout), then `list_doctypes(search=...)` to find the DocType, then `get_doctype_schema`. Do not assume an ERPNext, HRMS, or custom app catalog.
 - Use the target site's naming and field options exactly as returned by Frappe.
 - Request only fields and rows needed. Keep output limits low and narrow filters.
 - Frappe permissions are enforced remotely. If a request is denied, report the missing access; do not try alternate APIs to bypass it. The server already renews an expired password session and retries once, so an HTTP 401 or 403 that reaches you is a real denial or a credential problem; do not retry it.
@@ -13,10 +13,11 @@
 
 ## Read a record type
 
-1. Call `list_doctypes` with an app or module filter.
-2. Call `get_doctype_schema` for the selected DocType. The default `compact` detail gives the data fields with their type, options, and flags, plus child tables; use it for reading and writing records. Ask for `detail="full"` only when editing a DocType needs every property (layout fields, permissions, depends_on, and so on).
-3. Call `list_documents` with explicit fields, filters, and a small limit.
-4. Call `get_document` only for records that need full detail. Without `fields` it returns only fields that have a value; pass `fields` when you need specific ones, empty values, or whole child rows.
+1. Call `get_site_info` once per session. It names the user and the Frappe major version, and says whether `FRAPPE_APPS_PATH` holds the app you will work on. It can't say whether developer mode is on; Frappe has no API for that.
+2. Find the DocType: `list_doctypes(search="sample")` matches part of the name; add `app` or `module` to narrow it. Each row says whether the DocType is custom, a child table, a Single, or submittable.
+3. Call `get_doctype_schema` for the selected DocType. The default `compact` detail gives the data fields with their type, options, and flags, plus child tables; use it for reading and writing records. Ask for `detail="full"` only when editing a DocType needs every property (layout fields, permissions, depends_on, and so on).
+4. Call `list_documents` with explicit fields, filters, and a small limit. To check a number ("how many records still have no customer?"), use `count_documents` instead of listing. To find one record by what a user would type, use `search_records(doctype=..., text=...)`.
+5. Call `get_document` only for records that need full detail. Without `fields` it returns only fields that have a value; pass `fields` when you need specific ones, empty values, or whole child rows.
 
 Schema reads are cached for a few minutes (`FRAPPE_META_TTL`). The MCP refreshes a DocType after changing it with its own schema tools; if the developer just changed a DocType in Desk, the old schema may show until the cache expires.
 
@@ -34,6 +35,8 @@ Filters may use the standard columns (`docstatus`, `creation`, `modified`, `owne
 }
 ```
 
+`list_documents` returns a page: `{"rows", "offset", "limit", "has_more"}`. Read the next page with `offset` set to `offset + limit` while `has_more` is true, and stop once you have what you need. Sort with `order_by="creation asc"` (fields of the DocType, up to three, `asc` or `desc`). For "this or that", put the alternatives in `or_filters`: `or_filters=[["status", "=", "Open"], ["priority", "=", "High"]]` returns records matching either, within whatever `filters` also requires.
+
 `docstatus` is 0 for drafts, 1 for submitted, and 2 for cancelled documents. To match on a child-table value, name the child DocType first: `["Sales Invoice Item", "item_code", "=", "ITEM-001"]`. Read the allowed operators in the tool reference rather than guessing; an unsupported operator is rejected.
 
 ## Change a record
@@ -45,6 +48,18 @@ Filters may use the standard columns (`docstatus`, `creation`, `modified`, `owne
 5. Read the record again to verify the result.
 
 Use the same preview-first pattern for creation/deletion. Do not pass `name`, `docstatus`, `owner`, or other standard columns as values; they are rejected. The exception is `name` on `create_document` for a DocType whose `autoname` is `Prompt`. Do not create records in a live system without explicit user authorization.
+
+### Test my submittable DocType
+
+Use this to check a submittable DocType's controller (`validate`, `on_submit`, `on_cancel`) on a development site. Ask the user first: submitting and cancelling run the controller, which may post or reverse ledger and stock entries.
+
+1. Read the schema: `get_doctype_schema(doctype="Lab Test")`. It must have `is_submittable`. If it has `workflow`, the workflow controls submission and these tools refuse; tell the user.
+2. Create a draft: `create_document(doctype="Lab Test", values={...})`, preview, then confirm. Note the returned `name`.
+3. Preview the submit: `submit_document(doctype="Lab Test", name="LT-0001")`. Check `docstatus` is 0 and read the warning to the user.
+4. Confirm with `confirm=True` and `expected_modified` set to the preview's `modified`. A validation error from the controller comes back as Frappe's message; that is often the result the developer wants to see.
+5. Check the result: `get_document` (docstatus is now 1), and any records the controller should have created, with `list_documents` or `count_documents`.
+6. Preview the cancel: `cancel_document(doctype="Lab Test", name="LT-0001")`, then confirm with its `modified`. Frappe refuses if submitted documents link to this one; cancel those first.
+7. A cancelled document stays (docstatus 2). Delete the test records with `delete_document` when the user is done.
 
 ## Change a DocType
 

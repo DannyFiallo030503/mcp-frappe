@@ -64,7 +64,7 @@ async def delete_if_present(session, doctype: str, name: str) -> bool:
             "list_documents",
             {"doctype": doctype, "filters": {"name": name}, "fields": ["name"], "limit": 1},
         )
-        if not rows:
+        if not rows["rows"]:
             return True
         preview = await read_tool(
             session, "delete_document", {"doctype": doctype, "name": name}
@@ -136,9 +136,9 @@ async def run() -> dict:
                     },
                 )
             )
-            if not doctypes:
+            if not doctypes["rows"]:
                 raise RuntimeError("No app-owned DocType is available for customization testing")
-            doctype = doctypes[0]["name"]
+            doctype = doctypes["rows"][0]["name"]
             custom_field_name = None
             property_setter_name = None
             rollback_id = None
@@ -322,7 +322,7 @@ async def run() -> dict:
                                     "limit": 1,
                                 },
                             )
-                            if remaining_setters:
+                            if remaining_setters["rows"]:
                                 setter_deleted = await delete_if_present(
                                     session, "Property Setter", property_setter_name
                                 )
@@ -338,7 +338,7 @@ async def run() -> dict:
                                 "limit": 1,
                             },
                         )
-                        if not remaining:
+                        if not remaining["rows"]:
                             field_deleted = True
                         else:
                             field_deleted = await delete_if_present(

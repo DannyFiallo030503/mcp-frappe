@@ -157,7 +157,7 @@ async def run() -> dict:
                         },
                     )
                 )
-                if remaining:
+                if remaining["rows"]:
                     raise AssertionError("Temporary ToDo remains after deletion")
                 return {
                     "create_preview": True,

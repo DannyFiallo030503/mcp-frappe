@@ -8,14 +8,19 @@ from frappe_mcp import standalone
 
 def test_server_registers_expected_tools() -> None:
     assert set(standalone.server._tool_manager._tools) == {
+        "get_site_info",
         "list_installed_apps",
         "list_doctypes",
         "get_doctype_schema",
         "list_documents",
+        "count_documents",
+        "search_records",
         "get_document",
         "create_document",
         "update_document",
         "delete_document",
+        "submit_document",
+        "cancel_document",
         "run_report",
         "create_doctype",
         "update_doctype",

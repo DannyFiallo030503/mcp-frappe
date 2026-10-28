@@ -6,14 +6,55 @@ All tools execute in the standalone MCP process and use the configured Frappe HT
 
 | Tool | Purpose | Important arguments |
 |---|---|---|
+| `get_site_info` | Say who is connected and what the site runs: user, app titles and versions, Frappe major version, and which site apps have a checkout under `FRAPPE_APPS_PATH` | none |
 | `list_installed_apps` | Group Module Def records by owning app | none |
-| `list_doctypes` | List site DocTypes | `app`, `module`, `include_child_tables`, `limit` (max 1000) |
+| `list_doctypes` | List site DocTypes a page at a time; each row has `name`, `module`, `custom`, `issingle`, `istable`, `is_submittable` | `search` (part of the name), `app`, `module`, `include_child_tables`, `limit` (max 500, default 100), `offset` |
 | `get_doctype_schema` | Read one DocType's metadata as Frappe's form sees it, Custom Fields and Property Setters applied | `doctype`, `detail` (`compact` or `full`) |
-| `list_documents` | List records through Frappe REST | `doctype`, `filters` (object or list), `fields` (max 40), `limit` (max 100) |
+| `list_documents` | List records through Frappe REST, a page at a time | `doctype`, `filters` (object or list), `or_filters`, `fields` (max 40), `order_by`, `limit` (max 100), `offset` |
+| `count_documents` | Count the records the user may read | `doctype`, `filters` |
+| `search_records` | Find records the way a Link field's dropdown does (`frappe.desk.search.search_link`) | `doctype`, `text`, `filters`, `limit` (max 50) |
 | `get_document` | Read a record through Frappe REST; always returns `doctype`, `name`, `modified`, and `docstatus` | `doctype`, `name`, `fields`, `child_row_limit` (max 200) |
 | `run_report` | Run a Query, Script, or Custom report through Frappe's Query Report endpoint (it returns no rows for Report Builder reports; `upsert_report` returns a sample of those) | `report_name`, `filters`, `limit` (max 500) |
 
 The generic resource API is the common access path for standard and custom app DocTypes. A custom DocType or field that the connected user cannot read remains inaccessible.
+
+### Pages
+
+`list_documents` and `list_doctypes` return one page:
+
+```json
+{"rows": [{"name": "TODO-0001"}], "offset": 0, "limit": 20, "has_more": true}
+```
+
+The tool asks Frappe for `limit + 1` rows and returns `limit`; the extra row only sets `has_more`. To read the next page, call again with `offset` set to `offset + limit`. Records added or removed between calls can shift the pages; sort on a stable column (`creation`, `name`) when paging through a changing list.
+
+### Sorting, OR filters, counts, and search
+
+- `order_by` is `<fieldname> [asc|desc]`, up to three joined by commas, for example `"posting_date desc, name asc"`. Each field must be a stored field or standard column of the DocType (not a layout or Table field); the direction defaults to `asc`. The tool rebuilds the string it sends from those parts, so `name; drop table` and backquoted names are rejected. The default is `modified desc`.
+- `or_filters` takes the same shapes and operators as `filters`. A record must match every `filters` condition and at least one `or_filters` condition.
+- `count_documents` calls `frappe.client.get_count` with the same `filters` validation and returns `{"doctype", "count"}`. Frappe counts only records the user may read.
+- `search_records` calls `frappe.desk.search.search_link` with the DocType's own search fields and title field, as a Link field does. It never sends a custom `query` method or `ignore_user_permissions`. `text` may be empty (up to 140 characters); `filters` uses the `list_documents` shapes. It returns `{"doctype", "results": [{"value", "label", "description"}]}`, where `value` is the record name and empty keys are left out.
+- `list_doctypes(search=...)` matches part of the DocType name, case-insensitively (`["name", "like", "%text%"]`). The text may hold letters, digits, spaces, `_`, `.`, and `-`; `_` matches any one character.
+
+### Site information
+
+`get_site_info` returns:
+
+```json
+{
+  "user": "developer@example.localhost",
+  "apps": [{"app": "frappe", "title": "Frappe Framework", "version": "16.33.1"}],
+  "frappe_major_version": 16,
+  "apps_path": {"configured": true, "site_apps_found": ["lab_app"], "site_apps_missing": ["frappe"]},
+  "notes": ["Frappe exposes developer mode to Desk only ..."]
+}
+```
+
+`user` comes from `frappe.auth.get_logged_user` and `apps` from `frappe.utils.change_log.get_versions`, cut to `title` and `version` (branch and commit details are dropped). `apps_path` is `{"configured": false}` without `FRAPPE_APPS_PATH`, `{"configured": true, "exists": false}` when the folder is missing, and otherwise lists the site's apps with and without a checkout there, using the same containment checks as the file tools. No local path is returned.
+
+Developer mode is not reported. Frappe v16 puts it only in the boot data embedded in the Desk page, and no whitelisted method returns it. Tools that need it (`update_doctype`, standard `create_doctype`, standard reports and Workspaces) explain Frappe's error when it is off.
+
+`list_installed_apps` stays: it lists each app's modules, which `create_doctype`, `upsert_report`, and `upsert_workspace` need, and which `get_versions` does not give.
 
 ### Metadata and who can use the record tools
 
@@ -26,7 +67,8 @@ Metadata is cached in the MCP process for `FRAPPE_META_TTL` seconds (default 300
 `get_doctype_schema` returns the compact form unless `detail` is `full`:
 
 - `compact` (default): the DocType flags `name`, `module`, `istable`, `issingle`, `is_submittable`, `is_tree`, `autoname`, `title_field`, and `custom`, then `fields` with the data fields only. Layout and display fields (Section Break, Column Break, Tab Break, HTML, Button, Fold, Heading, Image, Attachment Gallery) are left out. Each field has only `fieldname`, `label`, `fieldtype`, `options`, `reqd`, `read_only`, `hidden`, `default`, `unique`, and `permlevel`. Keys whose value is false, `0`, or empty are left out. `child_tables` maps each Table and Table MultiSelect field's DocType to its fields in the same form.
-- `full`: `{"doctype": <meta>, "children": {<child DocType>: <meta>}}` with every property Frappe returns (nulls already dropped by Frappe), including layout fields, permissions, links, and actions. Form assets such as client script source and print formats are left out.
+- Both forms say which Workflow is active on the DocType: `workflow` in the compact form (left out when there is none), and `"workflow": <name or null>` in the full form. Frappe's form loader returns it to any logged-in user.
+- `full`: `{"doctype": <meta>, "children": {<child DocType>: <meta>}, "workflow": ...}` with every property Frappe returns (nulls already dropped by Frappe), including layout fields, permissions, links, and actions. Form assets such as client script source and print formats are left out.
 
 ```json
 {"name": "ToDo", "module": "Desk", "fields": [{"fieldname": "status", "label": "Status", "fieldtype": "Select", "options": "Open\nClosed\nCancelled", "default": "Open"}]}
@@ -76,6 +118,8 @@ All conditions are combined with AND. In the four-element form, `doctype` must b
 | `create_document` | Create using native DocType validation | First call with `confirm: false`; inspect, then confirm |
 | `update_document` | Update a record using the native resource API | Confirm with `expected_modified` from the preview |
 | `delete_document` | Delete a record | Confirm with `expected_modified` from the preview |
+| `submit_document` | Submit a draft (docstatus 0) of a submittable DocType, to test its controller | Confirm with `expected_modified` from the preview |
+| `cancel_document` | Cancel a submitted document (docstatus 1) | Confirm with `expected_modified` from the preview |
 | `create_doctype` | Create a standard app DocType or a site-custom DocType through Frappe's native controller | `fields`, `is_submittable`, `is_child_table`, `is_single`, `is_tree`, `is_custom`, `properties`, and `permissions`; preview, inspect, then confirm |
 | `update_doctype` | Change an existing DocType of your own app, or a site-custom DocType: add, change, remove, and move fields, and set DocType settings | `doctype`, `operations`; preview, then confirm with the same operations and `expected_modified` |
 | `delete_doctype` | Delete a DocType created by mistake during development | Preview, then confirm with `expected_modified` |
@@ -91,6 +135,14 @@ Frappe still decides whether the user may perform the operation. A preview is no
 `create_document` and `update_document` accept only the DocType's own fields: standard columns (`name`, `owner`, `docstatus`, `modified`, child-table `parent` columns, ...) and read-only fields are rejected. The one exception is `name` on `create_document` when the DocType's `autoname` is `Prompt` (naming rule "Set by user"); it is sent to Frappe as `__newname`, the way Desk does.
 
 `update_document` checks `expected_modified` before writing and also sends it in the update, so Frappe compares it with the stored value under a row lock. If the document changed in between, the update fails with "Document changed since preview"; request a fresh preview.
+
+`submit_document` and `cancel_document` exist so a developer can test a submittable DocType's controller; amend and workflow actions on documents are not available. Both read the DocType's metadata fresh (not from the cache) and refuse:
+
+- a DocType that is not submittable (`is_submittable` unset);
+- a DocType with an active Workflow. Frappe does not block a direct submit or cancel there: `set_workflow_state_on_action` moves the document to the first workflow state with the new docstatus, skipping the workflow's transitions and roles. So the tools refuse, and the workflow stays in control;
+- a document in the wrong state: submit needs docstatus 0, cancel needs docstatus 1.
+
+The preview shows `docstatus`, `modified`, and warnings: submitting runs `validate`, `before_submit`, and `on_submit`; cancelling runs `before_cancel` and `on_cancel`, which may reverse ledger or stock entries, and Frappe refuses to cancel while submitted documents link to this one. On confirm, `submit_document` re-reads the document, checks `expected_modified`, and posts the whole document to `frappe.client.submit`, which rebuilds it from that dict, so Frappe's own timestamp check refuses it if it changed in between ("Document changed since preview"). `frappe.client.cancel` takes only the DocType and name, so `cancel_document` relies on the `expected_modified` check just before it. Both return `{"submitted"|"cancelled": true, "doctype", "name", "docstatus", "modified"}`.
 
 `create_doctype` accepts native DocField objects in `fields`, so Frappe's DocType controller validates field types and properties. DocType-level values such as `autoname`, `track_changes`, `title_field`, `search_fields`, `sort_field`, and `sort_order` go in `properties`; the MCP restricts this object to recognized DocType settings. Role rules go in `permissions`.
 

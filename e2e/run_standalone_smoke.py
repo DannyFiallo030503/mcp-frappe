@@ -44,10 +44,11 @@ async def run() -> dict:
         async with ClientSession(read, write) as session:
             initialized = await session.initialize()
             tools = await session.list_tools()
+            site_info = result_value(await session.call_tool("get_site_info", {}))
             apps = result_value(await session.call_tool("list_installed_apps", {}))
             doctypes = result_value(
                 await session.call_tool("list_doctypes", {"app": "erpnext", "limit": 5})
-            )
+            )["rows"]
             schema = result_value(
                 await session.call_tool("get_doctype_schema", {"doctype": "Customer"})
             )
@@ -55,7 +56,7 @@ async def run() -> dict:
                 await session.call_tool(
                     "list_documents", {"doctype": "DocType", "fields": ["name"], "limit": 1}
                 )
-            )
+            )["rows"]
             report = result_value(
                 await session.call_tool(
                     "run_report", {"report_name": "Item Balance (Simple)", "limit": 1}
@@ -65,6 +66,8 @@ async def run() -> dict:
                 "server_name": initialized.serverInfo.name,
                 "tool_count": len(tools.tools),
                 "installed_app_count": len(apps),
+                "site_info_app_count": len(site_info.get("apps", [])),
+                "frappe_major_version": site_info.get("frappe_major_version"),
                 "doctype_sample_count": len(doctypes),
                 "customer_schema_field_count": len(schema.get("fields", [])),
                 "document_list_count": len(rows),
@@ -78,7 +81,7 @@ async def run() -> dict:
                     await session.call_tool(
                         "list_doctypes", {"app": "erp_app", "module": "CubaZone", "limit": 5}
                     )
-                )
+                )["rows"]
                 preview = result_value(
                     await session.call_tool(
                         "create_doctype",

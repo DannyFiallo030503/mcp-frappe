@@ -77,7 +77,7 @@ async def cleanup_doctype(session, name: str) -> bool:
                 "limit": 100,
             },
         )
-        for row in rows:
+        for row in rows["rows"]:
             preview = await call(
                 session, "delete_document", {"doctype": doctype, "name": row["name"]}
             )
@@ -91,7 +91,7 @@ async def cleanup_doctype(session, name: str) -> bool:
                     "confirm": True,
                 },
             )
-        return not await call(
+        remaining = await call(
             session,
             "list_documents",
             {
@@ -101,6 +101,7 @@ async def cleanup_doctype(session, name: str) -> bool:
                 "limit": 100,
             },
         )
+        return not remaining["rows"]
 
     for attempt in range(4):
         try:
@@ -114,7 +115,7 @@ async def cleanup_doctype(session, name: str) -> bool:
                 "list_documents",
                 {"doctype": "DocType", "filters": {"name": name}, "fields": ["name"], "limit": 1},
             )
-            if not rows:
+            if not rows["rows"]:
                 return True
             schema = await full_schema(session, name)
             if schema.get("is_virtual") or schema.get("istable"):
@@ -126,11 +127,13 @@ async def cleanup_doctype(session, name: str) -> bool:
                 except Exception:
                     records = []
             else:
-                records = await call(
-                    session,
-                    "list_documents",
-                    {"doctype": name, "fields": ["name"], "limit": 100},
-                )
+                records = (
+                    await call(
+                        session,
+                        "list_documents",
+                        {"doctype": name, "fields": ["name"], "limit": 100},
+                    )
+                )["rows"]
             for record in records:
                 preview = await call(
                     session, "delete_document", {"doctype": name, "name": record["name"]}
@@ -167,7 +170,7 @@ async def cleanup_doctype(session, name: str) -> bool:
             "list_documents",
             {"doctype": "DocType", "filters": {"name": name}, "fields": ["name"], "limit": 1},
         )
-        return not rows
+        return not rows["rows"]
     except Exception:
         return False
 
@@ -374,7 +377,7 @@ async def run() -> dict:
                     },
                 )
                 evidence["record_checks"]["site_custom"] = any(
-                    row.get("title") == f"custom-record-{suffix}" for row in custom_records
+                    row.get("title") == f"custom-record-{suffix}" for row in custom_records["rows"]
                 )
 
                 singles = await create_doctype(

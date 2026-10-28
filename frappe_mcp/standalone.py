@@ -110,6 +110,8 @@ _FILTER_OPERATORS = (
     "is",
     "timespan",
 )
+_ORDER_TERM = re.compile(r"\s*([A-Za-z_][A-Za-z0-9_]*)(?:\s+(asc|desc))?\s*", re.I)
+_ORDER_MAX_TERMS = 3
 _STALE_DOCUMENT = "Document changed since preview; request a fresh preview"
 _DOCTYPE_PROPERTIES = {
     "editable_grid",
@@ -538,7 +540,9 @@ _meta_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 
 
 def _meta_bundle(doctype: str) -> dict[str, Any]:
-    """Return `{"doctype": meta, "children": {child_doctype: meta}}` from Frappe's form loader.
+    """Return `{"doctype": meta, "children": {child_doctype: meta}, "workflow": name | None}`.
+
+    The bundle comes from Frappe's form loader; `workflow` names the DocType's active Workflow.
 
     `getdoctype` returns `frappe.get_meta`, which already holds Custom Fields, Property
     Setters, and Frappe's field order, for any logged-in user; record permissions are still
@@ -556,10 +560,23 @@ def _meta_bundle(doctype: str) -> dict[str, Any]:
     docs = payload.get("docs") if isinstance(payload, dict) else None
     if not isinstance(docs, list) or not docs or any(not isinstance(doc, dict) for doc in docs):
         raise RuntimeError("Unexpected getdoctype response")
+    # FormMeta.load_workflows puts the active Workflow first in `__workflow_docs`.
+    workflow = next(
+        (
+            row.get("name")
+            for row in docs[0].get("__workflow_docs") or []
+            if isinstance(row, dict) and row.get("doctype") == "Workflow"
+        ),
+        None,
+    )
     main, *children = (
         {key: value for key, value in doc.items() if not key.startswith("__")} for doc in docs
     )
-    bundle = {"doctype": main, "children": {child.get("name"): child for child in children}}
+    bundle = {
+        "doctype": main,
+        "children": {child.get("name"): child for child in children},
+        "workflow": workflow,
+    }
     if ttl:
         _meta_cache[doctype] = (fetched_at, bundle)
     return copy.deepcopy(bundle)
@@ -669,6 +686,42 @@ def _assert_filters(bundle: dict[str, Any], filters: dict[str, Any] | list[Any] 
                     f"{target} is not a child table of {doctype}; child tables: {choices}"
                 )
         _assert_operator(operator)
+
+
+def _assert_value_column(
+    schema: dict[str, Any], fieldname: Any, *, child_table: bool = False
+) -> dict[str, Any] | None:
+    """Check a report or sort column is a stored field or standard column; return its DocField."""
+    _assert_readable_fields(schema, [fieldname], child_table=child_table)
+    row = _schema_fields(schema).get(fieldname)
+    fieldtype = (row or {}).get("fieldtype")
+    if fieldtype in _LAYOUT_FIELDTYPES or fieldtype in _TABLE_FIELDTYPES:
+        raise ValueError(
+            f"{fieldname} is a {fieldtype} field of {schema.get('name')}, not a column"
+        )
+    return row
+
+
+def _order_terms(schema: dict[str, Any], order_by: Any) -> list[tuple[str, str]]:
+    """Parse `field [asc|desc], ...` into checked `(fieldname, direction)` pairs.
+
+    Each field must be a stored field or standard column of the DocType, so no SQL passes;
+    callers rebuild the sort string from the pairs.
+    """
+    rule = f"order_by must be '<fieldname> [asc|desc]', up to {_ORDER_MAX_TERMS} joined by commas"
+    if not isinstance(order_by, str) or not order_by.strip():
+        raise ValueError(rule)
+    terms = order_by.split(",")
+    if len(terms) > _ORDER_MAX_TERMS:
+        raise ValueError(rule)
+    pairs = []
+    for term in terms:
+        match = _ORDER_TERM.fullmatch(term)
+        if not match:
+            raise ValueError(f"{rule}; got {term.strip()!r}")
+        _assert_value_column(schema, match[1])
+        pairs.append((match[1], (match[2] or "asc").lower()))
+    return pairs
 
 
 def _expected_modified(doctype: str, name: str, expected: str | None) -> dict[str, Any]:
@@ -1395,16 +1448,101 @@ def list_installed_apps() -> list[dict[str, Any]]:
     return [{"app": app, "modules": names} for app, names in sorted(grouped.items())]
 
 
+def _page(rows: Any, offset: int, limit: int) -> dict[str, Any]:
+    """Wrap a `limit + 1` row read as one page; the extra row only sets `has_more`."""
+    rows = rows if isinstance(rows, list) else []
+    return {"rows": rows[:limit], "offset": offset, "limit": limit, "has_more": len(rows) > limit}
+
+
+def _assert_offset(offset: Any) -> None:
+    if not isinstance(offset, int) or isinstance(offset, bool) or offset < 0:
+        raise ValueError("offset must be zero or a positive integer")
+
+
+_DEVELOPER_MODE_NOTE = (
+    "Frappe exposes developer mode to Desk only (in the page's boot data), not through an API, "
+    "so it is not reported here; tools that need it say so when Frappe refuses a change."
+)
+
+
+def _local_apps(apps: list[str]) -> dict[str, Any]:
+    """Say which site apps have a checkout under FRAPPE_APPS_PATH, without returning paths."""
+    root = os.environ.get("FRAPPE_APPS_PATH")
+    if not root:
+        return {"configured": False}
+    try:
+        Path(root).expanduser().resolve(strict=True)
+    except (OSError, RuntimeError):
+        return {"configured": True, "exists": False}
+    found, missing = [], []
+    for app in apps:
+        try:
+            _app_root(app)
+        except (OSError, RuntimeError, ValueError):
+            missing.append(app)
+        else:
+            found.append(app)
+    return {"configured": True, "site_apps_found": found, "site_apps_missing": missing}
+
+
+@server.tool()
+def get_site_info() -> dict[str, Any]:
+    """Say who is connected and what the site runs: user, app versions, and the local checkout.
+
+    Returns `user`; `apps` as `[{"app", "title", "version"}]` from Frappe's `get_versions`;
+    `frappe_major_version`; and `apps_path`, which says whether `FRAPPE_APPS_PATH` is set and
+    which of the site's apps have a checkout there (no paths are returned). Developer mode
+    is not reported, because Frappe has no API for it; see `notes`.
+    """
+    user = _request("GET", "/api/method/frappe.auth.get_logged_user")
+    versions = _request("GET", "/api/method/frappe.utils.change_log.get_versions")
+    versions = versions if isinstance(versions, dict) else {}
+    apps = []
+    for app, info in sorted(versions.items())[:_DRIFT_MAX_ITEMS]:
+        info = info if isinstance(info, dict) else {}
+        apps.append(
+            {
+                "app": str(app)[:_DRIFT_MAX_TEXT],
+                "title": str(info.get("title") or "")[:_DRIFT_MAX_TEXT],
+                "version": str(info.get("version") or "")[:_DRIFT_MAX_TEXT],
+            }
+        )
+    major = str((versions.get("frappe") or {}).get("version") or "").split(".")[0]
+    return {
+        "user": user,
+        "apps": apps,
+        "frappe_major_version": int(major) if major.isdigit() else None,
+        "apps_path": _local_apps([row["app"] for row in apps]),
+        "notes": [_DEVELOPER_MODE_NOTE],
+    }
+
+
 @server.tool()
 def list_doctypes(
+    search: str | None = None,
     app: str | None = None,
     module: str | None = None,
     include_child_tables: bool = True,
-    limit: int = 500,
-) -> list[dict[str, Any]]:
-    """List DocTypes on the site, optionally filtered by app/module."""
-    if not 1 <= limit <= 1000:
-        raise ValueError("limit must be between 1 and 1000")
+    limit: int = 100,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """List DocTypes on the site, a page at a time, optionally searched and filtered.
+
+    `search` is a case-insensitive part of the DocType name (letters, digits, spaces, `_`,
+    `.`, `-`; `_` matches any one character). `app` keeps DocTypes in that app's modules.
+    Each row has `name`, `module`, `custom`, `issingle`, `istable`, and `is_submittable`.
+    Returns `{"rows", "offset", "limit", "has_more"}`; pass `offset + limit` as the next
+    `offset` while `has_more` is true.
+    """
+    if not 1 <= limit <= 500:
+        raise ValueError("limit must be between 1 and 500")
+    _assert_offset(offset)
+    if search is not None and (
+        not isinstance(search, str) or not _SAFE_NAME.fullmatch(search.strip())
+    ):
+        raise ValueError(
+            "search must be 1-140 letters, digits, spaces, or _ . - (part of a DocType name)"
+        )
     filters: list[list[Any]] = []
     if app:
         modules = _request(
@@ -1418,23 +1556,28 @@ def list_doctypes(
         )
         module_names = [row["name"] for row in modules]
         if not module_names:
-            return []
+            return _page([], offset, limit)
         filters = [["module", "in", module_names]]
     if module:
         filters.append(["module", "=", module])
     if not include_child_tables:
         filters.append(["istable", "=", 0])
+    if search is not None:
+        filters.append(["name", "like", f"%{search.strip()}%"])
     rows = _request(
         "GET",
         _resource("DocType"),
         params={
-            "fields": '["name","module","custom","issingle","istable"]',
+            "fields": json.dumps(
+                ["name", "module", "custom", "issingle", "istable", "is_submittable"]
+            ),
             "filters": _filters(filters),
-            "limit_page_length": limit,
+            "limit_start": offset,
+            "limit_page_length": limit + 1,
             "order_by": "module asc,name asc",
         },
     )
-    return rows
+    return _page(rows, offset, limit)
 
 
 def _compact_fields(meta: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1457,8 +1600,9 @@ def get_doctype_schema(
     Break, Tab Break, HTML, and Button. Each field has only `fieldname`, `label`, `fieldtype`,
     `options`, `reqd`, `read_only`, `hidden`, `default`, `unique`, and `permlevel`, and false or
     empty values are left out. `child_tables` maps each Table field's DocType to its fields in
-    the same form. `full` returns every metadata property as `{"doctype": ..., "children":
-    {child_doctype: ...}}`; use it only when editing a DocType needs every property.
+    the same form, and `workflow` names the active Workflow, if any. `full` returns every
+    metadata property as `{"doctype": ..., "children": {child_doctype: ...}, "workflow": ...}`;
+    use it only when editing a DocType needs every property.
     """
     if detail not in ("compact", "full"):
         raise ValueError('detail must be "compact" or "full"')
@@ -1468,6 +1612,8 @@ def get_doctype_schema(
     meta = bundle["doctype"]
     compact = {key: meta[key] for key in _COMPACT_DOCTYPE_KEYS if meta.get(key)}
     compact["fields"] = _compact_fields(meta)
+    if bundle.get("workflow"):
+        compact["workflow"] = bundle["workflow"]
     if bundle["children"]:
         compact["child_tables"] = {
             name: _compact_fields(child) for name, child in bundle["children"].items()
@@ -1481,34 +1627,106 @@ def list_documents(
     filters: dict[str, Any] | list[list[Any]] | None = None,
     fields: list[str] | None = None,
     limit: int = 20,
-) -> list[dict[str, Any]]:
-    """List permission-filtered records and fields through the standard Frappe REST API.
+    offset: int = 0,
+    order_by: str | None = None,
+    or_filters: dict[str, Any] | list[list[Any]] | None = None,
+) -> dict[str, Any]:
+    """List permission-filtered records a page at a time through the standard Frappe REST API.
 
     `fields` and `filters` may use the DocType's fields plus the standard columns `name`,
     `owner`, `creation`, `modified`, `modified_by`, `docstatus`, and `idx`. `filters` is
     either an object (`{"status": "Open"}`, `{"grand_total": [">", 100]}`) or a list of
     `[field, operator, value]` / `[child_doctype, field, operator, value]` conditions, where
     `child_doctype` is the DocType of one of this DocType's Table fields. Operators: =, !=,
-    <, >, <=, >=, like, not like, in, not in, between, is, timespan.
+    <, >, <=, >=, like, not like, in, not in, between, is, timespan. A record must match
+    every `filters` condition and, when `or_filters` is given (same shapes), at least one of
+    those. `order_by` is `<fieldname> [asc|desc]`, up to 3 joined by commas (default
+    `modified desc`). Returns `{"rows", "offset", "limit", "has_more"}`; pass
+    `offset + limit` as the next `offset` while `has_more` is true.
     """
     if not 1 <= limit <= 100:
         raise ValueError("limit must be between 1 and 100")
+    _assert_offset(offset)
     bundle = _meta_bundle(doctype)
     requested = fields or ["name"]
     if not isinstance(requested, list) or len(requested) > 40:
         raise ValueError("fields must be a list of no more than 40 field names")
     _assert_readable_fields(bundle["doctype"], requested)
     _assert_filters(bundle, filters)
+    _assert_filters(bundle, or_filters)
+    sort = "modified desc"
+    if order_by is not None:
+        sort = ", ".join(
+            f"{field} {direction}" for field, direction in _order_terms(bundle["doctype"], order_by)
+        )
+    params = {
+        "fields": json.dumps(requested),
+        "filters": _filters(filters),
+        "limit_start": offset,
+        "limit_page_length": limit + 1,
+        "order_by": sort,
+    }
+    if or_filters:
+        params["or_filters"] = _filters(or_filters)
+    return _page(_request("GET", _resource(doctype), params=params), offset, limit)
+
+
+def _get_count(doctype: str, filters: dict[str, Any] | list[list[Any]] | None) -> Any:
     return _request(
         "GET",
-        _resource(doctype),
-        params={
-            "fields": json.dumps(requested),
-            "filters": _filters(filters),
-            "limit_page_length": limit,
-            "order_by": "modified desc",
-        },
+        "/api/method/frappe.client.get_count",
+        params={"doctype": doctype, "filters": _filters(filters)},
     )
+
+
+@server.tool()
+def count_documents(
+    doctype: str, filters: dict[str, Any] | list[list[Any]] | None = None
+) -> dict[str, Any]:
+    """Count the records the user may read, with the same `filters` as `list_documents`."""
+    _assert_filters(_meta_bundle(doctype), filters)
+    count = _get_count(doctype, filters)
+    if not isinstance(count, int) or isinstance(count, bool):
+        raise RuntimeError("Unexpected get_count response")
+    return {"doctype": doctype, "count": count}
+
+
+@server.tool()
+def search_records(
+    doctype: str,
+    text: str,
+    filters: dict[str, Any] | list[list[Any]] | None = None,
+    limit: int = 10,
+) -> dict[str, Any]:
+    """Find records the way a Link field's dropdown does, by name and the DocType's search fields.
+
+    Calls Frappe's `frappe.desk.search.search_link` with the DocType's own search settings
+    (never a custom query method) and the user's permissions. `text` may be empty to list
+    the first matches; `filters` takes the `list_documents` shapes. `limit` is 1-50. Returns
+    `{"doctype", "results": [{"value", "label"?, "description"?}]}`, where `value` is the
+    record name.
+    """
+    if not 1 <= limit <= 50:
+        raise ValueError("limit must be between 1 and 50")
+    if not isinstance(text, str) or len(text) > 140:
+        raise ValueError("text must be a string of at most 140 characters")
+    _assert_filters(_meta_bundle(doctype), filters)
+    params: dict[str, Any] = {"doctype": doctype, "txt": text, "page_length": limit}
+    if filters:
+        params["filters"] = _filters(filters)
+    rows = _request("GET", "/api/method/frappe.desk.search.search_link", params=params)
+    results = []
+    for row in (rows if isinstance(rows, list) else [])[:limit]:
+        if not isinstance(row, dict):
+            continue
+        results.append(
+            {
+                key: str(row[key])[:_DRIFT_MAX_TEXT]
+                for key in ("value", "label", "description")
+                if not _is_empty(row.get(key))
+            }
+        )
+    return {"doctype": doctype, "results": results}
 
 
 @server.tool()
@@ -1684,6 +1902,117 @@ def delete_document(
     if reconciled:
         result["reconciled_after_server_reload"] = True
     return result
+
+
+def _lifecycle_target(
+    doctype: str, name: str, action: Literal["submit", "cancel"], docstatus: int
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Read fresh metadata and the document, refusing what submit or cancel can't do here."""
+    _forget_meta(doctype)
+    bundle = _meta_bundle(doctype)
+    if not bundle["doctype"].get("is_submittable"):
+        raise ValueError(f"{doctype} is not submittable; its documents have no {action} step")
+    if bundle.get("workflow"):
+        raise ValueError(
+            f"{doctype} has an active Workflow {bundle['workflow']}; the workflow controls "
+            f"{action}. A direct {action} would skip its transitions and roles, so it is refused."
+        )
+    doc = _request("GET", _resource(doctype, name))
+    if doc.get("docstatus") != docstatus:
+        raise ValueError(
+            f"{action.capitalize()} needs docstatus {docstatus}; {doctype} {name} has "
+            f"docstatus {doc.get('docstatus')}"
+        )
+    return bundle, doc
+
+
+@server.tool()
+def submit_document(
+    doctype: str, name: str, expected_modified: str | None = None, confirm: bool = False
+) -> dict[str, Any]:
+    """Preview or submit a draft (docstatus 0) of a submittable DocType, to test its controller.
+
+    Refuses DocTypes that are not submittable and DocTypes with an active Workflow (the
+    workflow controls submission there). The preview returns `modified`; confirmation must
+    pass it back as `expected_modified`. Submitting runs the controller's `validate`,
+    `before_submit`, and `on_submit`.
+    """
+    _, doc = _lifecycle_target(doctype, name, "submit", 0)
+    if not confirm:
+        return {
+            "preview": True,
+            "action": "submit_document",
+            "doctype": doctype,
+            "name": name,
+            "docstatus": doc.get("docstatus"),
+            "modified": doc.get("modified"),
+            "is_submittable": True,
+            "workflow": None,
+            "warnings": [
+                "Submitting runs the controller's validate, before_submit, and on_submit, which "
+                "may post ledger or stock entries; a submitted document can only be cancelled."
+            ],
+            "requires_confirmation": True,
+        }
+    doc = _expected_modified(doctype, name, expected_modified)
+    # frappe.client.submit rebuilds the document from this dict, so Document.check_if_latest
+    # compares its `modified` with the stored one and refuses a document changed meanwhile.
+    try:
+        result = _request("POST", "/api/method/frappe.client.submit", json={"doc": doc})
+    except FrappeError as error:
+        if error.exc_type == "TimestampMismatchError":
+            raise ValueError(_STALE_DOCUMENT) from error
+        raise
+    result = result if isinstance(result, dict) else {}
+    return {
+        "submitted": True,
+        "doctype": doctype,
+        "name": name,
+        "docstatus": result.get("docstatus"),
+        "modified": result.get("modified"),
+    }
+
+
+@server.tool()
+def cancel_document(
+    doctype: str, name: str, expected_modified: str | None = None, confirm: bool = False
+) -> dict[str, Any]:
+    """Preview or cancel a submitted document (docstatus 1) of a submittable DocType.
+
+    Refuses DocTypes with an active Workflow. The preview returns `modified`; confirmation
+    must pass it back as `expected_modified`. Cancelling runs the controller's
+    `before_cancel` and `on_cancel`, and Frappe refuses it while submitted documents link to
+    this one.
+    """
+    _, doc = _lifecycle_target(doctype, name, "cancel", 1)
+    if not confirm:
+        return {
+            "preview": True,
+            "action": "cancel_document",
+            "doctype": doctype,
+            "name": name,
+            "docstatus": doc.get("docstatus"),
+            "modified": doc.get("modified"),
+            "warnings": [
+                "Cancelling runs the controller's before_cancel and on_cancel, which may reverse "
+                "ledger or stock entries. A cancelled document can't be submitted again; it can "
+                "only be amended (not available in this server)."
+            ],
+            "requires_confirmation": True,
+        }
+    _expected_modified(doctype, name, expected_modified)
+    # frappe.client.cancel takes no `modified`, so the check above is the guard.
+    result = _request(
+        "POST", "/api/method/frappe.client.cancel", json={"doctype": doctype, "name": name}
+    )
+    result = result if isinstance(result, dict) else {}
+    return {
+        "cancelled": True,
+        "doctype": doctype,
+        "name": name,
+        "docstatus": result.get("docstatus"),
+        "modified": result.get("modified"),
+    }
 
 
 @server.tool()
@@ -2189,11 +2518,7 @@ def _check_link_targets(
 def _count_records(doctype: str, filters: list[list[Any]]) -> int | None:
     """Count records through `frappe.client.get_count`; None when Frappe would not say."""
     try:
-        count = _request(
-            "GET",
-            "/api/method/frappe.client.get_count",
-            params={"doctype": doctype, "filters": _filters(filters)},
-        )
+        count = _get_count(doctype, filters)
     except RuntimeError:
         return None
     return count if isinstance(count, int) and not isinstance(count, bool) else None
@@ -4738,23 +5063,7 @@ _REPORT_PAGE_LENGTH = 20
 _REPORT_AGGREGATES = ("count", "sum", "avg")
 _REPORT_GROUP_BY_KEYS = ("field", "aggregate_function", "aggregate_on")
 _REPORT_NUMERIC_FIELDTYPES = frozenset({"Int", "Float", "Currency", "Percent", "Duration"})
-_ORDER_TERM = re.compile(r"\s*([A-Za-z_][A-Za-z0-9_]*)(?:\s+(asc|desc))?\s*", re.I)
-_ORDER_MAX_TERMS = 3
 _AGGREGATE_COLUMN = "_aggregate_column"
-
-
-def _assert_value_column(
-    schema: dict[str, Any], fieldname: Any, *, child_table: bool = False
-) -> dict[str, Any] | None:
-    """Check a report column is a stored field or standard column; return its DocField."""
-    _assert_readable_fields(schema, [fieldname], child_table=child_table)
-    row = _schema_fields(schema).get(fieldname)
-    fieldtype = (row or {}).get("fieldtype")
-    if fieldtype in _LAYOUT_FIELDTYPES or fieldtype in _TABLE_FIELDTYPES:
-        raise ValueError(
-            f"{fieldname} is a {fieldtype} field of {schema.get('name')}, not a column"
-        )
-    return row
 
 
 def _report_column(bundle: dict[str, Any], column: Any) -> list[str]:
@@ -4794,21 +5103,9 @@ def _report_order_by(schema: dict[str, Any], order_by: Any) -> str | None:
     """Rebuild `field [asc|desc], ...` as Frappe's quoted sort string; no raw SQL passes."""
     if order_by is None:
         return None
-    rule = f"order_by must be '<fieldname> [asc|desc]', up to {_ORDER_MAX_TERMS} joined by commas"
-    if not isinstance(order_by, str) or not order_by.strip():
-        raise ValueError(rule)
-    terms = order_by.split(",")
-    if len(terms) > _ORDER_MAX_TERMS:
-        raise ValueError(rule)
     doctype = schema.get("name")
-    sort = []
-    for term in terms:
-        match = _ORDER_TERM.fullmatch(term)
-        if not match:
-            raise ValueError(f"{rule}; got {term.strip()!r}")
-        _assert_value_column(schema, match[1])
-        sort.append(f"`tab{doctype}`.`{match[1]}` {(match[2] or 'asc').lower()}")
-    return ", ".join(sort)
+    terms = _order_terms(schema, order_by)
+    return ", ".join(f"`tab{doctype}`.`{field}` {direction}" for field, direction in terms)
 
 
 def _report_group_by(schema: dict[str, Any], group_by: Any) -> dict[str, str] | None:

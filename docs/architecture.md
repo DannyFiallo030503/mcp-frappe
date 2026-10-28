@@ -28,7 +28,9 @@ The process supports Frappe API token authentication or the standard login endpo
 
 DocType metadata comes from `GET /api/method/frappe.desk.form.load.getdoctype`, the call Desk makes to open a form. Frappe answers with `frappe.get_meta` for the DocType and for each of its Table / Table MultiSelect DocTypes; `Meta` has already added Custom Fields, applied Property Setters, and sorted fields (`field_order`, then `insert_after`). `_meta_bundle()` turns that into `{"doctype": meta, "children": {name: meta}}`, drops the form assets (`__js`, print formats, templates), and caches it per process for `FRAPPE_META_TTL` seconds (default 300, `0` for no cache). The schema tools that change metadata drop the affected entries; record writes to schema DocTypes clear the whole cache.
 
-`getdoctype` needs only a logged-in user, so field validation in the record tools no longer depends on reading the `DocType`, `Custom Field`, and `Property Setter` resources, which only System Manager can list. Record tools therefore work for any user with permission on the DocType, and Frappe still checks that permission on every record request. A filtered `list_documents` makes two requests with a cold cache (metadata, then the list) and one with a warm cache.
+The bundle also carries `workflow`, the name of the DocType's active Workflow, taken from the `__workflow_docs` that `FormMeta.load_workflows` adds. `submit_document` and `cancel_document` drop the cached entry first and read it fresh, since they refuse DocTypes with an active Workflow.
+
+`getdoctype` needs only a logged-in user, so field validation in the record tools no longer depends on reading the `DocType`, `Custom Field`, and `Property Setter` resources, which only System Manager can list. Record tools therefore work for any user with permission on the DocType, and Frappe still checks that permission on every record request. A filtered `list_documents` makes two requests with a cold cache (metadata, then the list) and one with a warm cache. List tools ask for `limit + 1` rows and return `limit`, so `has_more` costs no extra request.
 
 ## Customization and exports
 
