@@ -22,7 +22,7 @@ Frappe remains the source of truth for roles, permissions, validation, workflows
 - Python 3.10 or newer.
 - An MCP-capable host that supports a local `stdio` server.
 - Network access from the MCP process to the target Frappe site.
-- API key credentials, or password login over HTTPS. Password login over HTTP is restricted to loopback and `.localhost` hosts.
+- API key credentials, or password login with automatic session renewal. Both require HTTPS except for loopback and `.localhost` hosts, unless `FRAPPE_ALLOW_INSECURE_HTTP=YES` is set for a trusted development network.
 - For file export only: read/write access to the intended local Bench `apps/` directory, configured through `FRAPPE_APPS_PATH`.
 
 The account's Frappe permissions still apply. An Administrator account can do anything that account is allowed to do in Desk, so use it only in a controlled development environment. The MCP does not assume or embed a password.

@@ -7,6 +7,7 @@ import difflib
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -16,12 +17,13 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 import httpx
 from mcp.server.fastmcp import FastMCP
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
+_log = logging.getLogger(__name__)
 
 
 server = FastMCP("frappe")
@@ -132,6 +134,31 @@ _PERMISSION_MANAGER_EXCLUDED_DOCTYPES = {
 _HOOK_BEGIN = "# BEGIN MCP FRAPPE MANAGED FIXTURES"
 _HOOK_END = "# END MCP FRAPPE MANAGED FIXTURES"
 _PROTECTED_APPS = {"frappe", "erpnext"}
+_LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
+
+
+def _is_local_target(url: str) -> bool:
+    hostname = urlparse(url).hostname or ""
+    return hostname in _LOCAL_HOSTS or hostname.endswith(".localhost")
+
+
+def _insecure_http_allowed() -> bool:
+    return os.environ.get("FRAPPE_ALLOW_INSECURE_HTTP") == "YES"
+
+
+def _timeout() -> float:
+    raw = os.environ.get("FRAPPE_TIMEOUT", "30")
+    try:
+        timeout = float(raw)
+    except ValueError:
+        timeout = math.nan
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise RuntimeError(f"FRAPPE_TIMEOUT must be a positive number of seconds, got {raw!r}")
+    return timeout
+
+
+def _password_auth() -> bool:
+    return not (os.environ.get("FRAPPE_API_KEY") or os.environ.get("FRAPPE_API_SECRET"))
 
 
 def _client() -> httpx.Client:
@@ -142,38 +169,56 @@ def _client() -> httpx.Client:
     base_url = os.environ.get("FRAPPE_URL", "").rstrip("/")
     if not base_url:
         raise RuntimeError("Set FRAPPE_URL to the target site's base URL")
-    timeout = float(os.environ.get("FRAPPE_TIMEOUT", "30"))
+    timeout = _timeout()
     headers = {"Accept": "application/json"}
     site = os.environ.get("FRAPPE_SITE")
     if site:
         headers["Host"] = site
     key, secret = os.environ.get("FRAPPE_API_KEY"), os.environ.get("FRAPPE_API_SECRET")
+    username = os.environ.get("FRAPPE_USERNAME", "Administrator")
+    password = os.environ.get("FRAPPE_PASSWORD")
     if key or secret:
         if not key or not secret:
             raise RuntimeError("Set both FRAPPE_API_KEY and FRAPPE_API_SECRET")
         headers["Authorization"] = f"token {key}:{secret}"
-        _session = httpx.Client(base_url=base_url, headers=headers, timeout=timeout)
-        return _session
-
-    username = os.environ.get("FRAPPE_USERNAME", "Administrator")
-    password = os.environ.get("FRAPPE_PASSWORD")
-    if not password:
+    elif not password:
         raise RuntimeError("Set an API key/secret or FRAPPE_PASSWORD")
-    local_hosts = {"localhost", "127.0.0.1", "::1"}
-    from urllib.parse import urlparse
+    if (
+        urlparse(base_url).scheme != "https"
+        and not _is_local_target(base_url)
+        and not _insecure_http_allowed()
+    ):
+        raise RuntimeError(
+            "FRAPPE_URL must use HTTPS unless it is a loopback or .localhost target; "
+            "set FRAPPE_ALLOW_INSECURE_HTTP=YES only for a trusted development network"
+        )
 
-    parsed = urlparse(base_url)
-    local_target = parsed.hostname in local_hosts or bool(
-        parsed.hostname and parsed.hostname.endswith(".localhost")
-    )
-    if parsed.scheme != "https" and not local_target:
-        raise RuntimeError("Password login is allowed only over HTTPS or to localhost")
-    _session = httpx.Client(
+    client = httpx.Client(
         base_url=base_url, headers=headers, timeout=timeout, follow_redirects=False
     )
-    response = _session.post("/api/method/login", data={"usr": username, "pwd": password})
-    _check(response)
+    if _password_auth():
+        try:
+            _check(client.post("/api/method/login", data={"usr": username, "pwd": password}))
+        except BaseException:
+            client.close()
+            raise
+    _session = client
     return _session
+
+
+def _reset_session() -> None:
+    global _session
+    if _session is not None:
+        _session.close()
+    _session = None
+
+
+def _session_expired(client: httpx.Client) -> bool:
+    try:
+        user = _check(client.get("/api/method/frappe.auth.get_logged_user"))
+    except RuntimeError:
+        return True
+    return user == "Guest"
 
 
 def _check(response: httpx.Response) -> Any:
@@ -197,7 +242,14 @@ def _check(response: httpx.Response) -> Any:
 
 
 def _request(method: str, path: str, **kwargs: Any) -> Any:
-    return _check(_client().request(method, path, **kwargs))
+    client = _client()
+    response = client.request(method, path, **kwargs)
+    if response.status_code in (401, 403) and _password_auth() and _session_expired(client):
+        # The expired sid made Frappe handle this request as Guest and reject it before it ran,
+        # so retrying it once after a fresh login is safe even for a POST.
+        _reset_session()
+        response = _client().request(method, path, **kwargs)
+    return _check(response)
 
 
 def _resource(doctype: str, name: str | None = None) -> str:
@@ -1507,6 +1559,15 @@ def rollback_export(
 
 def main() -> None:
     """Run the standalone server using the MCP stdio transport."""
+    try:
+        _timeout()
+    except RuntimeError as error:
+        raise SystemExit(str(error)) from None
+    if _insecure_http_allowed():
+        _log.warning(
+            "FRAPPE_ALLOW_INSECURE_HTTP=YES: credentials may be sent over plain HTTP to "
+            "non-local hosts; use this only on a trusted development network"
+        )
     server.run(transport="stdio")
 
 

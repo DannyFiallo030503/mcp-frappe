@@ -5,7 +5,7 @@
 - Begin with `list_installed_apps`, `list_doctypes`, and `get_doctype_schema`; do not assume an ERPNext, HRMS, or custom app catalog.
 - Use the target site's naming and field options exactly as returned by Frappe.
 - Request only fields and rows needed. Keep output limits low and narrow filters.
-- Frappe permissions are enforced remotely. If a request is denied, report the missing access; do not try alternate APIs to bypass it.
+- Frappe permissions are enforced remotely. If a request is denied, report the missing access; do not try alternate APIs to bypass it. The server already renews an expired password session and retries once, so an HTTP 401 or 403 that reaches you is a real denial or a credential problem; do not retry it.
 - Treat every mutation as potentially side-effecting because native Frappe hooks and validations run.
 - Review previews before confirming. For record updates/deletes, pass the exact `modified` token returned in the preview; if it changed, start over.
 - For DocTypes and fixtures, preview the app/module destination and hashes. After export, inspect the local diff and let the developer handle Git review and migrations.

@@ -2,7 +2,19 @@
 
 ## Identity and authorization
 
-The standalone process authenticates to Frappe with either an API token or the standard login endpoint. Requests execute as that user, and Frappe's resource/method APIs enforce its permissions and validation. API tokens are preferred outside local development. Password login over plain HTTP is blocked except for loopback and `.localhost` targets.
+The standalone process authenticates to Frappe with either an API token or the standard login endpoint. Requests execute as that user, and Frappe's resource/method APIs enforce its permissions and validation. API tokens are preferred outside local development.
+
+## Transport
+
+One rule covers both auth modes: `FRAPPE_URL` must use HTTPS unless the host is a loopback address (`localhost`, `127.0.0.1`, `::1`) or ends in `.localhost`. An API token is a long-lived credential sent on every request, so plain HTTP to any other host is refused before any request goes out, for token auth as well as password login.
+
+Development networks sometimes reach the site by a container service name such as `http://frontend:8080`. For those, set `FRAPPE_ALLOW_INSECURE_HTTP=YES` (exactly that value). The server then allows plain HTTP to any host and logs one warning to stderr at startup. Use it only on a network you trust; credentials and data travel unencrypted.
+
+## Sessions
+
+A failed password login is never cached: the next tool call tries to log in again instead of continuing as Guest.
+
+When a password session expires, Frappe treats requests as Guest and rejects them with HTTP 401 or 403 before running them. On such a response the server asks `/api/method/frappe.auth.get_logged_user` who it is. If that call fails or answers `Guest`, the session has expired: the server logs in again and retries the original request once. If the user is still logged in, the response is a real permission denial and is returned unchanged, with no retry and no other endpoint tried. Token auth never re-logs in, because a token does not expire with a session.
 
 Administrator is a full-privilege account. If used for local development, supply its password through the MCP host's secret/environment facility. The project has no embedded default password and does not write credentials into files, tests, logs, or evidence. Do not use a known default password on a network reachable site.
 
