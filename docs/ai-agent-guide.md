@@ -18,15 +18,31 @@
 3. Call `list_documents` with explicit fields, filters, and a small limit.
 4. Call `get_document` only for records that need full detail.
 
+Filters may use the standard columns (`docstatus`, `creation`, `modified`, `owner`, ...) as well as DocType fields. For example, submitted invoices created in October (results come back most recently modified first):
+
+```json
+{
+  "doctype": "Sales Invoice",
+  "fields": ["name", "customer", "grand_total", "creation"],
+  "filters": [
+    ["docstatus", "=", 1],
+    ["creation", "between", ["2026-10-01", "2026-10-31"]]
+  ],
+  "limit": 20
+}
+```
+
+`docstatus` is 0 for drafts, 1 for submitted, and 2 for cancelled documents. To match on a child-table value, name the child DocType first: `["Sales Invoice Item", "item_code", "=", "ITEM-001"]`. Read the allowed operators in the tool reference rather than guessing; an unsupported operator is rejected.
+
 ## Change a record
 
 1. Read the current record and schema.
 2. Call `update_document` with the intended values and `confirm: false`.
 3. Confirm that the preview names the expected document and fields.
-4. Repeat with `confirm: true` and the exact `expected_modified` value.
+4. Repeat with `confirm: true` and the exact `expected_modified` value. If the result is "Document changed since preview", someone saved the record in between: re-read it and start over.
 5. Read the record again to verify the result.
 
-Use the same preview-first pattern for creation/deletion. Do not create records in a live system without explicit user authorization.
+Use the same preview-first pattern for creation/deletion. Do not pass `name`, `docstatus`, `owner`, or other standard columns as values; they are rejected. The exception is `name` on `create_document` for a DocType whose `autoname` is `Prompt`. Do not create records in a live system without explicit user authorization.
 
 ## Customize a site
 

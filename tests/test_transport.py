@@ -342,3 +342,17 @@ def test_other_errors_are_not_probed_or_retried(site, monkeypatch) -> None:
         standalone._request("POST", "/api/resource/ToDo", json={})
 
     assert site.paths() == ["/api/method/login", "/api/resource/ToDo"]
+
+
+def test_error_responses_carry_frappes_exception_type(site, monkeypatch) -> None:
+    _token_env(monkeypatch, "http://site1.localhost:8000")
+    site.handler = lambda request: httpx.Response(
+        417,
+        json={"exc_type": "TimestampMismatchError", "_server_messages": "modified after"},
+    )
+
+    with pytest.raises(standalone.FrappeError, match="417") as raised:
+        standalone._request("PUT", "/api/resource/ToDo/T-1", json={})
+
+    assert raised.value.exc_type == "TimestampMismatchError"
+    assert isinstance(raised.value, RuntimeError)
