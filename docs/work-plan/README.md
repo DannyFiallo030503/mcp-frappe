@@ -56,7 +56,7 @@ If a stage turns out larger than one session, stop at a clean point (tests passi
 | 00 | [Baseline: CI, test harness, cleanup](stage-00-baseline.md) | none | done |
 | 01 | [Authentication and transport fixes](stage-01-auth-transport.md) | 00 | done |
 | 02 | [Read validation and atomic updates](stage-02-read-validation.md) | 00 | done |
-| 03 | [Customization tool fixes](stage-03-customization-fixes.md) | 00 | todo |
+| 03 | [Customization tool fixes](stage-03-customization-fixes.md) | 00 | done |
 | 04 | [Native customization export](stage-04-native-export.md) | 03 | todo |
 | 05 | [Metadata layer: cache, compact schema, fewer requests](stage-05-metadata-layer.md) | 02 | todo |
 | 06 | [Edit existing DocTypes](stage-06-update-doctype.md) | 05 | todo |
