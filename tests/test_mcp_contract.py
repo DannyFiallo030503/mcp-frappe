@@ -91,3 +91,26 @@ def test_update_doctype_takes_an_operation_list_through_an_mcp_session(fake_site
     assert not result.isError
     preview = json.loads(result.content[0].text)
     assert preview["changes"]["changed"] == {"title": {"reqd": {"from": None, "to": 1}}}
+
+
+def test_list_app_drift_pages_through_an_mcp_session(fake_site, tmp_path, monkeypatch) -> None:
+    doctype_dir = tmp_path / "apps" / "lab_app" / "lab_app" / "lab" / "doctype" / "lab_sample"
+    doctype_dir.mkdir(parents=True)
+    (doctype_dir / "lab_sample.json").write_text('{"name": "Lab Sample"}', encoding="utf-8")
+    monkeypatch.setenv("FRAPPE_APPS_PATH", str(tmp_path / "apps"))
+    fake_site.add("GET", "/api/resource/Module%20Def", [{"name": "Lab", "app_name": "lab_app"}])
+    fake_site.add("GET", "/api/resource/DocType", [])
+
+    async def call_tool():
+        async with create_connected_server_and_client_session(
+            standalone.server._mcp_server
+        ) as client:
+            return await client.call_tool("list_app_drift", {"app": "lab_app", "limit": 10})
+
+    result = anyio.run(call_tool)
+
+    assert not result.isError
+    report = json.loads(result.content[0].text)
+    assert report["items"] == [
+        {"doctype": "Lab Sample", "module": "Lab", "verdict": "missing_on_site"}
+    ]

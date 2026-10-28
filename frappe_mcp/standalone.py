@@ -16,6 +16,7 @@ import stat
 import tempfile
 import time
 import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import quote, urlparse
@@ -363,6 +364,20 @@ _EXPORT_ROW_LIMIT = 1000
 # Keys Frappe's `export_json` (`bench export-fixtures`) leaves out of fixture rows.
 _FIXTURE_DROPPED_KEYS = frozenset({"modified_by", "creation", "owner", "idx", "lft", "rgt"})
 _PROTECTED_APPS = {"frappe", "erpnext"}
+# Keys that differ between a DocType record and its exported JSON for reasons other than drift.
+_DOCTYPE_SYSTEM_KEYS = frozenset(
+    {"name", "doctype", "owner", "creation", "modified", "modified_by", "docstatus", "idx",
+     "migration_hash", "field_order"}
+)
+_CHILD_SYSTEM_KEYS = frozenset(
+    {"name", "doctype", "owner", "creation", "modified", "modified_by", "docstatus", "idx",
+     "parent", "parenttype", "parentfield"}
+)
+_APP_FILE_MAX_BYTES = 5_000_000
+_DRIFT_MAX_ITEMS = 100
+_DRIFT_MAX_TEXT = 500
+_DRIFT_PAGE_LIMIT = 200
+_DRIFT_SITE_LIMIT = 5000
 _LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
 
 
@@ -659,11 +674,12 @@ def _expected_modified(doctype: str, name: str, expected: str | None) -> dict[st
     return doc
 
 
-def _app_path(app: str, module: str) -> tuple[Path, Path]:
+def _app_root(app: str) -> tuple[Path, Path]:
+    """Resolve `FRAPPE_APPS_PATH/<app>` and its Python package, refusing escapes."""
     root_value = os.environ.get("FRAPPE_APPS_PATH")
     if not root_value:
         raise RuntimeError("Set FRAPPE_APPS_PATH to the local Bench apps directory for exports")
-    if not _SAFE_NAME.fullmatch(app) or not _SAFE_NAME.fullmatch(module):
+    if not isinstance(app, str) or not _SAFE_NAME.fullmatch(app):
         raise ValueError("Invalid app or module name")
     root = Path(root_value).expanduser().resolve(strict=True)
     try:
@@ -678,15 +694,61 @@ def _app_path(app: str, module: str) -> tuple[Path, Path]:
         raise ValueError("Frappe Python package directory does not exist below the app") from error
     if not package_path.is_relative_to(app_path):
         raise ValueError("App package path escapes FRAPPE_APPS_PATH")
+    if not app_path.is_dir() or not package_path.is_dir():
+        raise ValueError("App module must exist and be writable")
+    return app_path, package_path
+
+
+def _module_dir(package_path: Path, module: str) -> Path | None:
+    """Resolve the folder Frappe uses for a module (`scrub(module)`); None when it is missing."""
+    if not isinstance(module, str) or not _SAFE_NAME.fullmatch(module):
+        raise ValueError("Invalid app or module name")
     try:
-        module_path = (package_path / _slug(module)).resolve(strict=True)
-    except FileNotFoundError as error:
-        raise ValueError("Selected module directory does not exist") from error
+        module_path = (package_path / _scrub(module)).resolve(strict=True)
+    except FileNotFoundError:
+        return None
     if not module_path.is_relative_to(package_path):
         raise ValueError("App or module path escapes FRAPPE_APPS_PATH")
-    if not app_path.is_dir() or not module_path.is_dir() or not os.access(module_path, os.W_OK):
+    if not module_path.is_dir():
+        raise ValueError("App module must exist and be writable")
+    return module_path
+
+
+def _app_path(app: str, module: str) -> tuple[Path, Path]:
+    if not isinstance(module, str) or not _SAFE_NAME.fullmatch(module):
+        raise ValueError("Invalid app or module name")
+    app_path, package_path = _app_root(app)
+    module_path = _module_dir(package_path, module)
+    if module_path is None:
+        raise ValueError("Selected module directory does not exist")
+    if not os.access(module_path, os.W_OK):
         raise ValueError("App module must exist and be writable")
     return app_path, module_path
+
+
+def _app_file(base: Path, *parts: str) -> Path | None:
+    """Resolve a file below a resolved app folder for reading; None when it does not exist."""
+    try:
+        path = base.joinpath(*parts).resolve(strict=True)
+    except FileNotFoundError:
+        return None
+    if not path.is_relative_to(base):
+        raise ValueError(f"{base.joinpath(*parts)} escapes the app module folder")
+    if not path.is_file():
+        raise ValueError(f"{path} is not a file")
+    if path.stat().st_size > _APP_FILE_MAX_BYTES:
+        raise ValueError(f"{path} is larger than {_APP_FILE_MAX_BYTES} bytes")
+    return path
+
+
+def _read_app_json(path: Path) -> tuple[Any, str]:
+    """Return a file's JSON and the MD5 of its bytes, which is what `bench migrate` compares."""
+    raw = path.read_bytes()
+    try:
+        value = json.loads(raw)
+    except ValueError as error:
+        raise ValueError(f"{path} is not valid JSON") from error
+    return value, hashlib.md5(raw, usedforsecurity=False).hexdigest()
 
 
 def _assert_app_module(app: str, module: str) -> tuple[Path, Path]:
@@ -695,7 +757,7 @@ def _assert_app_module(app: str, module: str) -> tuple[Path, Path]:
     return app_path, module_path
 
 
-def _assert_remote_module(app: str | None, module: str) -> None:
+def _assert_remote_module(app: str | None, module: str) -> dict[str, Any]:
     """Check the Module Def exists on the site and, when `app` is given, belongs to it."""
     if not _SAFE_NAME.fullmatch(module) or (app is not None and not _SAFE_NAME.fullmatch(app)):
         raise ValueError("Invalid app or module name")
@@ -703,7 +765,7 @@ def _assert_remote_module(app: str | None, module: str) -> None:
         "GET",
         _resource("Module Def"),
         params={
-            "fields": '["name","app_name"]',
+            "fields": '["name","app_name","custom"]',
             "filters": _filters({"name": module}),
             "limit_page_length": 2,
         },
@@ -712,6 +774,7 @@ def _assert_remote_module(app: str | None, module: str) -> None:
         raise ValueError(f"Unknown module on the target site: {module}")
     if app is not None and rows[0].get("app_name") != app:
         raise ValueError(f"Module {module} does not belong to app {app} on the target site")
+    return rows[0]
 
 
 def _assert_optional_module(app: str | None, module: str | None) -> None:
@@ -861,13 +924,13 @@ def _prepare_native_doctype_scaffolding(
         "base_class": base_class,
         "custom_controller": "pass",
     }
-    controller_slug = _slug(name)
+    controller_file = _scrub(name)
     files = {
-        doctype_path / f"{controller_slug}.py": templates / "controller._py",
+        doctype_path / f"{controller_file}.py": templates / "controller._py",
     }
     if not is_child_table:
-        files[doctype_path / f"test_{controller_slug}.py"] = templates / "test_controller._py"
-        files[doctype_path / f"{controller_slug}.js"] = templates / "controller.js"
+        files[doctype_path / f"test_{controller_file}.py"] = templates / "test_controller._py"
+        files[doctype_path / f"{controller_file}.js"] = templates / "controller.js"
     for destination, template in files.items():
         if destination.exists():
             raise ValueError("Refusing to overwrite an existing DocType scaffold")
@@ -941,10 +1004,6 @@ def _create_doctype_request(
             "Frappe restarted during DocType creation and no DocType record was found "
             "after the request settled. The MCP removed only its temporary scaffold; retry is safe."
         ) from error
-
-
-def _slug(value: str) -> str:
-    return re.sub(r"[^\w]+", "_", value.lower(), flags=re.UNICODE).strip("_")
 
 
 def _build_doctype_payload(
@@ -1613,7 +1672,7 @@ def create_doctype(
         destination = None
         expected_files: list[Path] = []
     else:
-        slug = _slug(name)
+        slug = _scrub(name)
         doctype_path = module_path / "doctype" / slug
         destination = doctype_path / f"{slug}.json"
         python_file = doctype_path / f"{slug}.py"
@@ -1753,11 +1812,11 @@ def _editable_doctype(doctype: str) -> tuple[dict[str, Any], str]:
 
 def _doctype_files(app: str, module: str, doctype: str) -> dict[str, Any]:
     """Locate the folder Frappe writes for a standard DocType, in the local checkout if any."""
-    slug = _slug(doctype)
+    slug = _scrub(doctype)
     try:
         _, module_path = _app_path(app, module)
     except (RuntimeError, ValueError):
-        folder = f"{app}/{app}/{_slug(module)}/doctype/{slug}"
+        folder = f"{app}/{app}/{_scrub(module)}/doctype/{slug}"
         return {"folder": folder, "json": f"{folder}/{slug}.json", "local_checkout": False}
     folder_path = module_path / "doctype" / slug
     return {
@@ -2375,6 +2434,691 @@ def delete_doctype(
     return {
         "deleted": True,
         "doctype": doctype,
+        "reconciled_after_server_reload": reconciled,
+    }
+
+
+def _clean_row(row: dict[str, Any], system: frozenset[str]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in row.items()
+        if key not in system and not key.startswith("_") and not _blank(value) and value != []
+    }
+
+
+def _normalize_doctype(doc: dict[str, Any]) -> dict[str, Any]:
+    """Reduce a DocType record, or the JSON Frappe exports for it, to what both sides hold.
+
+    Frappe's export drops blank values, system columns, and child-row names, and keeps the real
+    field order in `field_order` (its `fields` list may keep an older order). So both sides lose
+    system keys, `_` columns, and blank values (None, "", 0, []); fields are keyed by fieldname
+    and their order is kept separately so a move is still seen.
+    """
+    properties: dict[str, Any] = {}
+    tables: dict[str, list[dict[str, Any]]] = {}
+    for key, value in doc.items():
+        if key in _DOCTYPE_SYSTEM_KEYS or key.startswith("_"):
+            continue
+        if isinstance(value, list):
+            rows = [_clean_row(row, _CHILD_SYSTEM_KEYS) for row in value if isinstance(row, dict)]
+            if rows:
+                tables[key] = rows
+        elif not _blank(value):
+            properties[key] = value
+    fields: dict[str, dict[str, Any]] = {}
+    for position, row in enumerate(tables.pop("fields", [])):
+        fields[row.get("fieldname") or f"{row.get('fieldtype', 'field')}#{position}"] = row
+    order = doc.get("field_order")
+    listed = list(dict.fromkeys(name for name in order if name in fields)) if isinstance(
+        order, list
+    ) else []
+    field_order = listed + [name for name in fields if name not in listed]
+    return {"properties": properties, "fields": fields, "field_order": field_order,
+            "tables": tables}
+
+
+def _value_changes(site: dict[str, Any], app: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return {
+        key: {"from": site.get(key), "to": app.get(key)}
+        for key in sorted(site.keys() | app.keys())
+        if site.get(key) != app.get(key)
+    }
+
+
+def _compare_doctypes(site: dict[str, Any], app: dict[str, Any]) -> dict[str, Any]:
+    """Diff two `_normalize_doctype` results in `update_doctype`'s shape, from site to app.
+
+    `added` fields are only in the app file, `removed` only on the site, and `from`/`to` hold
+    the site and app values: the change `bench migrate` would make to the site.
+    """
+    site_fields, app_fields = site["fields"], app["fields"]
+    site_order, app_order = site["field_order"], app["field_order"]
+
+    def previous(order: list[str], name: str) -> str | None:
+        index = order.index(name)
+        return order[index - 1] if index else None
+
+    def summary(row: dict[str, Any], name: str) -> dict[str, Any]:
+        return {"fieldname": name, "fieldtype": row.get("fieldtype"), "label": row.get("label")}
+
+    added = [
+        {**summary(app_fields[name], name), "insert_after": previous(app_order, name)}
+        for name in app_order
+        if name not in site_fields
+    ]
+    removed = [summary(site_fields[name], name) for name in site_order if name not in app_fields]
+    # Fields outside the longest common order moved; the rest only shifted around them.
+    common_site = [name for name in site_order if name in app_fields]
+    common_app = [name for name in app_order if name in site_fields]
+    kept: set[str] = set()
+    matcher = difflib.SequenceMatcher(None, common_site, common_app, autojunk=False)
+    for block in matcher.get_matching_blocks():
+        kept.update(common_app[block.b : block.b + block.size])
+    moved = [
+        {"fieldname": name, "insert_after": previous(app_order, name)}
+        for name in common_app
+        if name not in kept
+    ]
+    changed = {
+        name: delta
+        for name in common_app
+        if (delta := _value_changes(site_fields[name], app_fields[name]))
+    }
+    tables: dict[str, dict[str, Any]] = {}
+    for name in sorted(site["tables"].keys() | app["tables"].keys()):
+        site_rows, app_rows = site["tables"].get(name, []), app["tables"].get(name, [])
+        if site_rows == app_rows:
+            continue
+        only_app = list(app_rows)
+        only_site = []
+        for row in site_rows:
+            if row in only_app:
+                only_app.remove(row)
+            else:
+                only_site.append(row)
+        tables[name] = (
+            {"only_on_site": only_site, "only_in_app": only_app}
+            if only_site or only_app
+            else {"reordered": True}
+        )
+    return {
+        "added": added,
+        "removed": removed,
+        "moved": moved,
+        "changed": changed,
+        "properties": _value_changes(site["properties"], app["properties"]),
+        "tables": tables,
+    }
+
+
+def _bounded(value: Any, state: dict[str, bool]) -> Any:
+    """Cap lists, objects, and strings in a drift report; `state["truncated"]` says if any was."""
+    if isinstance(value, list | dict):
+        items = list(value.items() if isinstance(value, dict) else value)
+        if len(items) > _DRIFT_MAX_ITEMS:
+            state["truncated"] = True
+            items = items[:_DRIFT_MAX_ITEMS]
+        if isinstance(value, dict):
+            return {key: _bounded(item, state) for key, item in items}
+        return [_bounded(item, state) for item in items]
+    if isinstance(value, str) and len(value) > _DRIFT_MAX_TEXT:
+        state["truncated"] = True
+        return value[:_DRIFT_MAX_TEXT] + "..."
+    return value
+
+
+def _timestamp(value: Any) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value.strip())
+    except ValueError:
+        return None
+
+
+def _newer(site_modified: Any, app_modified: Any) -> str | None:
+    site_time, app_time = _timestamp(site_modified), _timestamp(app_modified)
+    if site_time is None or app_time is None:
+        return None
+    return "site" if site_time > app_time else "app" if app_time > site_time else "same"
+
+
+def _doctype_file_drift(site_doc: dict[str, Any], path: Path) -> dict[str, Any]:
+    """Compare a DocType record with its app JSON and decide which side is ahead.
+
+    `bench migrate` imports a DocType's JSON whenever its MD5 differs from the site's
+    `migration_hash` (or none is stored), whatever `modified` says. So the hash tells whether
+    the file changed since the last migrate, and `modified` which side was saved last.
+    """
+    app_doc, digest = _read_app_json(path)
+    if not isinstance(app_doc, dict):
+        raise ValueError(f"{path} does not hold a DocType")
+    changes = _compare_doctypes(_normalize_doctype(site_doc), _normalize_doctype(app_doc))
+    stored = site_doc.get("migration_hash")
+    file_changed = bool(stored) and stored != digest
+    newer = _newer(site_doc.get("modified"), app_doc.get("modified"))
+    if not any(changes.values()):
+        verdict = "in_sync"
+    elif newer == "app":
+        verdict = "app_ahead"
+    elif newer == "site":
+        verdict = "diverged" if file_changed else "site_ahead"
+    else:
+        verdict = "app_ahead" if file_changed else "diverged"
+    state = {"truncated": False}
+    return {
+        "path": str(path),
+        "exists": True,
+        "verdict": verdict,
+        "site_modified": site_doc.get("modified"),
+        "app_modified": app_doc.get("modified"),
+        "newer": newer,
+        "migrate_imports_file": stored != digest,
+        "changes": _bounded(changes, state),
+        "truncated": state["truncated"],
+    }
+
+
+_CUSTOMIZATION_KINDS = (
+    ("custom_fields", "Custom Field", "dt"),
+    ("property_setters", "Property Setter", "doc_type"),
+)
+
+
+def _customization_key(kind: str, row: dict[str, Any]) -> str:
+    if kind == "custom_fields":
+        return str(row.get("fieldname"))
+    return f"{row.get('field_name') or row.get('row_name') or ''}:{row.get('property')}"
+
+
+def _site_customizations(doctype: str) -> dict[str, list[dict[str, Any]]]:
+    return {
+        kind: _export_rows(source, [[dt_field, "=", doctype]])
+        for kind, source, dt_field in _CUSTOMIZATION_KINDS
+    }
+
+
+def _customization_drift(
+    doctype: str,
+    site_rows: dict[str, list[dict[str, Any]]],
+    app_modules: set[str],
+    module: str | None,
+    path: Path | None,
+) -> dict[str, Any] | None:
+    """Compare a `<module>/custom/<doctype>.json` file (or its absence) with the site's rows.
+
+    Site rows tagged with another app's module are left out unless the file holds them too.
+    `bench migrate` re-applies every file row and never deletes site rows. Returns None when
+    there is no file and the site has nothing of this app's to export.
+    """
+    data: dict[str, Any] = {}
+    if path is not None:
+        data, _ = _read_app_json(path)
+        if not isinstance(data, dict):
+            raise ValueError(f"{path} is not a customization file")
+    result: dict[str, Any] = {"module": module, "path": str(path) if path else None}
+    directions: set[str] = set()
+    for kind, _, dt_field in _CUSTOMIZATION_KINDS:
+        app_rows = {
+            _customization_key(kind, row): row
+            for row in data.get(kind) or []
+            if isinstance(row, dict) and row.get(dt_field) == doctype
+        }
+        site = {}
+        for row in site_rows[kind]:
+            key = _customization_key(kind, row)
+            if not row.get("module") or row.get("module") in app_modules or key in app_rows:
+                site[key] = row
+        changed = {}
+        for key in sorted(site.keys() & app_rows.keys()):
+            delta = _value_changes(
+                _clean_row(site[key], _CHILD_SYSTEM_KEYS),
+                _clean_row(app_rows[key], _CHILD_SYSTEM_KEYS),
+            )
+            if delta:
+                changed[key] = delta
+                newer = _newer(site[key].get("modified"), app_rows[key].get("modified"))
+                directions.update({newer} if newer in ("site", "app") else {"site", "app"})
+        only_site = sorted(site.keys() - app_rows.keys())
+        only_app = sorted(app_rows.keys() - site.keys())
+        if only_site:
+            directions.add("site")
+        if only_app:
+            directions.add("app")
+        result[kind] = {"only_on_site": only_site, "only_in_app": only_app, "changed": changed}
+    if path is None:
+        if not directions:
+            return None
+        result["verdict"] = "missing_in_app"
+    else:
+        result["verdict"] = (
+            "in_sync"
+            if not directions
+            else f"{directions.pop()}_ahead"
+            if len(directions) == 1
+            else "diverged"
+        )
+    state = {"truncated": False}
+    result = _bounded(result, state)
+    result["truncated"] = state["truncated"]
+    return result
+
+
+def _app_modules(app: str) -> list[dict[str, Any]]:
+    """List the Module Defs the site assigns to `app`."""
+    rows = _request(
+        "GET",
+        _resource("Module Def"),
+        params={
+            "fields": '["name","app_name","custom"]',
+            "filters": _filters({"app_name": app}),
+            "order_by": "name asc",
+            "limit_page_length": 1000,
+        },
+    )
+    if not rows:
+        raise ValueError(f"The target site has no modules of app {app}")
+    return rows
+
+
+_DRIFT_SUMMARIES = {
+    "in_sync": "{doctype}: the site and {app} match.",
+    "site_ahead": "{doctype}: the site has changes the app files lack; export them to {app}.",
+    "app_ahead": "{doctype}: {app}'s files have changes the site lacks; run `bench migrate`.",
+    "diverged": (
+        "{doctype}: both the site and {app}'s files changed; reconcile them by hand before "
+        "migrating or exporting."
+    ),
+    "missing_in_app": "{doctype}: the site has it but {app} has no file for it.",
+    "missing_on_site": "{doctype}: {app} has its file but the site does not; run `bench migrate`.",
+    "site_custom": (
+        "{doctype} is a site-custom DocType with no app files; use promote_custom_doctype to "
+        "ship it with {app}."
+    ),
+}
+
+
+@server.tool()
+def diff_doctype(doctype: str, app: str | None = None) -> dict[str, Any]:
+    """Compare a DocType on the site with its files in a local app checkout (read-only).
+
+    Reads `<app>/<app>/<module>/doctype/<doctype>/<doctype>.json` and every
+    `<module>/custom/<doctype>.json` of the app under `FRAPPE_APPS_PATH`; nothing is written.
+    `app` defaults to the app that owns the DocType's module; pass another app to check only
+    its customizations of the DocType.
+
+    `verdict` is one of `in_sync`, `site_ahead` (the site changed after the file; export it,
+    e.g. by saving the DocType in developer mode), `app_ahead` (the file is newer; run
+    `bench migrate`), `diverged` (both changed), `missing_in_app`, or `site_custom` (no files by
+    design; see `promote_custom_doctype`). `doctype_file.changes` lists added, removed, moved,
+    and changed fields, properties, and child tables, going from the site (`from`) to the app
+    (`to`); `migrate_imports_file` says whether `bench migrate` would re-import the file.
+    `customizations` compares Custom Fields and Property Setters with the custom files.
+    """
+    if not isinstance(doctype, str) or not _SAFE_NAME.fullmatch(doctype):
+        raise ValueError("Invalid DocType name")
+    site_doc = _request("GET", _resource("DocType", doctype))
+    module = site_doc.get("module")
+    owner = _module_app(module)
+    app = app or owner
+    if not isinstance(app, str) or not _SAFE_NAME.fullmatch(app):
+        raise ValueError("Invalid app name")
+    modules = [row.get("name") for row in _app_modules(app)]
+    _, package_path = _app_root(app)
+    slug = _scrub(doctype)
+    custom = bool(site_doc.get("custom"))
+    warnings: list[str] = []
+    doctype_file: dict[str, Any] | None = None
+    verdict: str | None = None
+    if custom:
+        verdict = "site_custom"
+    elif app == owner:
+        module_path = _module_dir(package_path, module)
+        path = _app_file(module_path, "doctype", slug, f"{slug}.json") if module_path else None
+        if path is None:
+            expected = package_path / _scrub(module) / "doctype" / slug / f"{slug}.json"
+            doctype_file = {"path": str(expected), "exists": False, "verdict": "missing_in_app"}
+        else:
+            doctype_file = _doctype_file_drift(site_doc, path)
+            if doctype_file["migrate_imports_file"] and doctype_file["verdict"] in (
+                "site_ahead",
+                "diverged",
+            ):
+                warnings.append(
+                    "`bench migrate` will re-import the app file and replace the site's "
+                    "changes. Save the DocType once with developer mode on (update_doctype or "
+                    "Desk) so Frappe writes them to the file first."
+                )
+        verdict = doctype_file["verdict"]
+
+    site_rows = _site_customizations(doctype)
+    customizations = []
+    for name in modules:
+        module_path = _module_dir(package_path, name)
+        path = _app_file(module_path, "custom", f"{slug}.json") if module_path else None
+        if path is not None:
+            customizations.append(
+                _customization_drift(doctype, site_rows, set(modules), name, path)
+            )
+    if not customizations:
+        unexported = _customization_drift(doctype, site_rows, set(modules), None, None)
+        customizations = [unexported] if unexported else []
+    custom_verdicts = {entry["verdict"] for entry in customizations} - {"in_sync"}
+    if verdict is None:
+        verdict = (
+            "in_sync"
+            if not custom_verdicts
+            else custom_verdicts.pop()
+            if len(custom_verdicts) == 1
+            else "diverged"
+        )
+    summary = _DRIFT_SUMMARIES[verdict].format(doctype=doctype, app=app)
+    if doctype_file is not None and custom_verdicts:
+        summary += f" Customizations: {', '.join(sorted(custom_verdicts))}."
+    return {
+        "doctype": doctype,
+        "app": app,
+        "owner_app": owner,
+        "module": module,
+        "custom": custom,
+        "verdict": verdict,
+        "summary": summary,
+        "doctype_file": doctype_file,
+        "customizations": customizations,
+        "warnings": warnings,
+    }
+
+
+def _drift_item(module: str, slug: str, entry: dict[str, Any]) -> dict[str, Any]:
+    site, path = entry.get("site"), entry.get("path")
+    name = site.get("name") if site else slug
+    if site and site.get("custom"):
+        verdict = "site_custom"
+    elif path is None:
+        verdict = "missing_in_app"
+    else:
+        app_doc, digest = _read_app_json(path)
+        if site is None:
+            verdict = "missing_on_site"
+            if isinstance(app_doc, dict) and isinstance(app_doc.get("name"), str):
+                name = app_doc["name"]
+        elif (
+            isinstance(app_doc, dict)
+            and site.get("migration_hash") == digest
+            and str(site.get("modified")) == str(app_doc.get("modified"))
+        ):
+            # Migrate imported this exact file and nobody saved the DocType since.
+            verdict = "in_sync"
+        else:
+            full = _request("GET", _resource("DocType", site["name"]))
+            verdict = _doctype_file_drift(full, path)["verdict"]
+    return {"doctype": name, "module": module, "verdict": verdict}
+
+
+@server.tool()
+def list_app_drift(
+    app: str, module: str | None = None, limit: int = 50, offset: int = 0
+) -> dict[str, Any]:
+    """List which DocTypes of an app differ between the site and the local checkout (read-only).
+
+    Pairs every DocType folder under `<app>/<app>/<module>/doctype/` (in `FRAPPE_APPS_PATH`)
+    with the site's DocTypes in the same modules, and gives each one a verdict: `in_sync`,
+    `site_ahead`, `app_ahead`, `diverged` (as in `diff_doctype`), `missing_on_site` (run
+    `bench migrate`), `missing_in_app`, or `site_custom`. Use `diff_doctype` for the details of
+    one DocType. Results are sorted by module and folder; page with `offset` and `next_offset`.
+    """
+    if not isinstance(limit, int) or not 1 <= limit <= _DRIFT_PAGE_LIMIT:
+        raise ValueError(f"limit must be between 1 and {_DRIFT_PAGE_LIMIT}")
+    if not isinstance(offset, int) or offset < 0:
+        raise ValueError("offset must be 0 or more")
+    if not isinstance(app, str) or not _SAFE_NAME.fullmatch(app):
+        raise ValueError("Invalid app name")
+    names = [row.get("name") for row in _app_modules(app)]
+    if module is not None:
+        if module not in names:
+            raise ValueError(f"Module {module} does not belong to app {app} on the target site")
+        names = [module]
+    _, package_path = _app_root(app)
+    site_rows = _request(
+        "GET",
+        _resource("DocType"),
+        params={
+            "fields": '["name","module","custom","modified","migration_hash"]',
+            "filters": _filters([["module", "in", names]]),
+            "order_by": "name asc",
+            "limit_page_length": _DRIFT_SITE_LIMIT + 1,
+        },
+    )
+    if len(site_rows) > _DRIFT_SITE_LIMIT:
+        raise ValueError(f"More than {_DRIFT_SITE_LIMIT} DocTypes; pass a module")
+    entries: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in site_rows:
+        entries[(row.get("module"), _scrub(row.get("name")))] = {"site": row}
+    missing_modules = []
+    for name in names:
+        module_path = _module_dir(package_path, name)
+        if module_path is None:
+            missing_modules.append(name)
+            continue
+        folder = module_path / "doctype"
+        if not folder.is_dir():
+            continue
+        for child in sorted(folder.iterdir()):
+            if child.name.startswith((".", "__")) or not child.is_dir():
+                continue
+            path = _app_file(module_path, "doctype", child.name, f"{child.name}.json")
+            if path is not None:
+                entries.setdefault((name, child.name), {})["path"] = path
+    keys = sorted(entries)
+    items = [_drift_item(*key, entries[key]) for key in keys[offset : offset + limit]]
+    counts: dict[str, int] = {}
+    for item in items:
+        counts[item["verdict"]] = counts.get(item["verdict"], 0) + 1
+    return {
+        "app": app,
+        "modules": names,
+        "modules_missing_locally": missing_modules,
+        "total": len(keys),
+        "offset": offset,
+        "limit": limit,
+        "next_offset": offset + limit if offset + limit < len(keys) else None,
+        "counts": counts,
+        "items": items,
+    }
+
+
+def _promoted(doc: Any, module: str, expected_modified: str) -> bool:
+    return (
+        isinstance(doc, dict)
+        and not doc.get("custom")
+        and doc.get("module") == module
+        and str(doc.get("modified")) != expected_modified
+    )
+
+
+def _custom_link_targets(doc: dict[str, Any]) -> list[str]:
+    """Warn about Link and Table fields that point to site-custom DocTypes."""
+    targets: dict[str, list[str]] = {}
+    for row in doc.get("fields") or []:
+        target = row.get("options")
+        if (
+            row.get("fieldtype") in {"Link", *_TABLE_FIELDTYPES}
+            and isinstance(target, str)
+            and target != doc.get("name")
+            and _SAFE_NAME.fullmatch(target)
+        ):
+            targets.setdefault(target, []).append(row.get("fieldname"))
+    if not targets:
+        return []
+    rows = _request(
+        "GET",
+        _resource("DocType"),
+        params={
+            "fields": '["name","custom"]',
+            "filters": _filters([["name", "in", sorted(targets)], ["custom", "=", 1]]),
+            "limit_page_length": len(targets),
+        },
+    )
+    return [
+        f"{row.get('name')} (used by {', '.join(targets.get(row.get('name'), []))}) is a "
+        "site-custom DocType; promote it too, or sites that install the app will lack it."
+        for row in rows
+        if row.get("custom")
+    ]
+
+
+@server.tool()
+def promote_custom_doctype(
+    doctype: str,
+    app: str,
+    module: str,
+    confirm: bool = False,
+    expected_modified: str | None = None,
+) -> dict[str, Any]:
+    """Preview or turn a site-custom DocType into a standard DocType of an app module.
+
+    Use it to ship a DocType prototyped on the site (`custom=1`) with your app. Frappe does the
+    export: saving the DocType with `custom=0` and the new `module` in developer mode makes it
+    write `<module>/doctype/<doctype>/` (JSON, controller, JavaScript, and test files) into the
+    app. Refuses Frappe and ERPNext, modules of other apps, custom modules, an existing
+    DocType folder, and a DocType with a default print format. The preview lists the files
+    and warnings (custom DocTypes it links to, customizations that stay on the site); confirm
+    with the preview's `modified` as `expected_modified`. Records are kept as they are.
+    """
+    if not isinstance(doctype, str) or not _SAFE_NAME.fullmatch(doctype):
+        raise ValueError("Invalid DocType name")
+    _assert_writable_app(app)
+    app_path, module_path = _app_path(app, module)
+    if _assert_remote_module(app, module).get("custom"):
+        raise ValueError(
+            f"{module} is a custom module; Frappe exports its DocTypes into the site folder, "
+            f"not an app. Pick a module of {app}."
+        )
+    doc = _request("GET", _resource("DocType", doctype))
+    if not doc.get("custom"):
+        raise ValueError(
+            f"{doctype} is already a standard DocType of module {doc.get('module')}; "
+            "nothing to promote"
+        )
+    if doc.get("default_print_format"):
+        raise ValueError(
+            f"{doctype} has a default print format, which Frappe refuses on a standard "
+            "DocType; clear default_print_format first"
+        )
+    slug = _scrub(doctype)
+    doctype_path = module_path / "doctype" / slug
+    if doctype_path.exists() or doctype_path.is_symlink():
+        raise ValueError(f"{doctype_path} already exists; refusing to reuse an app's folder")
+    istable, is_tree = bool(doc.get("istable")), bool(doc.get("is_tree"))
+    files = {
+        "json": doctype_path / f"{slug}.json",
+        "python": doctype_path / f"{slug}.py",
+    }
+    if not istable:
+        files["javascript"] = doctype_path / f"{slug}.js"
+        files["test"] = doctype_path / f"test_{slug}.py"
+    if is_tree:
+        files["tree_javascript"] = doctype_path / f"{slug}_tree.js"
+    if doc.get("has_web_view"):
+        files["web_template"] = doctype_path / "templates" / f"{slug}.html"
+        files["web_list_template"] = doctype_path / "templates" / f"{slug}_list.html"
+
+    warnings = _custom_link_targets(doc)
+    custom_fields = _count_records("Custom Field", [["dt", "=", doctype]])
+    property_setters = _count_records("Property Setter", [["doc_type", "=", doctype]])
+    if custom_fields or property_setters:
+        warnings.append(
+            f"{custom_fields or 0} Custom Fields and {property_setters or 0} Property Setters "
+            "on this DocType stay site customizations, outside the DocType JSON; export them "
+            "with export_customizations to ship them too."
+        )
+    if doc.get("module") != module:
+        warnings.append(f"The DocType moves from module {doc.get('module')} to {module}.")
+    if not confirm:
+        return {
+            "preview": True,
+            "action": "promote_custom_doctype",
+            "doctype": doctype,
+            "app": app,
+            "module": module,
+            "modified": doc.get("modified"),
+            "folder": str(doctype_path),
+            "files": [str(path) for path in files.values()],
+            "warnings": warnings,
+            "requires_developer_mode": True,
+            "notes": [
+                "Frappe writes these files only with developer mode on, in the site's own "
+                "Bench; FRAPPE_APPS_PATH must be that Bench's apps folder.",
+                "The MCP writes the controller boilerplates first, so a developer-mode reload "
+                "does not cut off the save. A developer-mode Bench may still reload.",
+                "Records stay in the DocType's table; nothing is migrated.",
+            ],
+            "requires_confirmation": True,
+        }
+    if not expected_modified or str(doc.get("modified")) != expected_modified:
+        raise ValueError(_STALE_DOCUMENT)
+    generated = list(files.values())
+    reconciled = False
+    try:
+        _prepare_native_doctype_scaffolding(
+            app_path, module_path, doctype_path, doctype, is_child_table=istable, is_tree=is_tree
+        )
+        _wait_for_server_ready()
+        try:
+            # Sending `modified` makes Frappe compare it with the stored value under the row lock.
+            saved = _request(
+                "PUT",
+                _resource("DocType", doctype),
+                json={"data": {"custom": 0, "module": module, "modified": expected_modified}},
+            )
+        except FrappeError as error:
+            if error.exc_type == "TimestampMismatchError":
+                raise ValueError(_STALE_DOCUMENT) from error
+            if error.exc_type == "CannotCreateStandardDoctypeError":
+                raise ValueError(
+                    f"Frappe refused to promote {doctype}: standard DocTypes can only be saved "
+                    f"with developer mode on ({error})"
+                ) from error
+            raise
+        except httpx.TransportError as error:
+            # Frappe writes the DocType JSON during the save, which can reload a dev Bench.
+            _wait_for_server_ready()
+            saved = _request("GET", _resource("DocType", doctype))
+            if not _promoted(saved, module, expected_modified):
+                raise RuntimeError(
+                    f"Frappe disconnected while promoting {doctype} and it is still a custom "
+                    "DocType; request a fresh preview before retrying."
+                ) from error
+            reconciled = True
+    except Exception:
+        try:
+            persisted = _promoted(
+                _request("GET", _resource("DocType", doctype)), module, expected_modified
+            )
+        except Exception:
+            persisted = True
+        if not persisted:
+            _remove_partial_doctype_tree(doctype_path, generated)
+        raise
+    finally:
+        _forget_meta(doctype)
+    file_status = {key: path.is_file() for key, path in files.items()}
+    if not file_status["json"]:
+        warnings.append(
+            "Frappe saved the DocType but no JSON appeared under FRAPPE_APPS_PATH; check that "
+            "it is the apps folder of the site's Bench."
+        )
+    return {
+        "promoted": True,
+        "doctype": doctype,
+        "app": app,
+        "module": module,
+        "modified": saved.get("modified") if isinstance(saved, dict) else None,
+        "folder": str(doctype_path),
+        "files": {key: str(path) for key, path in files.items()},
+        "file_status": file_status,
+        "native_files_complete": all(file_status.values()),
+        "warnings": warnings,
         "reconciled_after_server_reload": reconciled,
     }
 
