@@ -154,6 +154,26 @@ _PERMISSION_MANAGER_EXCLUDED_DOCTYPES = {
     "Module Def",
     "Transaction Log",
 }
+# Customize Form's own types for these properties (`docfield_properties` in
+# frappe/custom/doctype/customize_form/customize_form.py, v16.33.1).
+_PROPERTY_TYPES = {
+    "hidden": "Check",
+    "read_only": "Check",
+    "reqd": "Check",
+    "in_list_view": "Check",
+    "in_standard_filter": "Check",
+    "collapsible": "Check",
+    "bold": "Check",
+    "label": "Data",
+    "width": "Data",
+    "depends_on": "Data",
+    "mandatory_depends_on": "Data",
+    "read_only_depends_on": "Data",
+    "options": "Text",
+    "description": "Text",
+    "default": "Text",
+}
+_CUSTOM_FIELD_FIXED_KEYS = ("doctype", "dt", "module")
 _HOOK_BEGIN = "# BEGIN MCP FRAPPE MANAGED FIXTURES"
 _HOOK_END = "# END MCP FRAPPE MANAGED FIXTURES"
 _PROTECTED_APPS = {"frappe", "erpnext"}
@@ -552,8 +572,9 @@ def _assert_app_module(app: str, module: str) -> tuple[Path, Path]:
     return app_path, module_path
 
 
-def _assert_remote_module(app: str, module: str) -> None:
-    if not _SAFE_NAME.fullmatch(app) or not _SAFE_NAME.fullmatch(module):
+def _assert_remote_module(app: str | None, module: str) -> None:
+    """Check the Module Def exists on the site and, when `app` is given, belongs to it."""
+    if not _SAFE_NAME.fullmatch(module) or (app is not None and not _SAFE_NAME.fullmatch(app)):
         raise ValueError("Invalid app or module name")
     rows = _request(
         "GET",
@@ -564,8 +585,19 @@ def _assert_remote_module(app: str, module: str) -> None:
             "limit_page_length": 2,
         },
     )
-    if len(rows) != 1 or rows[0].get("app_name") != app:
+    if len(rows) != 1:
+        raise ValueError(f"Unknown module on the target site: {module}")
+    if app is not None and rows[0].get("app_name") != app:
         raise ValueError(f"Module {module} does not belong to app {app} on the target site")
+
+
+def _assert_optional_module(app: str | None, module: str | None) -> None:
+    """Validate the optional app/module pair of a site customization; no local files needed."""
+    if module is None:
+        if app is not None:
+            raise ValueError("app is only checked together with module; pass module too")
+        return
+    _assert_remote_module(app, module)
 
 
 def _assert_writable_app(app: str) -> None:
@@ -1452,17 +1484,37 @@ def set_role_permissions(
 
 @server.tool()
 def create_custom_field(
-    app: str, module: str, doctype: str, field: dict[str, Any], confirm: bool = False
+    doctype: str,
+    field: dict[str, Any],
+    app: str | None = None,
+    module: str | None = None,
+    confirm: bool = False,
 ) -> dict[str, Any]:
-    """Preview or create a Custom Field through the standard Frappe REST API."""
-    _assert_app_module(app, module)
-    if not _SAFE_NAME.fullmatch(doctype) or not field.get("fieldname"):
-        raise ValueError("A DocType and fieldname are required")
+    """Preview or create a Custom Field on a DocType through the standard Frappe REST API.
+
+    `field` holds the Custom Field values (`fieldname`, `fieldtype`, `label`, `insert_after`,
+    ...) and may not set `doctype`, `dt`, or `module`. `module` is optional and only tags the
+    field for a later export; when given it must exist on the site, and when `app` is also
+    given it must belong to that app. No local app checkout is needed. To edit or remove a
+    Custom Field later, use `update_document` or `delete_document` on `Custom Field`.
+    """
+    if not _SAFE_NAME.fullmatch(doctype):
+        raise ValueError("A valid DocType is required")
+    if not isinstance(field, dict) or not field.get("fieldname"):
+        raise ValueError("field must be an object with a fieldname")
+    fixed = [key for key in _CUSTOM_FIELD_FIXED_KEYS if key in field]
+    if fixed:
+        raise ValueError(
+            f"field may not set {', '.join(fixed)}; pass the DocType and module as arguments"
+        )
+    _assert_optional_module(app, module)
     schema = _doctype(doctype)
     existing = {row.get("fieldname") for row in schema.get("fields", [])}
     if field["fieldname"] in existing:
         raise ValueError("Field already exists")
-    data = {"doctype": "Custom Field", "dt": doctype, "module": module, **field}
+    data = {**field, "doctype": "Custom Field", "dt": doctype}
+    if module is not None:
+        data["module"] = module
     if not confirm:
         return {
             "preview": True,
@@ -1475,60 +1527,136 @@ def create_custom_field(
     return _request("POST", _resource("Custom Field"), json={"data": data})
 
 
+def _property_value(property: str, value: Any, property_type: str) -> str:
+    """Normalize a Property Setter value for its type; Check accepts 0/1 and booleans."""
+    if property_type == "Check":
+        if isinstance(value, bool):
+            return "1" if value else "0"
+        if value in (0, 1, "0", "1") and not isinstance(value, float):
+            return str(int(value))
+        raise ValueError(f"{property} is a Check property; value must be 0 or 1 (or a boolean)")
+    if not isinstance(value, str):
+        raise ValueError(f"{property} is a {property_type} property; value must be a string")
+    return value
+
+
 @server.tool()
 def set_field_property(
-    app: str,
-    module: str,
     doctype: str,
     property: str,
-    value: str,
-    property_type: str,
+    value: str | int | bool,
     fieldname: str | None = None,
+    property_type: str | None = None,
+    app: str | None = None,
+    module: str | None = None,
+    expected_modified: str | None = None,
     confirm: bool = False,
 ) -> dict[str, Any]:
-    """Preview or save a Customize Form value as a Property Setter."""
-    _assert_app_module(app, module)
+    """Preview or save a Customize Form value as a Property Setter.
+
+    Sets `property` on `fieldname`, or on the DocType itself when `fieldname` is omitted.
+    `property_type` is inferred from the property (Check, Data, or Text, as Customize Form
+    uses); a value passed in must match. Check values must be 0/1 or booleans. `module` is
+    optional, as for `create_custom_field`.
+
+    If a Property Setter for this property already exists, the preview has `mode: "update"`,
+    the current value, and its `modified`; confirmation must pass that as `expected_modified`
+    and updates the setter in place. Otherwise the preview has `mode: "create"`. A new
+    DocType-level setter makes Frappe delete the field-level setters for the same property;
+    the preview lists them in `replaces_field_setters`.
+    """
+    if property not in _PROPERTY_TYPES:
+        raise ValueError(
+            "Property is not in the supported Customize Form allowlist: "
+            + ", ".join(sorted(_PROPERTY_TYPES))
+        )
+    inferred = _PROPERTY_TYPES[property]
+    if property_type is not None and property_type != inferred:
+        raise ValueError(f"property_type for {property} is {inferred}")
+    stored = _property_value(property, value, inferred)
+    _assert_optional_module(app, module)
     schema = _doctype(doctype)
     if fieldname and fieldname not in {row.get("fieldname") for row in schema.get("fields", [])}:
         raise ValueError("Unknown fieldname")
-    allowed = {
-        "label",
-        "hidden",
-        "read_only",
-        "reqd",
-        "default",
-        "in_list_view",
-        "in_standard_filter",
-        "options",
-        "description",
-        "depends_on",
-        "mandatory_depends_on",
-        "read_only_depends_on",
-        "collapsible",
-        "bold",
-        "width",
-    }
-    if property not in allowed:
-        raise ValueError("Property is not in the supported Customize Form allowlist")
-    data = {
-        "doctype": "Property Setter",
+
+    rows = _request(
+        "GET",
+        _resource("Property Setter"),
+        params={
+            "fields": '["name","field_name","row_name","value","property_type","modified"]',
+            "filters": _filters({"doc_type": doctype, "property": property}),
+            "limit_page_length": 500,
+        },
+    )
+    matches = [
+        row
+        for row in rows
+        if (row.get("field_name") or None) == (fieldname or None) and not row.get("row_name")
+    ]
+    if len(matches) > 1:
+        names = ", ".join(row["name"] for row in matches)
+        raise ValueError(f"Several Property Setters match; resolve them first: {names}")
+    existing = matches[0] if matches else None
+
+    preview: dict[str, Any] = {
+        "preview": True,
+        "action": "set_field_property",
+        "mode": "update" if existing else "create",
+        "doctype": doctype,
         "doctype_or_field": "DocField" if fieldname else "DocType",
-        "doc_type": doctype,
-        "field_name": fieldname,
-        "module": module,
+        "fieldname": fieldname,
         "property": property,
-        "value": value,
-        "property_type": property_type,
-        "is_system_generated": 0,
+        "value": stored,
+        "property_type": inferred,
+        "module": module,
+        "requires_confirmation": True,
     }
+    if existing:
+        preview.update(
+            name=existing["name"],
+            current_value=existing.get("value"),
+            modified=existing.get("modified"),
+        )
+    elif not fieldname:
+        replaced = sorted(row["field_name"] for row in rows if row.get("field_name"))
+        if replaced:
+            preview["replaces_field_setters"] = replaced
     if not confirm:
-        return {
-            "preview": True,
-            "action": "set_field_property",
-            "data": data,
-            "requires_confirmation": True,
+        return preview
+
+    if not existing:
+        if expected_modified is not None:
+            raise ValueError("The Property Setter no longer exists; request a fresh preview")
+        data = {
+            "doctype": "Property Setter",
+            "doctype_or_field": preview["doctype_or_field"],
+            "doc_type": doctype,
+            "field_name": fieldname,
+            "property": property,
+            "value": stored,
+            "property_type": inferred,
+            "is_system_generated": 0,
         }
-    return _request("POST", _resource("Property Setter"), json={"data": data})
+        if module is not None:
+            data["module"] = module
+        return _request("POST", _resource("Property Setter"), json={"data": data})
+
+    name = existing["name"]
+    _expected_modified("Property Setter", name, expected_modified)
+    values: dict[str, Any] = {"value": stored, "property_type": inferred}
+    if module is not None:
+        values["module"] = module
+    # Same guard as update_document: Frappe compares `modified` under the row lock.
+    try:
+        return _request(
+            "PUT",
+            _resource("Property Setter", name),
+            json={"data": {**values, "modified": expected_modified}},
+        )
+    except FrappeError as error:
+        if error.exc_type == "TimestampMismatchError":
+            raise ValueError(_STALE_DOCUMENT) from error
+        raise
 
 
 @server.tool()

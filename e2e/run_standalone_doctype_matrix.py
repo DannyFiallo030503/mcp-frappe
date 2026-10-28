@@ -549,25 +549,26 @@ async def run() -> dict:
 
                 # The public MCP setter allowlist, with a distinct target field
                 # for each property so each native setter is independent.
+                # set_field_property infers property_type; Check values merge as booleans.
                 setter_values = {
-                    "label": ("MCP Updated Label", "Data"),
-                    "hidden": ("1", "Check"),
-                    "read_only": ("1", "Check"),
-                    "reqd": ("1", "Check"),
-                    "default": ("defaulted", "Data"),
-                    "in_list_view": ("1", "Check"),
-                    "in_standard_filter": ("1", "Check"),
-                    "options": ("Changed options", "Data"),
-                    "description": ("Description from Property Setter", "Small Text"),
-                    "depends_on": ("eval:doc.title", "Code"),
-                    "mandatory_depends_on": ("eval:doc.title", "Code"),
-                    "read_only_depends_on": ("eval:doc.title", "Code"),
-                    "collapsible": ("1", "Check"),
-                    "bold": ("1", "Check"),
-                    "width": ("160", "Int"),
+                    "label": "MCP Updated Label",
+                    "hidden": 1,
+                    "read_only": 1,
+                    "reqd": 1,
+                    "default": "defaulted",
+                    "in_list_view": 1,
+                    "in_standard_filter": 1,
+                    "options": "Changed options",
+                    "description": "Description from Property Setter",
+                    "depends_on": "eval:doc.title",
+                    "mandatory_depends_on": "eval:doc.title",
+                    "read_only_depends_on": "eval:doc.title",
+                    "collapsible": 1,
+                    "bold": 1,
+                    "width": "160",
                 }
                 property_results = {}
-                for index, (prop, (prop_value, prop_type)) in enumerate(setter_values.items()):
+                for index, (prop, prop_value) in enumerate(setter_values.items()):
                     fname = f"mcp_ps_{index:02d}"
                     cf_payload = field(fname, "Data", f"PS target {prop}")
                     await call(session, "create_custom_field", {
@@ -575,7 +576,7 @@ async def run() -> dict:
                     })
                     args = {
                         "app": "erp_app", "module": "CubaZone", "doctype": names["table"],
-                        "fieldname": fname, "property": prop, "value": prop_value, "property_type": prop_type,
+                        "fieldname": fname, "property": prop, "value": prop_value,
                     }
                     preview = await call(session, "set_field_property", args)
                     if not preview.get("requires_confirmation"):
@@ -585,12 +586,8 @@ async def run() -> dict:
                 merged = await call(session, "get_doctype_schema", {"doctype": names["table"]})
                 merged_fields = {row.get("fieldname"): row for row in merged.get("fields", [])}
                 mismatches = {}
-                for index, (prop, (prop_value, prop_type)) in enumerate(setter_values.items()):
-                    expected = prop_value
-                    if prop_type == "Check":
-                        expected = bool(int(prop_value))
-                    elif prop_type == "Int":
-                        expected = int(prop_value)
+                for index, (prop, prop_value) in enumerate(setter_values.items()):
+                    expected = bool(prop_value) if isinstance(prop_value, int) else prop_value
                     actual = merged_fields.get(f"mcp_ps_{index:02d}", {}).get(prop)
                     if actual != expected:
                         mismatches[prop] = {"expected": expected, "actual": actual}
@@ -601,7 +598,6 @@ async def run() -> dict:
                 doc_property_args = {
                     "app": "erp_app", "module": "CubaZone", "doctype": names["table"],
                     "property": "description", "value": "Description set on the DocType itself",
-                    "property_type": "Small Text",
                 }
                 await call(session, "set_field_property", doc_property_args)
                 doc_property_setter = await call(

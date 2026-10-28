@@ -47,11 +47,17 @@ Use the same preview-first pattern for creation/deletion. Do not pass `name`, `d
 ## Customize a site
 
 1. Discover the owning app and module on the remote site.
-2. Verify that the app/module exists below configured `FRAPPE_APPS_PATH`.
+2. For a standard DocType or an export, verify that the app/module exists below the configured `FRAPPE_APPS_PATH`. Custom Fields and Property Setters don't need a local checkout; pass `module` (and `app`) only if you will export them later.
 3. Preview `create_doctype`, `create_custom_field`, or `set_field_property`.
 4. Confirm only after reviewing names, field types, options, and destination.
-5. Call `export_customizations`, review every path, diff, and `preview_id`, then confirm with that ID.
+5. To export, call `export_customizations`, review every path, diff, and `preview_id`, then confirm with that ID.
 6. If the export needs reversal, preview `rollback_export` and confirm with its latest `preview_id`.
 7. Inspect the app's Git diff and use the project's normal deployment process. The MCP does not migrate or deploy.
+
+### Custom Fields and form properties
+
+- Add a field: `create_custom_field(doctype="Customer", field={"fieldname": "custom_region", "fieldtype": "Data", "label": "Region", "insert_after": "customer_name"})`. Don't put `doctype`, `dt`, or `module` inside `field`; they are rejected.
+- Edit a Custom Field: `update_document` on the `Custom Field` DocType, name `<DocType>-<fieldname>` (for example `Customer-custom_region`). Remove it with `delete_document` on the same record. Both follow the usual preview and `expected_modified` steps.
+- Change a form property (label, hidden, reqd, ...): `set_field_property`. Leave out `property_type`; the tool infers it. Check properties take `0`/`1` or booleans. If the preview says `mode: "update"`, a Property Setter already exists: confirm with the preview's `modified` as `expected_modified`. If a DocType-level preview lists `replaces_field_setters`, Frappe will delete those field-level setters; tell the user before confirming.
 
 The exporter supports DocType JSON, Custom Field, Property Setter, Client Script, and Custom DocPerm fixtures, plus a managed `hooks.py` fixture block. It does not export arbitrary Frappe state or custom app code.
