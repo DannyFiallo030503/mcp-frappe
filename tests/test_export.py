@@ -332,7 +332,7 @@ def test_client_script_fixture_keeps_rows_outside_the_export(site, app_tree) -> 
     assert names == ["Supplier Form", "Customer Form"]
 
 
-def test_fixture_plan_keeps_only_client_script_entries(tmp_path: Path) -> None:
+def test_fixture_plan_keeps_only_managed_entries(tmp_path: Path) -> None:
     package = tmp_path / APP / APP
     package.mkdir(parents=True)
     old_block = (
@@ -345,7 +345,9 @@ def test_fixture_plan_keeps_only_client_script_entries(tmp_path: Path) -> None:
     )
     (package / "hooks.py").write_text(HOOKS + old_block, encoding="utf-8")
 
-    _, content = standalone._fixture_plan(tmp_path / APP, ["Customer"], MODULE)
+    _, content = standalone._fixture_plan(
+        tmp_path / APP, {"Client Script": {"dt": ["Customer"], "module": [MODULE]}}
+    )
 
     assert "Custom Field" not in content
     assert "['Customer', 'Supplier']" in content
@@ -431,3 +433,129 @@ def test_export_preview_id_must_match(site, app_tree) -> None:
             app=APP, module=MODULE, doctypes=["Customer"], confirm=True, expected_preview="bad"
         )
     assert not _native(app_tree, "customer").exists()
+
+
+WORKFLOW = {
+    "name": "Customer Approval",
+    "owner": "Administrator",
+    "creation": "2026-10-19 12:00:00.000001",
+    "modified": "2026-10-19 12:00:00.000001",
+    "modified_by": "Administrator",
+    "docstatus": 0,
+    "idx": 0,
+    "doctype": "Workflow",
+    "workflow_name": "Customer Approval",
+    "document_type": "Customer",
+    "is_active": 1,
+    "workflow_state_field": "workflow_state",
+    "states": [
+        {"name": "row1", "parent": "Customer Approval", "parenttype": "Workflow",
+         "parentfield": "states", "idx": 1, "doctype": "Workflow Document State",
+         "state": "Pending", "doc_status": "0", "allow_edit": "Sales User"},
+        {"name": "row2", "parent": "Customer Approval", "idx": 2, "state": "Approved",
+         "doc_status": "0", "allow_edit": "Sales Manager"},
+    ],
+    "transitions": [
+        {"name": "row3", "parent": "Customer Approval", "idx": 1, "state": "Pending",
+         "action": "Approve", "next_state": "Approved", "allowed": "Sales Manager"},
+    ],
+}
+
+
+def _workflow_site(site) -> None:
+    _rows(site, "Workflow", [["document_type", "in", ["Customer"]]], [{"name": WORKFLOW["name"]}])
+    site.add("GET", standalone._resource("Workflow", WORKFLOW["name"]), WORKFLOW)
+    _rows(site, "Workflow State", [["name", "in", ["Approved", "Pending"]]], [
+        {"name": "Approved", "workflow_state_name": "Approved", "style": "Success",
+         "owner": "Administrator", "idx": 0},
+        {"name": "Pending", "workflow_state_name": "Pending", "style": "Warning"},
+    ])
+    _rows(site, "Workflow Action Master", [["name", "in", ["Approve"]]],
+          [{"name": "Approve", "workflow_action_name": "Approve"}])
+
+
+def _fixture(app_tree: Path, name: str) -> Path:
+    return app_tree / APP / "fixtures" / f"{name}.json"
+
+
+def test_workflows_are_exported_as_fixtures_only_when_asked(site, app_tree) -> None:
+    _workflow_site(site)
+
+    plain = _export()
+    assert "workflows" not in plain
+    assert not (app_tree / APP / "fixtures").exists()
+
+    result = _export(with_workflows=True)
+
+    assert result["workflows"] == ["Customer Approval"]
+    (workflow,) = json.loads(_fixture(app_tree, "workflow").read_text(encoding="utf-8"))
+    assert workflow["doctype"] == "Workflow"
+    assert workflow["modified"] == WORKFLOW["modified"]
+    for dropped in ("owner", "creation", "modified_by", "idx"):
+        assert dropped not in workflow
+    assert workflow["states"][0] == {"state": "Pending", "doc_status": "0",
+                                     "allow_edit": "Sales User"}
+    assert workflow["transitions"][0]["action"] == "Approve"
+    states = json.loads(_fixture(app_tree, "workflow_state").read_text(encoding="utf-8"))
+    assert [row["name"] for row in states] == ["Approved", "Pending"]
+    assert all(row["doctype"] == "Workflow State" and "owner" not in row for row in states)
+    (action,) = json.loads(_fixture(app_tree, "workflow_action_master").read_text("utf-8"))
+    assert action == {"name": "Approve", "workflow_action_name": "Approve",
+                      "doctype": "Workflow Action Master"}
+    hooks = (app_tree / APP / "hooks.py").read_text(encoding="utf-8")
+    assert "{'dt': 'Workflow', 'filters': [['name', 'in', ['Customer Approval']]]}" in hooks
+    assert "['name', 'in', ['Approved', 'Pending']]" in hooks
+    assert "Client Script" not in hooks
+
+
+def test_workflow_fixture_keeps_other_doctypes_workflows(site, app_tree) -> None:
+    _workflow_site(site)
+    fixture = _fixture(app_tree, "workflow")
+    fixture.parent.mkdir()
+    other = {"doctype": "Workflow", "name": "Supplier Approval", "document_type": "Supplier"}
+    stale = {"doctype": "Workflow", "name": "Old Customer Flow", "document_type": "Customer"}
+    fixture.write_text(json.dumps([other, stale]), encoding="utf-8")
+
+    _export(with_workflows=True)
+
+    names = [row["name"] for row in json.loads(fixture.read_text(encoding="utf-8"))]
+    assert names == ["Supplier Approval", "Customer Approval"]
+
+
+def test_fixture_plan_merges_workflow_names_and_keeps_earlier_entries(tmp_path: Path) -> None:
+    package = tmp_path / APP / APP
+    package.mkdir(parents=True)
+    old_block = (
+        f"\n\n{standalone._HOOK_BEGIN}\n"
+        "mcp_frappe_exported_fixtures = [{'dt': 'Client Script', 'filters': "
+        "[['dt', 'in', ['Supplier']], ['module', 'in', ['Buying']]]}, "
+        "{'dt': 'Workflow', 'filters': [['name', 'in', ['Supplier Approval']]]}]\n"
+        "fixtures = list(globals().get('fixtures', [])) + mcp_frappe_exported_fixtures\n"
+        f"{standalone._HOOK_END}\n"
+    )
+    (package / "hooks.py").write_text(HOOKS + old_block, encoding="utf-8")
+
+    _, content = standalone._fixture_plan(
+        tmp_path / APP, {"Workflow": {"name": ["Customer Approval"]}}
+    )
+
+    assert "['Customer Approval', 'Supplier Approval']" in content
+    assert "{'dt': 'Client Script', 'filters': [['dt', 'in', ['Supplier']]" in content
+    assert content.index("'Client Script'") < content.index("'Workflow'")
+
+
+def test_workflow_export_rolls_back_byte_for_byte(site, app_tree) -> None:
+    _workflow_site(site)
+    before = _tree(app_tree)
+
+    result = _export(with_workflows=True)
+    preview = standalone.rollback_export(app=APP, module=MODULE, rollback_id=result["rollback_id"])
+    standalone.rollback_export(
+        app=APP,
+        module=MODULE,
+        rollback_id=result["rollback_id"],
+        expected_preview=preview["preview_id"],
+        confirm=True,
+    )
+
+    assert _tree(app_tree) == before

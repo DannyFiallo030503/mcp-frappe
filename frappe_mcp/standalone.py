@@ -16,6 +16,7 @@ import stat
 import tempfile
 import time
 import uuid
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -358,6 +359,8 @@ _PROPERTY_TYPES = {
 _CUSTOM_FIELD_FIXED_KEYS = ("doctype", "dt", "module")
 _HOOK_BEGIN = "# BEGIN MCP FRAPPE MANAGED FIXTURES"
 _HOOK_END = "# END MCP FRAPPE MANAGED FIXTURES"
+# Fixture DocTypes the managed hooks.py block lists, in the order it lists them.
+_MANAGED_FIXTURES = ("Client Script", "Workflow", "Workflow State", "Workflow Action Master")
 _EXPORT_MAX_DOCTYPES = 50
 _EXPORT_MAX_FILES = 200
 _EXPORT_ROW_LIMIT = 1000
@@ -573,7 +576,8 @@ def _forget_meta(doctype: str | None = None) -> None:
 
 
 def _forget_meta_after_write(doctype: str) -> None:
-    if doctype in _SCHEMA_DOCTYPES:
+    # Saving a Workflow can add its state field to the DocType as a Custom Field.
+    if doctype in _SCHEMA_DOCTYPES or doctype == "Workflow":
         _forget_meta()
 
 
@@ -1075,12 +1079,16 @@ def _atomic_write(path: Path, content: str, mode: int | None = None) -> None:
         Path(temp_name).unlink(missing_ok=True)
 
 
-def _fixture_plan(app_path: Path, doctypes: list[str], module: str) -> tuple[Path, str]:
-    """Plan the managed `hooks.py` block that keeps exported Client Scripts in `fixtures`.
+def _fixture_plan(
+    app_path: Path, entries: dict[str, dict[str, list[str]]]
+) -> tuple[Path, str]:
+    """Plan the managed `hooks.py` block that keeps exported records in the app's `fixtures`.
 
-    Only Client Script needs a hook entry: Custom Fields, Property Setters, and permissions
-    go to the module's native `custom/` file, which `bench migrate` reads without one. Entries
-    for other DocTypes left by older exports are dropped from the block.
+    `entries` maps a fixture DocType to `{filter_field: values}`; each becomes an `in` filter,
+    merged with the values earlier exports put there. Only `_MANAGED_FIXTURES` need a hook
+    entry: Custom Fields, Property Setters, and permissions go to the module's native `custom/`
+    file, which `bench migrate` reads without one. Entries for other DocTypes left by older
+    exports are dropped from the block.
     """
     hooks = app_path / app_path.name / "hooks.py"
     if not hooks.is_file() or not os.access(hooks, os.W_OK):
@@ -1108,21 +1116,29 @@ def _fixture_plan(app_path: Path, doctypes: list[str], module: str) -> tuple[Pat
             existing = ast.literal_eval(assignment.value)
         source = source[:begin].rstrip()
 
-    previous = next(
-        (row for row in existing if isinstance(row, dict) and row.get("dt") == "Client Script"),
-        None,
-    )
-    filters = list(previous.get("filters", [])) if previous else []
-    for key, incoming in (("dt", doctypes), ("module", [module])):
-        current = next(
-            (condition for condition in filters if len(condition) == 3 and condition[0] == key),
+    managed = []
+    for doctype in _MANAGED_FIXTURES:
+        previous = next(
+            (row for row in existing if isinstance(row, dict) and row.get("dt") == doctype),
             None,
         )
-        if current and current[1] == "in":
-            current[2] = sorted(set(current[2]) | set(incoming))
-        else:
-            filters.append([key, "in", sorted(incoming)])
-    managed = [{"dt": "Client Script", "filters": filters}]
+        if previous is None and doctype not in entries:
+            continue
+        filters = [list(condition) for condition in previous.get("filters", [])] if previous else []
+        for key, incoming in entries.get(doctype, {}).items():
+            current = next(
+                (
+                    condition
+                    for condition in filters
+                    if len(condition) == 3 and condition[0] == key
+                ),
+                None,
+            )
+            if current and current[1] == "in":
+                current[2] = sorted(set(current[2]) | set(incoming))
+            else:
+                filters.append([key, "in", sorted(incoming)])
+        managed.append({"dt": doctype, "filters": filters})
 
     block_text = (
         f"\n\n{_HOOK_BEGIN}\n"
@@ -1213,6 +1229,54 @@ def _native_customization(
     return None
 
 
+def _fixture_row(row: dict[str, Any], doctype: str) -> dict[str, Any]:
+    """Shape a record like Frappe's `export_json`: no audit keys, child rows without their own."""
+    exported: dict[str, Any] = {}
+    for key, value in row.items():
+        if key in _FIXTURE_DROPPED_KEYS or key.startswith("_"):
+            continue
+        if isinstance(value, list):
+            value = [
+                {
+                    child_key: child_value
+                    for child_key, child_value in child.items()
+                    if child_key not in _FIXTURE_DROPPED_KEYS
+                    and child_key not in _CHILD_SYSTEM_KEYS
+                    and not child_key.startswith("_")
+                }
+                for child in value
+                if isinstance(child, dict)
+            ]
+        exported[key] = value
+    exported["doctype"] = doctype
+    return exported
+
+
+def _fixture_file(
+    app_path: Path,
+    doctype: str,
+    exported: list[dict[str, Any]],
+    replaces: Callable[[dict[str, Any]], bool],
+) -> tuple[Path, str]:
+    """Plan `<app>/<app>/fixtures/<scrub(doctype)>.json`, the file `bench migrate` imports.
+
+    `exported` replaces rows with the same name and the rows `replaces` matches (records this
+    export covers that the site no longer has); every other row in the file stays.
+    """
+    path = app_path / app_path.name / "fixtures" / f"{_scrub(doctype)}.json"
+    kept: list[dict[str, Any]] = []
+    if path.is_file():
+        try:
+            current = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as error:
+            raise ValueError(f"{path} is not valid JSON; fix it before exporting") from error
+        if not isinstance(current, list) or any(not isinstance(row, dict) for row in current):
+            raise ValueError(f"{path} is not a list of fixture rows; fix it before exporting")
+        names = {row.get("name") for row in exported}
+        kept = [row for row in current if row.get("name") not in names and not replaces(row)]
+    return path, _frappe_json(kept + exported, ensure_ascii=False)
+
+
 def _client_script_fixture(
     app_path: Path, doctypes: list[str], module: str
 ) -> tuple[Path, str] | None:
@@ -1224,34 +1288,55 @@ def _client_script_fixture(
     )
     if not rows:
         return None
-    exported = [
-        {
-            **{
-                key: value
-                for key, value in row.items()
-                if key not in _FIXTURE_DROPPED_KEYS and not key.startswith("_")
-            },
-            "doctype": "Client Script",
-        }
-        for row in rows
+    return _fixture_file(
+        app_path,
+        "Client Script",
+        [_fixture_row(row, "Client Script") for row in rows],
+        lambda row: row.get("dt") in doctypes and row.get("module") == module,
+    )
+
+
+def _workflow_fixtures(
+    app_path: Path, doctypes: list[str]
+) -> tuple[list[str], list[tuple[Path, str]], dict[str, dict[str, list[str]]]]:
+    """Plan fixture files for the Workflows of `doctypes` and the masters they use.
+
+    A Workflow has no module, so Frappe has no module folder to write it to; it travels as a
+    fixture, with the Workflow State and Workflow Action Master records it names. Returns the
+    Workflow names, the files, and the `_fixture_plan` entries filtering each by name.
+    """
+    names = [
+        row["name"]
+        for row in _export_rows(
+            "Workflow", [["document_type", "in", doctypes]], order_by="name asc"
+        )
     ]
-    path = app_path / app_path.name / "fixtures" / "client_script.json"
-    kept: list[dict[str, Any]] = []
-    if path.is_file():
-        try:
-            current = json.loads(path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as error:
-            raise ValueError(f"{path} is not valid JSON; fix it before exporting") from error
-        if not isinstance(current, list) or any(not isinstance(row, dict) for row in current):
-            raise ValueError(f"{path} is not a list of fixture rows; fix it before exporting")
-        names = {row.get("name") for row in exported}
-        kept = [
-            row
-            for row in current
-            if row.get("name") not in names
-            and not (row.get("dt") in doctypes and row.get("module") == module)
-        ]
-    return path, _frappe_json(kept + exported, ensure_ascii=False)
+    if not names:
+        return [], [], {}
+    workflows = [
+        _fixture_row(_request("GET", _resource("Workflow", name)), "Workflow") for name in names
+    ]
+    states = sorted({row.get("state") for flow in workflows for row in flow.get("states", [])})
+    actions = sorted(
+        {row.get("action") for flow in workflows for row in flow.get("transitions", [])}
+    )
+    files = [
+        _fixture_file(
+            app_path, "Workflow", workflows, lambda row: row.get("document_type") in doctypes
+        )
+    ]
+    entries: dict[str, dict[str, list[str]]] = {"Workflow": {"name": names}}
+    for doctype, wanted in (("Workflow State", states), ("Workflow Action Master", actions)):
+        if not wanted:
+            continue
+        rows = _export_rows(doctype, [["name", "in", wanted]])
+        files.append(
+            _fixture_file(
+                app_path, doctype, [_fixture_row(row, doctype) for row in rows], lambda row: False
+            )
+        )
+        entries[doctype] = {"name": wanted}
+    return names, files, entries
 
 
 def _created_dirs(app_path: Path, path: Path) -> list[str]:
@@ -3412,6 +3497,7 @@ def export_customizations(
     with_permissions: bool = False,
     apply_module_filter: bool = False,
     sync_on_migrate: bool = True,
+    with_workflows: bool = False,
     confirm: bool = False,
     expected_preview: str | None = None,
 ) -> dict[str, Any]:
@@ -3423,7 +3509,10 @@ def export_customizations(
     DocPerms. Child-table DocTypes the DocType uses get their own file. A DocType with nothing
     to export gets no file. Client Scripts for these DocTypes and `module` go to the app-level
     `<app>/<app>/fixtures/client_script.json`, and a managed block in `hooks.py` keeps them in
-    the app's `fixtures`; `hooks.py` is untouched when there are none.
+    the app's `fixtures`; `hooks.py` is untouched when there are none. With `with_workflows`,
+    the Workflows of `doctypes` and the Workflow State and Workflow Action Master records they
+    use go to `fixtures/workflow.json`, `workflow_state.json`, and `workflow_action_master.json`,
+    listed by name in the same managed block.
 
     DocType JSON is never written: in developer mode Frappe writes standard DocType files itself.
 
@@ -3436,6 +3525,8 @@ def export_customizations(
         apply_module_filter: Export only Custom Fields and Property Setters whose module is
             `module`, as Frappe's "Apply Module Export Filter" does.
         sync_on_migrate: Have `bench migrate` import the file; Frappe's own default is off.
+        with_workflows: Also export the Workflows of `doctypes` as fixtures. `bench migrate`
+            imports fixtures on every run and overwrites the site's copies.
         confirm: False returns a preview with diffs; True writes the files.
         expected_preview: The preview's `preview_id`, required when confirm is True.
     """
@@ -3460,10 +3551,18 @@ def export_customizations(
             empty.append(doctype)
             continue
         payloads.append((module_path / "custom" / f"{_scrub(doctype)}.json", _frappe_json(custom)))
+    fixture_entries: dict[str, dict[str, list[str]]] = {}
     client_scripts = _client_script_fixture(app_path, covered, module)
     if client_scripts:
         payloads.append(client_scripts)
-        payloads.append(_fixture_plan(app_path, covered, module))
+        fixture_entries["Client Script"] = {"dt": covered, "module": [module]}
+    workflows: list[str] = []
+    if with_workflows:
+        workflows, workflow_files, workflow_entries = _workflow_fixtures(app_path, doctypes)
+        payloads.extend(workflow_files)
+        fixture_entries.update(workflow_entries)
+    if fixture_entries:
+        payloads.append(_fixture_plan(app_path, fixture_entries))
     if len(payloads) > _EXPORT_MAX_FILES:
         raise ValueError("Export produced too many files")
     previews = []
@@ -3474,7 +3573,9 @@ def export_customizations(
         if total_size > 5_000_000:
             raise ValueError("Export exceeds the 5 MB total output limit")
         previews.append(_file_preview(path, content))
-    summary = {"app": app, "module": module, "doctypes": covered, "empty": empty}
+    summary: dict[str, Any] = {"app": app, "module": module, "doctypes": covered, "empty": empty}
+    if with_workflows:
+        summary["workflows"] = workflows
     if not payloads:
         if confirm:
             raise ValueError("Nothing to export: these DocTypes have no customizations")
@@ -3620,6 +3721,995 @@ def rollback_export(
     if backup_root.is_dir() and not any(backup_root.iterdir()):
         backup_root.rmdir()
     return {"rolled_back": True, "app": app, "rollback_id": rollback_id, "files": len(manifest)}
+
+
+# Configuration records: Workflows and Notifications.
+
+_CONFIG_LIST_LIMIT = 200
+_WORKFLOW_MAX_STATES = 50
+_WORKFLOW_MAX_TRANSITIONS = 100
+_WORKFLOW_STATE_KEYS = ("state", "doc_status", "allow_edit", "update_field", "update_value")
+_WORKFLOW_TRANSITION_KEYS = ("state", "action", "next_state", "allowed", "allow_self_approval")
+_WORKFLOW_PROPERTIES = ("is_active", "send_email_alert", "workflow_state_field")
+_WORKFLOW_STATE_FIELDTYPES = frozenset({"Link", "Data", "Select"})
+_NOTIFICATION_EVENTS = (
+    "New",
+    "Save",
+    "Submit",
+    "Cancel",
+    "Value Change",
+    "Days Before",
+    "Days After",
+)
+_NOTIFICATION_DAY_EVENTS = frozenset({"Days Before", "Days After"})
+_NOTIFICATION_CHANNELS = ("Email", "System Notification")
+_NOTIFICATION_RECIPIENT_KEYS = ("receiver_by_document_field", "receiver_by_role", "cc", "bcc")
+_NOTIFICATION_MAX_RECIPIENTS = 20
+# Frappe refuses Notifications on these (FORBIDDEN_DOCUMENT_TYPES in notification.py).
+_NOTIFICATION_FORBIDDEN_DOCTYPES = frozenset({"Email Queue"})
+_NOTIFICATION_SUBJECT_MAX = 140
+_TEMPLATE_MAX_LENGTH = 20_000
+_TEMPLATE_RULE = "use plain text with {{ doc.<fieldname> }} placeholders"
+# Jinja filters a placeholder may use, with the type of each optional literal argument in
+# order. The plain ones are Jinja built-ins; int, str, and flt are Frappe's cint, cstr, flt.
+_TEMPLATE_FILTERS: dict[str, tuple[type, ...]] = {
+    "upper": (),
+    "lower": (),
+    "title": (),
+    "capitalize": (),
+    "trim": (),
+    "striptags": (),
+    "escape": (),
+    "e": (),
+    "int": (),
+    "str": (),
+    "flt": (int,),
+    "round": (int, str),
+    "truncate": (int,),
+    "default": (str,),
+}
+_ROUND_METHODS = frozenset({"common", "ceil", "floor"})
+_PLACEHOLDER = re.compile(r"\{\{(.*?)\}\}", re.S)
+_PLACEHOLDER_BODY = re.compile(r"\s*doc\.([A-Za-z_][A-Za-z0-9_]*)\s*((?:\|[^|]*)*)")
+_TEMPLATE_FILTER = re.compile(r"\s*([a-z_]+)\s*(?:\(([^()]*)\))?\s*")
+_EMAIL_ADDRESS = re.compile(r"[^@\s,;{}<>()\"'%]+@[^@\s,;{}<>()\"'%]+\.[A-Za-z0-9-]+")
+
+
+def _template_fields(schema: dict[str, Any]) -> set[str]:
+    """Fields a placeholder may print: value fields (not layout or tables) and standard columns."""
+    return {
+        row["fieldname"]
+        for row in schema.get("fields", [])
+        if row.get("fieldname")
+        and row.get("fieldtype") not in _LAYOUT_FIELDTYPES
+        and row.get("fieldtype") not in _TABLE_FIELDTYPES
+    } | _STANDARD_COLUMNS
+
+
+def _assert_template_filter(part: str, where: str) -> None:
+    match = _TEMPLATE_FILTER.fullmatch(part)
+    if not match or match.group(1) not in _TEMPLATE_FILTERS:
+        raise ValueError(
+            f"{where}: filter {part.strip()!r} is not allowed; allowed filters: "
+            f"{', '.join(_TEMPLATE_FILTERS)}"
+        )
+    name, arguments = match.groups()
+    try:
+        values = ast.literal_eval(f"({arguments},)") if arguments and arguments.strip() else ()
+    except (ValueError, SyntaxError) as error:
+        raise ValueError(f"{where}: filter {name} takes only number or string literals") from error
+    kinds = _TEMPLATE_FILTERS[name]
+    if (
+        len(values) > len(kinds)
+        or any(type(value) is not kind for value, kind in zip(values, kinds, strict=False))
+        or any(isinstance(value, str) and set(value) & set("{}%#") for value in values)
+        or (name == "round" and len(values) == 2 and values[1] not in _ROUND_METHODS)
+    ):
+        expected = ", ".join(kind.__name__ for kind in kinds) or "no arguments"
+        raise ValueError(f"{where}: filter {name} takes {expected}")
+
+
+def _assert_template(text: Any, where: str, fields: set[str]) -> None:
+    """Allow plain text with `{{ doc.<field> }}` placeholders and allowlisted filters only.
+
+    Frappe renders Notification subjects and messages as Jinja on the server. Anything beyond
+    printing a field of the document (statements, calls, other variables, attribute chains)
+    would let the model run template code there, so it is refused.
+    """
+    if not isinstance(text, str) or not text.strip():
+        raise ValueError(f"{where} must be non-empty text")
+    if len(text) > _TEMPLATE_MAX_LENGTH:
+        raise ValueError(f"{where} is longer than {_TEMPLATE_MAX_LENGTH} characters")
+    for marker, what in (("{%", "statements"), ("{#", "comments")):
+        if marker in text:
+            raise ValueError(f"{where}: Jinja {what} ({marker}) are not allowed; {_TEMPLATE_RULE}")
+    for match in _PLACEHOLDER.finditer(text):
+        body = _PLACEHOLDER_BODY.fullmatch(match.group(1))
+        if not body:
+            raise ValueError(
+                f"{where}: unsupported placeholder {match.group(0)!r}; {_TEMPLATE_RULE}"
+            )
+        fieldname, chain = body.groups()
+        if fieldname not in fields:
+            raise ValueError(f"{where}: unknown field in placeholder: {fieldname}")
+        for part in chain.split("|")[1:]:
+            _assert_template_filter(part, where)
+    if "{{" in _PLACEHOLDER.sub("", text):
+        raise ValueError(f"{where}: unclosed {{{{ placeholder; {_TEMPLATE_RULE}")
+
+
+def _email_list(value: Any, where: str) -> str:
+    """Accept plain addresses separated by commas or newlines; Frappe renders `{` as Jinja."""
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{where} must list email addresses")
+    addresses = [part.strip() for part in re.split(r"[,\n]", value) if part.strip()]
+    if len(addresses) > _NOTIFICATION_MAX_RECIPIENTS:
+        raise ValueError(f"{where} lists more than {_NOTIFICATION_MAX_RECIPIENTS} addresses")
+    for address in addresses:
+        if not _EMAIL_ADDRESS.fullmatch(address):
+            raise ValueError(f"{where}: not a plain email address: {address!r}")
+    return "\n".join(addresses)
+
+
+def _missing_records(doctype: str, names: Any) -> list[str]:
+    """Return which of `names` have no `doctype` record, in one list read."""
+    wanted = sorted(set(names))
+    if not wanted:
+        return []
+    rows = _request(
+        "GET",
+        _resource(doctype),
+        params={
+            "fields": '["name"]',
+            "filters": _filters([["name", "in", wanted]]),
+            "limit_page_length": len(wanted),
+        },
+    )
+    found = {row.get("name") for row in rows}
+    return [name for name in wanted if name not in found]
+
+
+def _assert_roles(roles: Any) -> None:
+    missing = _missing_records("Role", roles)
+    if missing:
+        raise ValueError(f"Unknown roles on the target site: {', '.join(missing)}")
+
+
+def _config_record(doctype: str, name: str) -> dict[str, Any] | None:
+    """Read a configuration record with its child tables; None when it does not exist."""
+    rows = _request(
+        "GET",
+        _resource(doctype),
+        params={
+            "fields": '["name"]',
+            "filters": _filters({"name": name}),
+            "limit_page_length": 1,
+        },
+    )
+    return _request("GET", _resource(doctype, name)) if rows else None
+
+
+def _record_holds(doc: dict[str, Any], values: dict[str, Any]) -> bool:
+    """Tell whether a re-read record holds `values`, child rows compared in order."""
+    for key, value in values.items():
+        if isinstance(value, list):
+            rows = doc.get(key) or []
+            if len(rows) != len(value) or any(
+                not isinstance(row, dict) or not _record_holds(row, wanted)
+                for row, wanted in zip(rows, value, strict=False)
+            ):
+                return False
+        elif key != "doctype" and not _same(doc.get(key), value):
+            return False
+    return True
+
+
+def _save_config_record(
+    doctype: str,
+    values: dict[str, Any],
+    name: str,
+    expected_modified: str | None = None,
+    *,
+    forget: tuple[str, ...] = (),
+) -> tuple[dict[str, Any], bool]:
+    """Create (no `expected_modified`) or update one configuration record and its child tables.
+
+    Updates send `modified` in the body, so Frappe refuses a record changed since the preview.
+    A developer-mode save of a standard record (a Notification, and in stage 09 a Report or
+    Workspace) writes files and can make the Bench reload mid-request. Then the record is
+    re-read, and the save counts only if it holds `values` and, on update, `modified` moved;
+    nothing is sent twice. Returns the saved record and whether it was reconciled. The
+    metadata cache is cleared for `doctype` and every DocType in `forget`.
+    """
+    try:
+        if expected_modified is None:
+            saved = _request(
+                "POST", _resource(doctype), json={"data": {"doctype": doctype, **values}}
+            )
+        else:
+            saved = _request(
+                "PUT",
+                _resource(doctype, name),
+                json={"data": {**values, "modified": expected_modified}},
+            )
+        return saved, False
+    except FrappeError as error:
+        if error.exc_type == "TimestampMismatchError":
+            raise ValueError(_STALE_DOCUMENT) from error
+        raise
+    except httpx.TransportError as error:
+        _wait_for_server_ready()
+        current = _config_record(doctype, name)
+        if (
+            current is None
+            or not _record_holds(current, values)
+            or (expected_modified is not None and str(current.get("modified")) == expected_modified)
+        ):
+            raise RuntimeError(
+                f"Frappe disconnected while saving {doctype} {name} and the saved record does "
+                "not hold the change; request a fresh preview before retrying."
+            ) from error
+        return current, True
+    finally:
+        for target in (doctype, *forget):
+            _forget_meta(target)
+
+
+def _workflow_view(doc: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "name": doc.get("name"),
+        "document_type": doc.get("document_type"),
+        "is_active": bool(doc.get("is_active")),
+        "send_email_alert": bool(doc.get("send_email_alert")),
+        "workflow_state_field": doc.get("workflow_state_field"),
+        "modified": doc.get("modified"),
+        "states": [
+            {key: row.get(key) for key in _WORKFLOW_STATE_KEYS if not _blank(row.get(key))}
+            for row in doc.get("states") or []
+        ],
+        "transitions": [
+            {
+                **{key: row.get(key) for key in _WORKFLOW_TRANSITION_KEYS[:4]},
+                "allow_self_approval": bool(row.get("allow_self_approval")),
+                **({"has_condition": True} if row.get("condition") else {}),
+            }
+            for row in doc.get("transitions") or []
+        ],
+    }
+
+
+@server.tool()
+def get_workflow(doctype: str) -> dict[str, Any]:
+    """Return a DocType's active Workflow: states, transitions, and its state field.
+
+    `workflow` is null when the DocType has no active Workflow; `inactive` names its other
+    Workflows. A transition guarded by a Python condition set outside this server shows
+    `has_condition`; this server never writes conditions.
+    """
+    _meta_bundle(doctype)
+    rows = _request(
+        "GET",
+        _resource("Workflow"),
+        params={
+            "fields": '["name","is_active"]',
+            "filters": _filters({"document_type": doctype}),
+            "order_by": "modified desc",
+            "limit_page_length": 50,
+        },
+    )
+    active = next((row["name"] for row in rows if row.get("is_active")), None)
+    return {
+        "doctype": doctype,
+        "workflow": _workflow_view(_request("GET", _resource("Workflow", active)))
+        if active
+        else None,
+        "inactive": [row["name"] for row in rows if row["name"] != active],
+    }
+
+
+def _workflow_states(states: Any, schema: dict[str, Any]) -> list[dict[str, Any]]:
+    if not isinstance(states, list) or not 1 <= len(states) <= _WORKFLOW_MAX_STATES:
+        raise ValueError(f"states must list 1 to {_WORKFLOW_MAX_STATES} states")
+    doctype = schema.get("name")
+    value_fields = _template_fields(schema) - _STANDARD_COLUMNS
+    rows: list[dict[str, Any]] = []
+    for index, state in enumerate(states):
+        where = f"states[{index}]"
+        if not isinstance(state, dict):
+            raise ValueError(f"{where} must be an object")
+        if "evaluate_as_expression" in state:
+            raise ValueError(
+                f"{where}: evaluate_as_expression makes Frappe evaluate update_value as code; "
+                "it is not supported"
+            )
+        unknown = sorted(set(state) - set(_WORKFLOW_STATE_KEYS))
+        if unknown:
+            raise ValueError(f"{where}: unsupported keys: {', '.join(unknown)}")
+        name = state.get("state")
+        if not isinstance(name, str) or not _SAFE_NAME.fullmatch(name):
+            raise ValueError(f"{where}: state must be a name such as 'Pending Approval'")
+        if any(row["state"] == name for row in rows):
+            raise ValueError(f"{where}: state {name!r} is listed twice")
+        doc_status = state.get("doc_status", 0)
+        if isinstance(doc_status, bool) or str(doc_status) not in ("0", "1", "2"):
+            raise ValueError(f"{where}: doc_status must be 0 (draft), 1 (submitted), or 2")
+        doc_status = str(doc_status)
+        if doc_status != "0" and not schema.get("is_submittable"):
+            raise ValueError(
+                f"{where}: doc_status {doc_status} needs a submittable DocType; "
+                f"{doctype} is not submittable"
+            )
+        role = state.get("allow_edit")
+        if not isinstance(role, str) or not _SAFE_NAME.fullmatch(role):
+            raise ValueError(f"{where}: allow_edit must name a Role")
+        update_field, update_value = state.get("update_field"), state.get("update_value")
+        if update_field is not None and (
+            not isinstance(update_field, str) or update_field not in value_fields
+        ):
+            raise ValueError(f"{where}: update_field {update_field!r} is not a field of {doctype}")
+        if update_value is not None:
+            if update_field is None:
+                raise ValueError(f"{where}: update_value needs update_field")
+            if isinstance(update_value, bool) or not isinstance(update_value, str | int | float):
+                raise ValueError(f"{where}: update_value must be a string or number")
+            update_value = str(update_value)
+        rows.append(
+            {
+                "state": name,
+                "doc_status": doc_status,
+                "allow_edit": role,
+                "update_field": update_field,
+                "update_value": update_value,
+            }
+        )
+    if rows[0]["doc_status"] != "0":
+        raise ValueError("The first state is where new documents start; give it doc_status 0")
+    return rows
+
+
+def _workflow_transitions(
+    transitions: Any, states: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    if (
+        not isinstance(transitions, list)
+        or not 1 <= len(transitions) <= _WORKFLOW_MAX_TRANSITIONS
+    ):
+        raise ValueError(f"transitions must list 1 to {_WORKFLOW_MAX_TRANSITIONS} transitions")
+    doc_status = {row["state"]: row["doc_status"] for row in states}
+    rows: list[dict[str, Any]] = []
+    for index, transition in enumerate(transitions):
+        where = f"transitions[{index}]"
+        if not isinstance(transition, dict):
+            raise ValueError(f"{where} must be an object")
+        if "condition" in transition:
+            raise ValueError(
+                f"{where}: condition is a Python expression Frappe evaluates; transition "
+                "conditions are not supported. Use roles and states to control who acts"
+            )
+        unknown = sorted(set(transition) - set(_WORKFLOW_TRANSITION_KEYS))
+        if unknown:
+            raise ValueError(f"{where}: unsupported keys: {', '.join(unknown)}")
+        for key in ("state", "next_state"):
+            if transition.get(key) not in doc_status:
+                raise ValueError(
+                    f"{where}: {key} {transition.get(key)!r} is not one of the listed states"
+                )
+        for key, what in (("action", "an action name such as 'Approve'"), ("allowed", "a Role")):
+            value = transition.get(key)
+            if not isinstance(value, str) or not _SAFE_NAME.fullmatch(value):
+                raise ValueError(f"{where}: {key} must be {what}")
+        self_approval = transition.get("allow_self_approval", True)
+        if not isinstance(self_approval, bool | int) or self_approval not in (0, 1):
+            raise ValueError(f"{where}: allow_self_approval must be true or false")
+        source = doc_status[transition["state"]]
+        target = doc_status[transition["next_state"]]
+        # The same rules as Workflow.validate_docstatus, checked before anything is saved.
+        if source == "2":
+            raise ValueError(f"{where}: a cancelled state (doc_status 2) cannot change")
+        if source == "1" and target == "0":
+            raise ValueError(f"{where}: a submitted document cannot go back to draft")
+        if source == "0" and target == "2":
+            raise ValueError(f"{where}: a document cannot be cancelled before it is submitted")
+        row = {
+            "state": transition["state"],
+            "action": transition["action"],
+            "next_state": transition["next_state"],
+            "allowed": transition["allowed"],
+            "allow_self_approval": int(self_approval),
+        }
+        if any(_transition_key(other) == _transition_key(row) for other in rows):
+            raise ValueError(f"{where}: the same state, action, and role are listed twice")
+        rows.append(row)
+    return rows
+
+
+def _transition_key(row: dict[str, Any]) -> tuple[Any, Any, Any]:
+    return row.get("state"), row.get("action"), row.get("allowed")
+
+
+def _workflow_paths(
+    states: list[dict[str, Any]], transitions: list[dict[str, Any]]
+) -> tuple[list[str], list[str]]:
+    """Return the states unreachable from the first one, and draft states with no way out."""
+    exits: dict[str, set[str]] = {}
+    for row in transitions:
+        if row["next_state"] != row["state"]:
+            exits.setdefault(row["state"], set()).add(row["next_state"])
+    reached, pending = {states[0]["state"]}, [states[0]["state"]]
+    while pending:
+        for state in exits.get(pending.pop(), ()):
+            if state not in reached:
+                reached.add(state)
+                pending.append(state)
+    unreachable = [row["state"] for row in states if row["state"] not in reached]
+    dead_ends = [
+        row["state"] for row in states if row["doc_status"] == "0" and not exits.get(row["state"])
+    ]
+    return unreachable, dead_ends
+
+
+def _merged_rows(
+    current: list[dict[str, Any]], rows: list[dict[str, Any]], key: Callable[[dict], Any]
+) -> list[dict[str, Any]]:
+    """Give each new row the existing row it replaces, so Frappe updates it in place.
+
+    A child row sent without its other columns would be saved with their defaults, so columns
+    this server does not manage (a state's message, a transition's condition set in Desk)
+    are carried over.
+    """
+    existing = {key(row): row for row in current}
+    merged = []
+    for row in rows:
+        old = existing.get(key(row))
+        if old is None:
+            merged.append(row)
+            continue
+        kept = {
+            name: value
+            for name, value in old.items()
+            if name == "name" or (name not in _CHILD_SYSTEM_KEYS and not name.startswith("_"))
+        }
+        merged.append({**kept, **row})
+    return merged
+
+
+def _workflow_diff(current: dict[str, Any], values: dict[str, Any]) -> dict[str, Any]:
+    old_states = {row.get("state"): row for row in current.get("states") or []}
+    new_states = {row["state"]: row for row in values["states"]}
+    changed_states = {}
+    for name, row in new_states.items():
+        if name in old_states:
+            delta = {
+                key: {"from": old_states[name].get(key), "to": row.get(key)}
+                for key in _WORKFLOW_STATE_KEYS[1:]
+                if not _same(old_states[name].get(key), row.get(key))
+            }
+            if delta:
+                changed_states[name] = delta
+    old_transitions = {_transition_key(row): row for row in current.get("transitions") or []}
+    new_transitions = {_transition_key(row): row for row in values["transitions"]}
+    changed_transitions = []
+    for key, row in new_transitions.items():
+        if key in old_transitions:
+            delta = {
+                name: {"from": old_transitions[key].get(name), "to": row.get(name)}
+                for name in ("next_state", "allow_self_approval")
+                if not _same(old_transitions[key].get(name), row.get(name))
+            }
+            if delta:
+                state, action, allowed = key
+                changed_transitions.append(
+                    {"state": state, "action": action, "allowed": allowed, "changes": delta}
+                )
+    return {
+        "properties": {
+            key: {"from": current.get(key), "to": values[key]}
+            for key in _WORKFLOW_PROPERTIES
+            if not _same(current.get(key), values[key])
+        },
+        "states": {
+            "added": [name for name in new_states if name not in old_states],
+            "removed": [name for name in old_states if name not in new_states],
+            "changed": changed_states,
+            "order_changed": [name for name in old_states if name in new_states]
+            != [name for name in new_states if name in old_states],
+        },
+        "transitions": {
+            "added": [row for key, row in new_transitions.items() if key not in old_transitions],
+            "removed": [
+                {name: row.get(name) for name in _WORKFLOW_TRANSITION_KEYS[:4]}
+                for key, row in old_transitions.items()
+                if key not in new_transitions
+            ],
+            "changed": changed_transitions,
+        },
+    }
+
+
+@server.tool()
+def upsert_workflow(
+    doctype: str,
+    name: str,
+    states: list[dict[str, Any]],
+    transitions: list[dict[str, Any]],
+    is_active: bool = True,
+    send_email_alert: bool = False,
+    workflow_state_field: str = "workflow_state",
+    expected_modified: str | None = None,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Preview or create/replace an approval Workflow for a DocType.
+
+    Args:
+        doctype: The DocType the Workflow controls (not a child table or Single).
+        name: Workflow name; an existing Workflow with this name is replaced.
+        states: In order; the first is where new documents start. Each is
+            `{"state": "Pending Approval", "doc_status": 0, "allow_edit": "Role",
+            "update_field": "fieldname", "update_value": "value"}` (the last two optional).
+            `doc_status` is 0 draft, 1 submitted, 2 cancelled; 1 and 2 need a submittable
+            DocType. `allow_edit` is the Role that may edit a document in that state.
+        transitions: Each is `{"state": ..., "action": "Approve", "next_state": ...,
+            "allowed": "Role", "allow_self_approval": true}`; both states must be listed.
+            Python `condition`s are refused.
+        is_active: Make this the DocType's active Workflow; Frappe deactivates the others.
+        send_email_alert: Email the users who can act on the next state.
+        workflow_state_field: Field holding the state; Frappe adds a hidden Custom Field
+            (a Link to Workflow State) when the DocType has none.
+        expected_modified: The preview's `modified`, required to confirm a replacement.
+        confirm: False returns a preview; True saves.
+
+    The preview lists the Workflow State and Workflow Action Master records it will create,
+    the state field, the Workflows it deactivates, warnings (unreachable states are refused,
+    draft states with no way out are warned about), and on replacement a states and
+    transitions diff. Roles must exist.
+    """
+    if not isinstance(name, str) or not _SAFE_NAME.fullmatch(name):
+        raise ValueError("Invalid Workflow name")
+    schema = _meta_bundle(doctype)["doctype"]
+    if schema.get("istable") or schema.get("issingle"):
+        raise ValueError(f"{doctype} is a child table or Single DocType; it cannot have a Workflow")
+    if not isinstance(workflow_state_field, str) or not _NEW_FIELDNAME.fullmatch(
+        workflow_state_field
+    ):
+        raise ValueError("workflow_state_field must be a lowercase fieldname")
+    state_field = _schema_fields(schema).get(workflow_state_field)
+    if state_field and state_field.get("fieldtype") not in _WORKFLOW_STATE_FIELDTYPES:
+        raise ValueError(
+            f"{workflow_state_field} is a {state_field.get('fieldtype')} field; the state field "
+            "must be a Link, Data, or Select field"
+        )
+    state_rows = _workflow_states(states, schema)
+    transition_rows = _workflow_transitions(transitions, state_rows)
+    unreachable, dead_ends = _workflow_paths(state_rows, transition_rows)
+    if unreachable:
+        raise ValueError(
+            f"No transition path from {state_rows[0]['state']!r} reaches: "
+            f"{', '.join(unreachable)}"
+        )
+    _assert_roles(
+        [row["allow_edit"] for row in state_rows] + [row["allowed"] for row in transition_rows]
+    )
+    current = _config_record("Workflow", name)
+    if current and current.get("document_type") != doctype:
+        raise ValueError(
+            f"Workflow {name} belongs to {current.get('document_type')}; choose another name"
+        )
+    if confirm and current and (
+        not expected_modified or str(current.get("modified")) != expected_modified
+    ):
+        raise ValueError(_STALE_DOCUMENT)
+    missing_states = _missing_records("Workflow State", [row["state"] for row in state_rows])
+    missing_actions = _missing_records(
+        "Workflow Action Master", [row["action"] for row in transition_rows]
+    )
+    deactivates = []
+    if is_active:
+        deactivates = [
+            row["name"]
+            for row in _request(
+                "GET",
+                _resource("Workflow"),
+                params={
+                    "fields": '["name"]',
+                    "filters": _filters(
+                        [
+                            ["document_type", "=", doctype],
+                            ["is_active", "=", 1],
+                            ["name", "!=", name],
+                        ]
+                    ),
+                    "limit_page_length": 50,
+                },
+            )
+        ]
+    values: dict[str, Any] = {
+        "workflow_name": name,
+        "document_type": doctype,
+        "is_active": int(is_active),
+        "send_email_alert": int(send_email_alert),
+        "workflow_state_field": workflow_state_field,
+        "states": _merged_rows(
+            (current or {}).get("states") or [], state_rows, lambda row: row.get("state")
+        ),
+        "transitions": _merged_rows(
+            (current or {}).get("transitions") or [], transition_rows, _transition_key
+        ),
+    }
+    warnings = [
+        f"Draft state {state!r} has no transition out of it; documents there are stuck"
+        for state in dead_ends
+    ]
+    warnings += [
+        f"Transition {row['state']} --{row['action']}--> {row['next_state']} keeps the Python "
+        "condition set outside this server"
+        for row in values["transitions"]
+        if row.get("condition")
+    ]
+    empty = _count_records(
+        doctype, [[workflow_state_field, "is", "not set"]] if state_field else []
+    )
+    if empty:
+        warnings.append(
+            f"{empty} existing {doctype} records have no {workflow_state_field}; on save Frappe "
+            "sets each to the first state with the record's doc_status"
+        )
+    if not confirm:
+        preview: dict[str, Any] = {
+            "preview": True,
+            "action": "upsert_workflow",
+            "workflow": name,
+            "doctype": doctype,
+            "exists": current is not None,
+            "modified": current.get("modified") if current else None,
+            "states": state_rows,
+            "transitions": transition_rows,
+            "creates": {
+                "Workflow State": missing_states,
+                "Workflow Action Master": missing_actions,
+            },
+            "state_field": {"fieldname": workflow_state_field, "exists": state_field is not None},
+            "deactivates": deactivates,
+            "warnings": warnings,
+            "requires_confirmation": True,
+        }
+        if state_field is None:
+            preview["state_field"]["custom_field"] = {
+                "dt": doctype,
+                "fieldname": workflow_state_field,
+                "fieldtype": "Link",
+                "options": "Workflow State",
+                "hidden": 1,
+                "allow_on_submit": 1,
+                "no_copy": 1,
+            }
+        if current:
+            preview["changes"] = _workflow_diff(current, values)
+        return preview
+    created: dict[str, list[str]] = {"Workflow State": [], "Workflow Action Master": []}
+    for master, field, names in (
+        ("Workflow State", "workflow_state_name", missing_states),
+        ("Workflow Action Master", "workflow_action_name", missing_actions),
+    ):
+        for master_name in names:
+            _save_config_record(master, {field: master_name}, master_name)
+            created[master].append(master_name)
+    saved, reconciled = _save_config_record(
+        "Workflow",
+        values,
+        name,
+        expected_modified if current else None,
+        forget=(doctype,),
+    )
+    return {
+        "saved": True,
+        "created": current is None,
+        "workflow": name,
+        "doctype": doctype,
+        "modified": saved.get("modified") if isinstance(saved, dict) else None,
+        "masters_created": created,
+        "deactivated": deactivates,
+        "warnings": warnings,
+        "reconciled_after_server_reload": reconciled,
+    }
+
+
+@server.tool()
+def list_notifications(document_type: str | None = None, limit: int = 50) -> dict[str, Any]:
+    """List Notification rules: name, DocType, event, channel, enabled, and standard module."""
+    if not 1 <= limit <= _CONFIG_LIST_LIMIT:
+        raise ValueError(f"limit must be between 1 and {_CONFIG_LIST_LIMIT}")
+    filters: dict[str, Any] = {}
+    if document_type is not None:
+        if not isinstance(document_type, str) or not _SAFE_NAME.fullmatch(document_type):
+            raise ValueError("Invalid DocType name")
+        filters["document_type"] = document_type
+    rows = _request(
+        "GET",
+        _resource("Notification"),
+        params={
+            "fields": '["name","document_type","event","channel","enabled","is_standard","module"]',
+            "filters": _filters(filters),
+            "order_by": "name asc",
+            "limit_page_length": limit + 1,
+        },
+    )
+    return {"notifications": rows[:limit], "truncated": len(rows) > limit}
+
+
+def _notification_recipients(
+    recipients: Any, schema: dict[str, Any], channel: str
+) -> list[dict[str, Any]]:
+    if not isinstance(recipients, list) or not 1 <= len(recipients) <= _NOTIFICATION_MAX_RECIPIENTS:
+        raise ValueError(f"recipients must list 1 to {_NOTIFICATION_MAX_RECIPIENTS} entries")
+    doctype = schema.get("name")
+    fields = _schema_fields(schema)
+    rows = []
+    for index, recipient in enumerate(recipients):
+        where = f"recipients[{index}]"
+        if not isinstance(recipient, dict):
+            raise ValueError(f"{where} must be an object")
+        if "condition" in recipient:
+            raise ValueError(
+                f"{where}: condition is a Python expression Frappe evaluates; recipient "
+                "conditions are not supported"
+            )
+        unknown = sorted(set(recipient) - set(_NOTIFICATION_RECIPIENT_KEYS))
+        if unknown:
+            raise ValueError(f"{where}: unsupported keys: {', '.join(unknown)}")
+        row: dict[str, Any] = dict.fromkeys(_NOTIFICATION_RECIPIENT_KEYS)
+        field = recipient.get("receiver_by_document_field")
+        if field is not None:
+            target = fields.get(field) if isinstance(field, str) else None
+            holds_address = target is not None and (
+                (target.get("fieldtype") == "Data" and target.get("options") == "Email")
+                or (target.get("fieldtype") == "Link" and target.get("options") == "User")
+            )
+            if field != "owner" and not holds_address:
+                raise ValueError(
+                    f"{where}: receiver_by_document_field must be owner, a Data field with "
+                    f"options Email, or a Link to User of {doctype}"
+                )
+            row["receiver_by_document_field"] = field
+        role = recipient.get("receiver_by_role")
+        if role is not None:
+            if not isinstance(role, str) or not _SAFE_NAME.fullmatch(role):
+                raise ValueError(f"{where}: receiver_by_role must name a Role")
+            row["receiver_by_role"] = role
+        for key in ("cc", "bcc"):
+            if recipient.get(key) is not None:
+                if channel != "Email":
+                    raise ValueError(f"{where}: {key} applies to the Email channel only")
+                row[key] = _email_list(recipient[key], f"{where}.{key}")
+        if all(value is None for value in row.values()):
+            raise ValueError(
+                f"{where}: set receiver_by_document_field, receiver_by_role, cc, or bcc"
+            )
+        rows.append(row)
+    return rows
+
+
+def _notification_files(app: str, module: str, name: str) -> dict[str, Any]:
+    """List what Frappe's `export_module_json` writes for a standard Notification."""
+    slug = _scrub(name)
+    try:
+        _, module_path = _app_path(app, module)
+    except (RuntimeError, ValueError):
+        folder, local = f"{app}/{app}/{_scrub(module)}/notification/{slug}", False
+    else:
+        folder, local = str(module_path / "notification" / slug), True
+    return {
+        "folder": folder,
+        "files": [f"{folder}/{slug}{suffix}" for suffix in (".json", ".md", ".py")]
+        + [f"{folder}/__init__.py"],
+        "local_checkout": local,
+    }
+
+
+@server.tool()
+def upsert_notification(
+    name: str,
+    document_type: str,
+    event: Literal[
+        "New", "Save", "Submit", "Cancel", "Value Change", "Days Before", "Days After"
+    ],
+    channel: Literal["Email", "System Notification"],
+    recipients: list[dict[str, str]],
+    subject: str,
+    message: str,
+    value_changed: str | None = None,
+    date_changed: str | None = None,
+    days_in_advance: int | None = None,
+    filters: dict[str, Any] | list[list[Any]] | None = None,
+    enabled: bool = True,
+    is_standard: bool = False,
+    module: str | None = None,
+    expected_modified: str | None = None,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Preview or create/replace a Notification rule (email or in-app alert) for a DocType.
+
+    Args:
+        name: Notification name; an existing one with this name is replaced.
+        document_type: The DocType whose documents trigger it.
+        event: New, Save, Submit, Cancel (Submit and Cancel need a submittable DocType),
+            Value Change (with `value_changed`), Days Before / Days After (with
+            `date_changed` and `days_in_advance`).
+        channel: Email or System Notification (the bell in Desk).
+        recipients: 1-20 entries, each with any of `receiver_by_document_field` (owner, a
+            Data field with options Email, or a Link to User), `receiver_by_role` (a Role),
+            and for Email `cc` / `bcc` (plain addresses, comma separated).
+        subject: The email subject or alert title, at most 140 characters.
+        message: The email body or alert text (Markdown or HTML).
+        value_changed: For Value Change, the field whose change triggers it.
+        date_changed: For Days Before/After, a Date or Datetime field.
+        days_in_advance: For Days Before/After, a positive number of days.
+        filters: Send only when the document matches, e.g. `{"status": "Approved"}` or
+            `[["grand_total", ">", 1000]]`; fields of `document_type` only. Python
+            conditions are refused.
+        enabled: Turn the rule on.
+        is_standard: Ship it with an app: Frappe writes it to the module's `notification/`
+            folder in developer mode. Needs `module`, of an app other than frappe/erpnext.
+        module: The Module Def of a standard Notification.
+        expected_modified: The preview's `modified`, required to confirm a replacement.
+        confirm: False returns a preview; True saves.
+
+    `subject` and `message` are plain text with `{{ doc.<fieldname> }}` placeholders, where
+    the field must exist on the DocType. A placeholder may end with filters from: upper,
+    lower, title, capitalize, trim, striptags, escape, int, str, flt(precision),
+    round(precision, "common"|"ceil"|"floor"), truncate(length), default("text"). Any other
+    Jinja ({% %}, calls, other variables) is refused.
+    """
+    if not isinstance(name, str) or not _SAFE_NAME.fullmatch(name):
+        raise ValueError("Invalid Notification name")
+    if event not in _NOTIFICATION_EVENTS:
+        raise ValueError(
+            f"Unsupported event {event!r}; use one of: {', '.join(_NOTIFICATION_EVENTS)} "
+            "(Custom, Method, and minute-based events are not supported)"
+        )
+    if channel not in _NOTIFICATION_CHANNELS:
+        raise ValueError(
+            f"Unsupported channel {channel!r}; use Email or System Notification "
+            "(Slack and SMS are not supported)"
+        )
+    if document_type in _NOTIFICATION_FORBIDDEN_DOCTYPES:
+        raise ValueError(f"Frappe does not allow Notifications on {document_type}")
+    bundle = _meta_bundle(document_type)
+    schema = bundle["doctype"]
+    if schema.get("istable") and event not in _NOTIFICATION_DAY_EVENTS:
+        raise ValueError(f"{document_type} is a child table; only Days Before/After apply to it")
+    if event in ("Submit", "Cancel") and not schema.get("is_submittable"):
+        raise ValueError(f"{document_type} is not submittable, so it has no {event} event")
+    fields = _schema_fields(schema)
+    value_fields = _template_fields(schema) - _STANDARD_COLUMNS
+    if event == "Value Change":
+        if not isinstance(value_changed, str) or value_changed not in value_fields:
+            raise ValueError(f"value_changed must name a field of {document_type}")
+    elif value_changed is not None:
+        raise ValueError("value_changed applies to the Value Change event only")
+    if event in _NOTIFICATION_DAY_EVENTS:
+        if not isinstance(date_changed, str) or (fields.get(date_changed) or {}).get(
+            "fieldtype"
+        ) not in ("Date", "Datetime"):
+            raise ValueError(f"date_changed must name a Date or Datetime field of {document_type}")
+        if isinstance(days_in_advance, bool) or not isinstance(days_in_advance, int) or (
+            days_in_advance < 1
+        ):
+            raise ValueError("days_in_advance must be a positive whole number of days")
+    elif date_changed is not None or days_in_advance is not None:
+        raise ValueError("date_changed and days_in_advance apply to Days Before/After only")
+    placeholders = _template_fields(schema)
+    _assert_template(subject, "subject", placeholders)
+    if len(subject) > _NOTIFICATION_SUBJECT_MAX:
+        raise ValueError(f"subject is longer than {_NOTIFICATION_SUBJECT_MAX} characters")
+    _assert_template(message, "message", placeholders)
+    if filters:
+        _assert_filters(bundle, filters)
+        if isinstance(filters, list) and any(
+            len(condition) == 4 and condition[0] != document_type for condition in filters
+        ):
+            raise ValueError("Notification filters can only test fields of the DocType itself")
+    recipient_rows = _notification_recipients(recipients, schema, channel)
+    _assert_roles(row["receiver_by_role"] for row in recipient_rows if row["receiver_by_role"])
+    app = None
+    if is_standard:
+        if module is None:
+            raise ValueError("A standard Notification needs module")
+        module_row = _assert_remote_module(None, module)
+        if module_row.get("custom"):
+            raise ValueError(f"{module} is a custom Module Def; Frappe has no app folder for it")
+        app = module_row.get("app_name") or ""
+        _assert_writable_app(app)
+    elif module is not None:
+        raise ValueError("module applies to standard Notifications only; set is_standard")
+    current = _config_record("Notification", name)
+    if confirm and current and (
+        not expected_modified or str(current.get("modified")) != expected_modified
+    ):
+        raise ValueError(_STALE_DOCUMENT)
+    values: dict[str, Any] = {
+        "document_type": document_type,
+        "event": event,
+        "channel": channel,
+        "enabled": int(enabled),
+        "subject": subject,
+        "message": message,
+        "value_changed": value_changed,
+        "date_changed": date_changed,
+        "days_in_advance": days_in_advance or 0,
+        "condition_type": "Filters" if filters else "Python",
+        "filters": json.dumps(filters) if filters else None,
+        "condition": None,
+        "is_standard": int(is_standard),
+        "module": module,
+        "recipients": recipient_rows,
+    }
+    if channel == "System Notification":
+        # The alert's text comes only from notification_message (create_system_notification).
+        values["notification_message"] = message
+    warnings = []
+    if current and current.get("condition"):
+        warnings.append("Removes the Python condition set outside this server")
+    if current and any(row.get("condition") for row in current.get("recipients") or []):
+        warnings.append("Removes recipient conditions set outside this server")
+    if current and current.get("is_standard") and not is_standard:
+        warnings.append(
+            "Makes a standard Notification site-only; its app files stay until removed by hand"
+        )
+    if not confirm:
+        preview: dict[str, Any] = {
+            "preview": True,
+            "action": "upsert_notification",
+            "notification": name,
+            "exists": current is not None,
+            "modified": current.get("modified") if current else None,
+            "record": values,
+            "warnings": warnings,
+            "requires_confirmation": True,
+        }
+        if current:
+            state = {"truncated": False}
+            preview["changes"] = _bounded(
+                {
+                    key: {"from": current.get(key), "to": value}
+                    for key, value in values.items()
+                    if key != "recipients" and not _same(current.get(key), value)
+                },
+                state,
+            )
+            old_recipients = [
+                {key: row.get(key) for key in _NOTIFICATION_RECIPIENT_KEYS}
+                for row in current.get("recipients") or []
+            ]
+            if not _record_holds({"recipients": old_recipients}, {"recipients": recipient_rows}):
+                preview["changes"]["recipients"] = {"from": old_recipients, "to": recipient_rows}
+            preview["changes_truncated"] = state["truncated"]
+        if is_standard:
+            preview["app_files"] = _notification_files(app or "", module or "", name)
+            preview["requires_developer_mode"] = True
+            preview["notes"] = [
+                "Frappe saves an enabled standard Notification only in developer mode and then "
+                "writes these files; the message is read from the .md file afterwards. The .py "
+                "file is Frappe's get_context stub; this server never writes it. A "
+                "developer-mode Bench may reload.",
+            ]
+        return preview
+    saved, reconciled = _save_config_record(
+        "Notification",
+        values if current else {"name": name, **values},
+        name,
+        expected_modified if current else None,
+    )
+    result: dict[str, Any] = {
+        "saved": True,
+        "created": current is None,
+        "notification": name,
+        "modified": saved.get("modified") if isinstance(saved, dict) else None,
+        "warnings": warnings,
+        "reconciled_after_server_reload": reconciled,
+    }
+    if is_standard:
+        result["app_files"] = _notification_files(app or "", module or "", name)
+    return result
 
 
 def main() -> None:

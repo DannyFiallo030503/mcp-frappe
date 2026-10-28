@@ -83,7 +83,7 @@ All conditions are combined with AND. In the four-element form, `doctype` must b
 | `set_role_permissions` | Add or update role permissions through Frappe's native Permission Manager | `doctype`, `role`, `permissions`, `permlevel`; preview, then confirm |
 | `create_custom_field` | Add a Custom Field | `doctype`, `field`, optional `app`/`module`; preview, then confirm |
 | `set_field_property` | Create or update the Property Setter for an allowlisted form property | `doctype`, `property`, `value`, optional `fieldname`/`property_type`/`app`/`module`; preview, then confirm (with `expected_modified` when the setter exists) |
-| `export_customizations` | Export site customizations to Frappe's native `custom/` files (and Client Scripts to app fixtures) so `bench migrate` applies them | `app`, `module`, `doctypes`, optional `with_permissions`/`apply_module_filter`/`sync_on_migrate`; confirm with the current `preview_id` |
+| `export_customizations` | Export site customizations to Frappe's native `custom/` files (and Client Scripts and, with `with_workflows`, Workflows to app fixtures) so `bench migrate` applies them | `app`, `module`, `doctypes`, optional `with_permissions`/`apply_module_filter`/`sync_on_migrate`/`with_workflows`; confirm with the current `preview_id` |
 | `rollback_export` | Restore or remove files from one prior export | Preview, then confirm with the current rollback `preview_id` |
 
 Frappe still decides whether the user may perform the operation. A preview is not a substitute for checking permissions, and a confirmed mutation may trigger native hooks or side effects.
@@ -187,6 +187,64 @@ How the verdict is decided: both sides are normalized first. System keys (`name`
 
 `promote_custom_doctype` ships a DocType prototyped on the site with an app. It saves the DocType with `custom: 0` and the target `module`; in developer mode Frappe's `on_update` then writes the DocType JSON and controller boilerplate into `<app>/<app>/<module>/doctype/<doctype>/`. It refuses `frappe` and `erpnext`, a module that belongs to another app or is a custom module (Frappe exports those into the site folder), a DocType that is already standard, one with a `default_print_format` (Frappe refuses that on a standard DocType), and an existing target folder. The preview lists the files Frappe will create and warns about Link and Table fields that point to other site-custom DocTypes, and about Custom Fields and Property Setters that stay site customizations (export them with `export_customizations`). Confirmation, like standard `create_doctype`, first writes Frappe's own controller templates (so `FRAPPE_APPS_PATH` must include the Frappe source and the app's `hooks.py` must define `app_publisher`), waits for the Bench to settle, then sends the save with `modified`. If the Bench reloads mid-save, the tool re-reads the DocType and reports `reconciled_after_server_reload: true` only when it is no longer custom; if the DocType is still custom, the staged files are removed. The result has `file_status` and `native_files_complete`.
 
+## Workflows and Notifications
+
+Approval flows and alerts are configuration records, not code. These tools take a small, checked shape and build the record, so the model never sends raw child rows. Fields Frappe evaluates as code are refused (see [security](security.md#code-fields-and-templates)).
+
+| Tool | Purpose | Arguments |
+|---|---|---|
+| `get_workflow` | The DocType's active Workflow (states, transitions, state field), or `workflow: null`; `inactive` names its other Workflows | `doctype` |
+| `upsert_workflow` | Create or replace an approval Workflow | `doctype`, `name`, `states`, `transitions`, optional `is_active` (true), `send_email_alert` (false), `workflow_state_field` (`workflow_state`); preview, then confirm (with `expected_modified` when it exists) |
+| `list_notifications` | Notification rules: `name`, `document_type`, `event`, `channel`, `enabled`, `is_standard`, `module` | optional `document_type`, `limit` (1-200, default 50); `truncated` says when there are more |
+| `upsert_notification` | Create or replace an Email or System Notification rule | `name`, `document_type`, `event`, `channel`, `recipients`, `subject`, `message`, and the options below; preview, then confirm (with `expected_modified` when it exists) |
+
+### `upsert_workflow`
+
+```json
+{
+  "doctype": "Leave Request",
+  "name": "Leave Approval",
+  "states": [
+    {"state": "Draft", "doc_status": 0, "allow_edit": "Employee"},
+    {"state": "Pending", "doc_status": 0, "allow_edit": "Leave Approver"},
+    {"state": "Approved", "doc_status": 1, "allow_edit": "Leave Approver",
+     "update_field": "status", "update_value": "Approved"},
+    {"state": "Rejected", "doc_status": 0, "allow_edit": "Leave Approver"}
+  ],
+  "transitions": [
+    {"state": "Draft", "action": "Submit for Approval", "next_state": "Pending", "allowed": "Employee"},
+    {"state": "Pending", "action": "Approve", "next_state": "Approved", "allowed": "Leave Approver",
+     "allow_self_approval": false},
+    {"state": "Pending", "action": "Reject", "next_state": "Rejected", "allowed": "Leave Approver"},
+    {"state": "Rejected", "action": "Submit for Approval", "next_state": "Pending", "allowed": "Employee"}
+  ]
+}
+```
+
+- **States**, in order: `state` (a Workflow State name), `doc_status` (`0` draft, `1` submitted, `2` cancelled; `1` and `2` only on a submittable DocType), `allow_edit` (the Role that may edit a document in that state), and optionally `update_field` (a field of the DocType) with `update_value` (a literal value). The first state is where new documents start, so it must have `doc_status` 0. `evaluate_as_expression` is refused.
+- **Transitions**: `state`, `action` (a Workflow Action Master name), `next_state`, `allowed` (a Role), optional `allow_self_approval` (default true). `condition` is refused. The same docstatus rules as Frappe's `Workflow.validate_docstatus` apply before anything is saved: a cancelled state cannot change, a submitted document cannot go back to draft, and a draft cannot be cancelled.
+- **Checks**: every role must exist; every state must be reachable from the first one (otherwise the call is refused); a draft state with no transition out is a warning. A Workflow name used by another DocType is refused. The state field, if the DocType has it, must be a Link, Data, or Select field.
+- **Preview**: `states` and `transitions` as they will be saved, `creates` (the Workflow State and Workflow Action Master records that don't exist yet), `state_field` (with the hidden `custom_field` Frappe's `on_update` adds when the DocType has no such field), `deactivates` (other active Workflows of the DocType, which Frappe's `set_active` turns off), `warnings` (including how many existing records have no state yet; Frappe sets each to the first state with the record's docstatus), and, when the Workflow exists, `modified` and `changes`: `properties`, `states` (`added`, `removed`, `changed` per state, `order_changed`), and `transitions` (`added`, `removed`, `changed`, keyed by state, action, and role).
+- **Confirm** creates the missing masters, then saves the Workflow with the preview's `modified`. Rows that already exist keep their `name` and the columns this tool doesn't manage (a state's message, a transition condition set in Desk), so Frappe updates them in place; the preview warns about each condition kept. The DocType's metadata cache is cleared, because Frappe may have added the state field.
+
+### `upsert_notification`
+
+| Argument | Rule |
+|---|---|
+| `event` | `New`, `Save`, `Submit`, `Cancel` (these two need a submittable DocType), `Value Change` with `value_changed` (a field of the DocType), `Days Before` / `Days After` with `date_changed` (a Date or Datetime field) and `days_in_advance` (a positive integer). `Custom`, `Method`, and minute-based events are refused. A child-table DocType takes only the day events, as in Frappe. |
+| `channel` | `Email` or `System Notification` (Desk's bell). Slack and SMS are refused. For System Notification the message is also sent as `notification_message`, the alert's text. |
+| `recipients` | 1-20 entries, each with any of `receiver_by_document_field` (`owner`, a Data field with options Email, or a Link to User), `receiver_by_role` (an existing Role), and, for Email only, `cc` / `bcc` (plain addresses separated by commas or newlines). `condition` is refused. |
+| `subject`, `message` | The template rule below. `subject` is at most 140 characters. |
+| `filters` | Optional. Send only when the document matches, in the `list_documents` filter shapes, on the DocType's own fields: `{"status": "Approved"}` or `[["grand_total", ">", 1000]]`. Saved with `condition_type: Filters`; Frappe evaluates them as data. Without filters, the Python `condition` is cleared. |
+| `enabled` | Default true. |
+| `is_standard`, `module` | A standard Notification ships with the app: in developer mode Frappe writes `<module>/notification/<name>/<name>.json`, the message as `<name>.md`, a `get_context` stub `<name>.py`, and `__init__.py` files. `module` must be a non-custom Module Def of an app other than `frappe` and `erpnext`. The preview lists the files (`app_files`) and notes that developer mode is needed. |
+
+**Template rule.** Frappe renders `subject` and `message` (and `cc`/`bcc` when they contain `{`) as Jinja on the server. They may hold plain text, Markdown, or HTML, plus placeholders of exactly the form `{{ doc.<fieldname> }}`, where the field is a value field of the DocType (not a layout field or a table) or a standard column such as `name`, `owner`, or `modified`. A placeholder may add filters from this list, with literal arguments only: `upper`, `lower`, `title`, `capitalize`, `trim`, `striptags`, `escape` (`e`), `int`, `str`, `flt(precision)`, `round(precision, "common"|"ceil"|"floor")`, `truncate(length)`, `default("text")`. Everything else is refused: `{% %}` statements, `{# #}` comments, whitespace control (`{{-`), other variables (`frappe`, `nowdate`), attribute chains, indexing, calls, operators, and other filters. Example: `Leave {{ doc.name }} for {{ doc.employee_name | title }} is {{ doc.total_days | round(1) }} days`.
+
+The preview returns `record` (what will be saved), `warnings`, and, when the rule exists, `modified` and `changes` (`{field: {from, to}}`, bounded, plus `recipients` when they change). Replacing a rule removes a Python condition and recipient conditions set outside this server; the preview warns about both.
+
+Both upsert tools save through `_save_config_record`: an update sends `modified`, so Frappe refuses a record that changed since the preview, and if a developer-mode Bench reloads while Frappe writes a standard Notification's files, the record is re-read and the save counts only if it holds the change.
+
 ## File export details
 
 `FRAPPE_APPS_PATH` must point to a local Bench `apps/` directory. The requested app and module must exist below it, and the corresponding remote Module Def must name that app as owner. Path traversal and escaping symlinks are rejected. Source export refuses the protected `frappe` and `erpnext` apps. The export preview reports destination paths, bounded diffs, and content hashes. Existing files are backed up under the selected app's `.mcp-frappe-backups/` directory; inspect and commit the resulting files with Git. A successful rollback consumes its manifest and backup files.
@@ -197,7 +255,9 @@ How the verdict is decided: both sides are normalized first. System keys (`name`
 - `apply_module_filter` (default false) keeps only Custom Fields and Property Setters whose `module` is the selected module, like Frappe's "Apply Module Export Filter".
 - `sync_on_migrate` (default true; Frappe's own default is false) makes `bench migrate` import the file through `sync_customizations`.
 
-The export may target any DocType, including one owned by another app such as `Customer`; `module` only chooses where the file goes. Client Scripts for the exported DocTypes whose `module` is the selected module go to the app-level `<app>/<app>/fixtures/client_script.json`, in the row format of `bench export-fixtures`. Rows already in that file for other DocTypes or modules are kept. Only then does the exporter add or update a clearly marked block in the app's `hooks.py` that registers a `Client Script` fixture filter; text outside the block is preserved, and fixture entries for other DocTypes left there by older exports are dropped from it. Without Client Scripts, `hooks.py` is not touched.
+The export may target any DocType, including one owned by another app such as `Customer`; `module` only chooses where the file goes. Client Scripts for the exported DocTypes whose `module` is the selected module go to the app-level `<app>/<app>/fixtures/client_script.json`, in the row format of `bench export-fixtures`. Rows already in that file for other DocTypes or modules are kept. Only then does the exporter add or update a clearly marked block in the app's `hooks.py` that registers a `Client Script` fixture filter; text outside the block is preserved, and fixture entries for other DocTypes left there by older exports are dropped from it. Without Client Scripts or Workflows, `hooks.py` is not touched.
+
+`with_workflows` (default false) also exports the Workflows whose `document_type` is one of `doctypes`. A Workflow has no module, so Frappe has no module folder to write it to; it travels as a fixture, in the row format of `bench export-fixtures` (no `owner`, `creation`, `modified_by`, or `idx`; child rows without their `name` and parent columns): `<app>/<app>/fixtures/workflow.json`, plus `workflow_state.json` and `workflow_action_master.json` with the masters those Workflows name. Rows for other Workflows and masters stay in the files; a Workflow of one of these DocTypes that no longer exists on the site is removed from `workflow.json`. The managed block lists `Workflow`, `Workflow State`, and `Workflow Action Master` with `name` filters, merged with names earlier exports put there. `bench migrate` imports every fixture file on every run (with link checks off and `force`), so the app's copy overwrites edits made on the site; Frappe's `on_update` then runs again (state field, deactivating other Workflows). If the app's own `fixtures` hook already lists `Workflow`, `bench export-fixtures` writes the same `workflow.json`; keep one of the two.
 
 DocType JSON is never written: in developer mode Frappe writes standard DocType files itself, and `create_doctype` and `promote_custom_doctype` rely on that. Folder names follow Frappe's `scrub` (lower case, each space and hyphen replaced by `_`).
 
@@ -205,4 +265,4 @@ The exporter creates local backups and a rollback manifest, and `rollback_export
 
 ## Deliberate exclusions
 
-There is no arbitrary Python execution, SQL execution, or unrestricted whitelisted-method dispatcher. Other Frappe features such as workflow actions, file downloads, translations, print rendering, and arbitrary app-specific method calls require explicit wrappers and are not exposed by this standalone release yet. Do not infer a tool exists from the retained legacy source tree.
+There is no arbitrary Python execution, SQL execution, or unrestricted whitelisted-method dispatcher. Other Frappe features such as applying workflow actions to documents, Notification conditions, Slack and SMS channels, file downloads, translations, print rendering, and arbitrary app-specific method calls require explicit wrappers and are not exposed by this standalone release yet. Do not infer a tool exists from the retained legacy source tree.
