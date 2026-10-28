@@ -26,6 +26,7 @@ The executable is `mcp-frappe`; alternatively run `uv run python -m frappe_mcp.s
 | `FRAPPE_PASSWORD` | Password auth | Password; never stored in this repository |
 | `FRAPPE_APPS_PATH` | DocType creation and export | Local Bench `apps/` directory visible to the MCP process |
 | `FRAPPE_TIMEOUT` | No | HTTP timeout in seconds; a positive number, defaults to `30`. The server refuses to start with any other value |
+| `FRAPPE_META_TTL` | No | Seconds to cache DocType metadata; zero or a positive number, defaults to `300`. `0` turns the cache off. The server refuses to start with any other value |
 | `FRAPPE_ALLOW_INSECURE_HTTP` | No | Set to `YES` to allow plain HTTP to non-local hosts on a trusted development network; logs a warning at startup |
 
 Use either both API token variables or a username/password. Token auth is preferred for remote sites. Password login uses Frappe's `/api/method/login`.

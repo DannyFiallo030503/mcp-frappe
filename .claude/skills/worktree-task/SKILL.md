@@ -61,7 +61,7 @@ that stage. Find code by symbol name, not by the line numbers the stage cites. C
 behavior in Frappe's source, not from memory.
 
 While building, follow the repo's rules: tests first in `tests/` (monkeypatch
-`standalone._request`/`_doctype`, never a live site); type hints and docstrings are the MCP
+`standalone._request`/`_meta_bundle`, never a live site); type hints and docstrings are the MCP
 schema; update `test_server_registers_expected_tools` when the tool set changes; update
 `e2e/run_standalone_*.py` when a tool's signature or return shape changes; update
 `docs/tool-reference.md` and `docs/ai-agent-guide.md` (plus architecture/security/compatibility

@@ -8,12 +8,33 @@ All tools execute in the standalone MCP process and use the configured Frappe HT
 |---|---|---|
 | `list_installed_apps` | Group Module Def records by owning app | none |
 | `list_doctypes` | List site DocTypes | `app`, `module`, `include_child_tables`, `limit` (max 1000) |
-| `get_doctype_schema` | Read one DocType definition merged with Custom Fields and Property Setters | `doctype` |
+| `get_doctype_schema` | Read one DocType's metadata as Frappe's form sees it, Custom Fields and Property Setters applied | `doctype`, `detail` (`compact` or `full`) |
 | `list_documents` | List records through Frappe REST | `doctype`, `filters` (object or list), `fields` (max 40), `limit` (max 100) |
-| `get_document` | Read a record through Frappe REST; always returns `name`, `modified`, and `docstatus` | `doctype`, `name`, `fields`, `child_row_limit` (max 200) |
+| `get_document` | Read a record through Frappe REST; always returns `doctype`, `name`, `modified`, and `docstatus` | `doctype`, `name`, `fields`, `child_row_limit` (max 200) |
 | `run_report` | Run a report through Frappe's Query Report endpoint | `report_name`, `filters`, `limit` (max 500) |
 
 The generic resource API is the common access path for standard and custom app DocTypes. A custom DocType or field that the connected user cannot read remains inaccessible.
+
+### Metadata and who can use the record tools
+
+The record tools (`list_documents`, `get_document`, `create_document`, `update_document`) and `get_doctype_schema` read DocType metadata from Frappe's form loader, `frappe.desk.form.load.getdoctype`. It returns `frappe.get_meta` for the DocType and its child tables, with Custom Fields, Property Setters, and Frappe's own field order already applied, to any logged-in user. The record tools never read the `DocType`, `Custom Field`, or `Property Setter` resources, which only System Manager can list. So they work for any user who has permission on the DocType; Frappe still checks that permission on every record read and write.
+
+Metadata is cached in the MCP process for `FRAPPE_META_TTL` seconds (default 300; `0` turns the cache off). `create_doctype`, `create_custom_field`, `set_field_property`, and `set_role_permissions` drop the affected DocType, and any DocType that uses it as a child table, from the cache. Creating, updating, or deleting a `DocType`, `DocField`, `DocPerm`, `Custom Field`, `Property Setter`, or `Custom DocPerm` record through the record tools clears the whole cache. A change made outside the MCP (in Desk, say) shows up once its cache entry expires.
+
+### Schema detail
+
+`get_doctype_schema` returns the compact form unless `detail` is `full`:
+
+- `compact` (default): the DocType flags `name`, `module`, `istable`, `issingle`, `is_submittable`, `is_tree`, `autoname`, `title_field`, and `custom`, then `fields` with the data fields only. Layout and display fields (Section Break, Column Break, Tab Break, HTML, Button, Fold, Heading, Image, Attachment Gallery) are left out. Each field has only `fieldname`, `label`, `fieldtype`, `options`, `reqd`, `read_only`, `hidden`, `default`, `unique`, and `permlevel`. Keys whose value is false, `0`, or empty are left out. `child_tables` maps each Table and Table MultiSelect field's DocType to its fields in the same form.
+- `full`: `{"doctype": <meta>, "children": {<child DocType>: <meta>}}` with every property Frappe returns (nulls already dropped by Frappe), including layout fields, permissions, links, and actions. Form assets such as client script source and print formats are left out.
+
+```json
+{"name": "ToDo", "module": "Desk", "fields": [{"fieldname": "status", "label": "Status", "fieldtype": "Select", "options": "Open\nClosed\nCancelled", "default": "Open"}]}
+```
+
+### Default `get_document` output
+
+Without `fields`, `get_document` returns the DocType's data fields that have a value: `null`, `""`, and empty tables are left out, and `0` is kept. Child rows keep only their data fields with a value, plus `name` and `idx`. With `fields`, it returns exactly those fields, and child rows come back whole. Either way, Table and Table MultiSelect fields return at most `child_row_limit` rows, and `_truncated_child_tables` lists the cut fields.
 
 ### Readable fields
 

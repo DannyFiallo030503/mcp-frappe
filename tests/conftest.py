@@ -68,6 +68,7 @@ class FakeSite:
 
     routes: list[_Route] = field(default_factory=list)
     calls: list[Call] = field(default_factory=list)
+    doctypes: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def add(
         self,
@@ -111,30 +112,50 @@ class FakeSite:
         self,
         doctype: str,
         fields: list[dict[str, Any]],
-        *,
-        custom_fields: list[dict[str, Any]] | None = None,
-        property_setters: list[dict[str, Any]] | None = None,
         **properties: Any,
     ) -> FakeSite:
-        """Register the three reads `standalone._doctype()` makes to build a merged schema."""
-        self.add(
-            "GET",
-            standalone._resource("DocType", doctype),
-            {"name": doctype, **properties, "fields": fields},
-        )
-        self.add(
-            "GET",
-            standalone._resource("Custom Field"),
-            custom_fields or [],
-            params={"filters": standalone._filters({"dt": doctype})},
-        )
-        self.add(
-            "GET",
-            standalone._resource("Property Setter"),
-            property_setters or [],
-            params={"filters": standalone._filters({"doc_type": doctype})},
-        )
+        """Register a DocType for `standalone._meta_bundle()`.
+
+        Answers `getdoctype` the way Frappe's `get_meta_bundle` does: `{"docs": [...]}` with
+        the DocType first and then one entry per Table / Table MultiSelect field's DocType,
+        looked up among the DocTypes registered here when the request is made. Frappe has
+        already merged Custom Fields and Property Setters into `fields`.
+        """
+        self.doctypes[doctype] = {"doctype": "DocType", "name": doctype, **properties,
+                                  "fields": fields}
+        if not any(
+            route.method == "GET" and route.path == standalone._GETDOCTYPE for route in self.routes
+        ):
+            self.add("GET", standalone._GETDOCTYPE, self._getdoctype)
         return self
+
+    def _getdoctype(self, call: Call) -> dict[str, Any]:
+        name = (call.params or {}).get("doctype")
+        if name not in self.doctypes:
+            raise standalone.FrappeError(
+                f"Frappe HTTP 404: DocType {name} not found", "DoesNotExistError"
+            )
+        main = self.doctypes[name]
+        docs = [main]
+        for row in main["fields"]:
+            if row.get("fieldtype") in standalone._TABLE_FIELDTYPES:
+                if row.get("options") not in self.doctypes:
+                    raise AssertionError(f"fake_site: register child DocType {row.get('options')}")
+                docs.append(self.doctypes[row["options"]])
+        return copy.deepcopy({"docs": docs, "user_settings": "{}"})
+
+    def meta_calls(self) -> list[Call]:
+        """Return the metadata reads: `getdoctype` and any raw schema resource read."""
+        schema_paths = {
+            standalone._GETDOCTYPE,
+            *(standalone._resource(name) for name in standalone._SCHEMA_DOCTYPES),
+        }
+        return [
+            call
+            for call in self.calls
+            if call.method == "GET"
+            and (call.path in schema_paths or call.path.startswith("/api/resource/DocType/"))
+        ]
 
     def calls_to(self, method: str, path: str | None = None) -> list[Call]:
         """Return the recorded calls with this method, and this path when given."""
@@ -146,7 +167,7 @@ class FakeSite:
 
 
 def _reset_module_caches() -> None:
-    # Clear any functools cache on the module (stage 05 adds a metadata cache).
+    standalone._meta_cache.clear()
     for value in vars(standalone).values():
         cache_clear = getattr(value, "cache_clear", None)
         if callable(cache_clear):
@@ -158,6 +179,7 @@ def fake_site(monkeypatch) -> Iterator[FakeSite]:
     """Replace `standalone._request` with a `FakeSite` and keep real HTTP out of reach."""
     site = FakeSite()
     _reset_module_caches()
+    monkeypatch.delenv("FRAPPE_META_TTL", raising=False)
     monkeypatch.setattr(standalone, "_request", site)
 
     def no_client() -> None:

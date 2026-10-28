@@ -16,7 +16,7 @@ For the intended Frappe + ERPNext minimum, generic-app contract, exact current t
 
 - Read and core document operations use standard Frappe REST APIs.
 - Reports use Frappe's Query Report endpoint.
-- DocType metadata merges standard fields with Custom Fields and Property Setters.
+- DocType metadata comes from Frappe's `frappe.desk.form.load.getdoctype`, so Frappe itself merges Custom Fields and Property Setters and orders the fields (checked against the v16.33.1 source: `Meta.process` calls `add_custom_fields`, `apply_property_setters`, and `sort_fields`). Record tools no longer need System Manager to validate fields; this has not yet been checked live as a non-System-Manager user.
 - App export writes Frappe's native module customization files (`<module>/custom/<doctype>.json`, the format of Frappe v16.33.1's `export_customizations`) and Client Script fixtures in `<app>/fixtures/client_script.json` with a managed `hooks.py` block. It backs up overwritten files and supports guarded rollback. That `bench migrate` re-imports an exported Custom Field has not yet been checked on a live site.
 - Workflow actions, submit/cancel/amend/rename, file download/upload, print rendering, translations, workspace operations, user-role membership/User Permissions, and arbitrary app-specific methods remain outside this standalone release.
 - File writes require a local app checkout and `FRAPPE_APPS_PATH`. Standard DocType writes can cause a development Bench to reload its web worker and disconnect the MCP request even when some DB/filesystem changes succeeded. Reconcile site and source state before retrying; this behavior is a known correctness issue, not a successful-operation guarantee.

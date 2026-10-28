@@ -48,3 +48,17 @@ def test_read_tool_round_trips_through_an_mcp_session(fake_site) -> None:
         {"app": "frappe", "modules": ["Core"]},
     ]
     assert len(fake_site.calls_to("GET", "/api/resource/Module%20Def")) == 1
+
+
+def test_schema_tool_exposes_the_detail_choice() -> None:
+    async def list_tools():
+        async with create_connected_server_and_client_session(
+            standalone.server._mcp_server
+        ) as client:
+            return (await client.list_tools()).tools
+
+    (tool,) = [tool for tool in anyio.run(list_tools) if tool.name == "get_doctype_schema"]
+    detail = tool.inputSchema["properties"]["detail"]
+
+    assert detail["enum"] == ["compact", "full"]
+    assert detail["default"] == "compact"
