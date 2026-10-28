@@ -2,12 +2,14 @@
 
 This is the investigation the work plan is based on. It records the project's state at commit `e8fbd0c`. Don't update it as stages land; record progress in each stage's Handoff section instead.
 
+> **Revision (2026-10-27).** The plan was refocused on Frappe developers (see the goal in [README.md](README.md)). The stage references below were renumbered to match, gaps 8–10 were added for the developer workflow, and the ERPNext transaction verbs moved to the [backlog](backlog/). The findings themselves are unchanged.
+
 ## What exists
 
 - **One module**, `frappe_mcp/standalone.py` (about 1,500 lines). It's a FastMCP stdio server with 15 tools. It talks to a Frappe site over REST using an API token or password login.
 - **Strengths:** native permissions are preserved; there is no SQL or eval; mutations go through preview and confirm; updates and deletes are bound to the document's `modified` timestamp; filesystem writes can't escape `FRAPPE_APPS_PATH`; exports have backups and rollback; and the code reconciles state when a developer-mode Bench reloads mid-request.
 - **Evidence:** one populated Frappe/ERPNext **v15** development site, tested as Administrator only. There is no limited-user run, no v16 run, and no ERPNext business-process run.
-- **Where the effort went:** about 40% of the code and most of the e2e evidence cover `create_doctype` and export. Reading data has no pagination and no counts.
+- **Where the effort went:** about 40% of the code and most of the e2e evidence cover `create_doctype` and export. That is the core of the developer use case, and stages 06–09 build on it. Reading data has no pagination and no counts.
 - **Tests:** 20 unit tests, all passing. There is no CI. `ruff check frappe_mcp` reports 6 errors.
 
 ## Confirmed bugs
@@ -31,15 +33,18 @@ Each bug was reproduced with mocked HTTP or confirmed in the Frappe v16.33.1 sou
 
 1. **Admin-only in practice.** Every record tool reads metadata through `/api/resource/DocType`, `Custom Field`, and `Property Setter`. Only System Manager and Administrator can read those. The whitelisted `frappe.desk.form.load.getdoctype` returns merged metadata, plus child-table metadata, to any logged-in user. → Stage 05
 2. **Token cost and request count.** DocField has 63 non-layout properties, and the REST response includes all of them, nulls too. For large ERPNext DocTypes a schema read is likely tens of thousands of tokens. Nothing is cached: one filtered `list_documents` makes 10 HTTP requests, and `get_document` makes 7. → Stage 05
-3. **Missing read primitives:** no offset or `order_by`, no count, no DocType name search (a full ERPNext + HRMS site exceeds the 1,000-row cap), no fuzzy record search, no report discovery, and no report filter definitions. → Stages 06–07
-4. **No ERPNext transaction verbs:** submit, cancel, amend, workflow, mapped documents ("make Sales Invoice from Sales Order"), comments, assignments, and attachments are all missing. → Stages 08–10
-5. **The confirmation step is mostly for show.** The model sets `confirm=true` itself. No tool has MCP annotations, so hosts can't auto-approve reads and prompt on writes. The server sends no `instructions`, and tools have one-line descriptions with no per-argument docs. → Stage 07
-6. **Distribution.** The package isn't on PyPI, there's no CI, `setup.py` and `requirements.txt` duplicate `pyproject.toml`, and there's no read-only mode. → Stages 00, 07, 11
+3. **Missing read primitives:** no offset or `order_by`, no count, no DocType name search (a full ERPNext + HRMS site exceeds the 1,000-row cap), no fuzzy record search, no report discovery, and no report filter definitions. → Stages 10–11
+4. **No ERPNext transaction verbs:** submit, cancel, amend, workflow, mapped documents ("make Sales Invoice from Sales Order"), comments, assignments, and attachments are all missing. → Stage 10 (submit and cancel only); the rest is in the [backlog](backlog/)
+5. **The confirmation step is mostly for show.** The model sets `confirm=true` itself. No tool has MCP annotations, so hosts can't auto-approve reads and prompt on writes. The server sends no `instructions`, and tools have one-line descriptions with no per-argument docs. → Stage 11
+6. **Distribution.** The package isn't on PyPI, there's no CI, `setup.py` and `requirements.txt` duplicate `pyproject.toml`, and there's no read-only mode. → Stages 00, 11, 12
 7. **Stale docs:**
    - `compatibility-and-validation.md` lists defects that have since been fixed.
    - `UPSTREAM.md` says vendored code lives in `frappe_mcp/`.
    - The acceptance report quotes 14 tools and 8 tests.
-   - Docs and tests use site-specific names (`cubazone`, `CubaZone`), against the "generic" rule in CONTRIBUTING. → Stages 00, 12
+   - Docs and tests use site-specific names (`cubazone`, `CubaZone`), against the "generic" rule in CONTRIBUTING. → Stages 00, 13
+8. **No way to change an existing DocType.** `create_doctype` refuses a DocType that exists. Editing one means `update_document` on the `DocType` record with the whole `fields` list: no schema-aware checks, no readable diff, no Bench reload handling, and leaving a field out of the list silently deletes it. → Stage 06
+9. **No view of site and app drift.** Nothing compares the site's DocTypes and customizations with the app's JSON files, so the developer can't tell whether an export or a `bench migrate` is needed. A site-custom DocType can't be moved into an app. → Stage 07
+10. **No configuration-record tools.** Workflows, Notifications, Report Builder reports, and Workspaces can only be written as raw records, with no checks of roles, fields, or link targets, and nothing keeps the model away from fields Frappe evaluates as code. → Stages 08–09
 
 ## Frappe endpoints the plan relies on
 
@@ -61,4 +66,4 @@ All were confirmed present and whitelisted in v16.33.1:
 | File upload | `upload_file` (`frappe/handler.py`) |
 | Native customization export | `frappe.modules.utils.export_customizations` (developer mode only) |
 
-There is **no** whitelisted `get_roles` in v16; stage 06 covers how to find the current user's roles.
+There is **no** whitelisted `get_roles` in v16. The original stage 06 planned to read roles from the user's own `User` record; the refocused plan drops roles from `get_site_info`.

@@ -1,6 +1,6 @@
-# Stage 11: Distribution and releases
+# Stage 12: Distribution and releases
 
-**Depends on:** 07 (can run any time after it) · **Size:** small to medium · **Fixes:** structural gap 6 in [assessment.md](assessment.md)
+**Depends on:** 11 (can run any time after it) · **Size:** small to medium · **Fixes:** structural gap 6 in [assessment.md](assessment.md)
 
 ## Why
 
@@ -17,7 +17,7 @@ Today, installing means cloning the repo and running `uv`. A one-line install (`
 - [ ] **CLI around `main()`,** using argparse:
   - `mcp-frappe` (no arguments): run the stdio server, as today;
   - `mcp-frappe --version`;
-  - `mcp-frappe check`: read the environment, connect, print the user, Frappe and app versions, the selected toolsets, and whether `FRAPPE_APPS_PATH` is usable, then exit 0 or 1. Never print secrets.
+  - `mcp-frappe check`: read the environment, connect, print the user, Frappe and app versions, developer mode (if stage 10 found a way to read it), the selected toolsets, and whether `FRAPPE_APPS_PATH` is usable, then exit 0 or 1. Never print secrets.
 
   **Never write to stdout in server mode,** because stdout is the MCP channel. Send logs to stderr.
 - [ ] **Build check.** `uv build`, then install the wheel into a clean environment (`uvx --from dist/<wheel> mcp-frappe --version`). Add this to CI.

@@ -44,7 +44,7 @@ uv run ruff check frappe_mcp tests
 
 ## Out of scope
 
-Error-message formatting (stage 07). OAuth or other auth methods.
+Error-message formatting (stage 11). OAuth or other auth methods.
 
 ## Handoff
 

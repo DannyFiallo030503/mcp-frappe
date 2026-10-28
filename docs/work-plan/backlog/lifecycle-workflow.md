@@ -1,6 +1,8 @@
-# Stage 08: Document lifecycle and workflow
+# Backlog: Document lifecycle and workflow
 
-**Depends on:** 07 · **Size:** large · **Fixes:** structural gap 4 (lifecycle) in [assessment.md](assessment.md)
+> **Unscheduled.** This was stage 08 before the plan was refocused on developers (2026-10-27). Minimal `submit_document` and `cancel_document` moved to [stage 10](../stage-10-read-primitives.md); the rest (amend, workflow actions, update diffs, mandatory-field previews) waits here. Stage numbers below refer to the old plan. When you schedule it, give it a stage number and update the references.
+
+**Depends on (old plan):** see note · **Size:** large · **Fixes:** structural gap 4 (lifecycle) in [assessment.md](../assessment.md)
 
 ## Why
 
@@ -18,10 +20,6 @@ ERPNext transactions mean nothing until they are submitted. Approvals run throug
 
 ## Tasks
 
-- [ ] **`submit_document(doctype, name, expected_modified=None, confirm=False)`.**
-  - The preview shows `docstatus`, `modified`, and whether the DocType is submittable (from the stage 05 metadata). It also says whether an active Workflow exists for the DocType; if one does, refuse and point to the workflow tools.
-  - On confirm, read the document, check `modified`, and POST `frappe.client.submit` with the full document dict.
-- [ ] **`cancel_document(doctype, name, expected_modified=None, confirm=False)`.** The document must have `docstatus` 1. The preview warns that cancelling may reverse ledger or stock entries. On confirm, check `modified`, then call `frappe.client.cancel`.
 - [ ] **`amend_document(doctype, name, confirm=False)`.** Frappe has no single endpoint for this. Do it the way Desk does:
   1. Read the cancelled document (`docstatus` 2).
   2. Copy it, dropping `name`, `docstatus`, `modified`, `creation`, `owner`, `modified_by`, and `amended_from`, plus child rows' `name`, `parent`, `parenttype`, and `parentfield`.
@@ -32,11 +30,8 @@ ERPNext transactions mean nothing until they are submitted. Approvals run throug
 - [ ] **`apply_workflow_action(doctype, name, action, expected_modified=None, confirm=False)`.** The preview shows the transition. On confirm, call `apply_workflow`. Read the source to see whether passing the document with `modified` gives a server-side stale check. If it doesn't, keep the pre-check and document that a race is possible between the check and the action.
 - [ ] **Diffs in update previews.** `update_document` previews return `changes: {field: {"from": old, "to": new}}`. For `Table` fields, warn when the new list leaves out existing row names: Frappe will **delete** those rows. Explain how to keep rows (include each existing row with its `name`).
 - [ ] **Mandatory fields in create previews.** `create_document` previews list the mandatory fields that are missing (`reqd` with no `default`, from the metadata). The preview still succeeds, because Frappe and its controllers may fill some of them.
-- [ ] **Annotations and toolsets.** All new tools join the `data` toolset. `cancel_document` gets `destructiveHint=True`.
+- [ ] **Annotations and toolsets.** All new tools join the `data` toolset.
 - [ ] **Tests:**
-  - submit refuses non-submittable DocTypes and DocTypes with an active workflow;
-  - the submit payload contains `modified`;
-  - cancel requires docstatus 1;
   - the amend payload strips system and child keys and sets `amended_from`;
   - workflow actions pass the document JSON;
   - the update diff and the child-row deletion warning;
@@ -45,8 +40,8 @@ ERPNext transactions mean nothing until they are submitted. Approvals run throug
 ## Acceptance criteria
 
 - The new tools are registered, annotated, and covered by the contract test.
-- `docs/ai-agent-guide.md` gains two worked flows: draft → submit → cancel → amend, and "approve via workflow". `docs/tool-reference.md` is updated. `docs/frappe-capability-study.md` coverage table: mark submit, cancel, amend, and workflow as implemented but not site-verified.
-- **Optional live check (only if the user asks, on a disposable site):** run a submittable test DocType through submit, cancel, and amend, and run one workflow transition. Clean up.
+- `docs/ai-agent-guide.md` gains two worked flows: cancel → amend, and "approve via workflow". `docs/tool-reference.md` is updated. `docs/frappe-capability-study.md` coverage table: mark amend and workflow as implemented but not site-verified.
+- **Optional live check (only if the user asks, on a disposable site):** run a cancelled test document through amend, and run one workflow transition. Clean up.
 
 ## Verification
 

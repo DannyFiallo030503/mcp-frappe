@@ -1,6 +1,6 @@
-# Stage 07: Agent ergonomics (errors, instructions, annotations, toolsets, reports)
+# Stage 11: Agent ergonomics (errors, instructions, annotations, toolsets, reports)
 
-**Depends on:** 06 · **Size:** large · **Fixes:** structural gaps 3 (reports), 5, and part of 6 in [assessment.md](assessment.md)
+**Depends on:** 09, 10 · **Size:** large · **Fixes:** structural gaps 3 (reports), 5, and part of 6 in [assessment.md](assessment.md)
 
 ## Why
 
@@ -9,7 +9,7 @@ How well an agent does depends on what it sees:
 - Clean error text lets it correct itself.
 - Server instructions tell it the workflow.
 - Tool annotations let the host auto-approve reads and ask a human before writes. That's real human approval, unlike `confirm=true`, which the model sets itself.
-- Toolsets keep schema-editing tools away from an agent doing data work.
+- Toolsets let a developer hide what they don't need, and give a read-only mode for checking a site that shouldn't change.
 - Report discovery stops it guessing report names and filters.
 
 ## Read first
@@ -39,9 +39,10 @@ How well an agent does depends on what it sees:
 ### Agent guidance
 
 - [ ] **Server instructions.** Pass `instructions=` to `FastMCP(...)` (under about 1,500 characters). Cover:
-  - start with `get_site_info`;
-  - find DocTypes and records with search;
-  - read the compact schema before writing;
+  - start with `get_site_info` (developer mode, apps under `FRAPPE_APPS_PATH`);
+  - find DocTypes with `list_doctypes(search=...)` and read the compact schema before changing anything;
+  - which tool for which change: `create_doctype` and `update_doctype` for DocTypes of your own app, `create_custom_field` and `set_field_property` for `frappe`/`erpnext` DocTypes, the configuration tools for Workflows, Notifications, reports, and Workspaces;
+  - check drift with `diff_doctype` before and after editing a standard DocType;
   - keep limits small;
   - every write is preview, then confirm with tokens;
   - a permission denial is final.
@@ -49,7 +50,7 @@ How well an agent does depends on what it sees:
 - [ ] **Tool annotations.** Every tool gets `ToolAnnotations`:
   - read tools: `readOnlyHint=True`;
   - create and update tools: `readOnlyHint=False`;
-  - `delete_document`, `rollback_export`, and `set_role_permissions`: `destructiveHint=True`;
+  - `delete_document`, `delete_doctype`, `cancel_document`, `rollback_export`, and `set_role_permissions`: `destructiveHint=True`;
   - `idempotentHint` where it's true;
   - a human-readable `title` for each.
 
@@ -58,13 +59,13 @@ How well an agent does depends on what it sees:
 ### Toolsets and read-only mode
 
 - [ ] **Toolsets.** Group the tools:
-  - `read`: discovery, schema, list, get, count, search, reports, site info;
-  - `data`: create, update, delete, plus the stage 08–10 verbs later;
+  - `read`: discovery, schema, list, get, count, search, reports, site info, `diff_doctype`, `list_app_drift`, and the read-only `get_*`/`list_*` tools of stages 08–09;
+  - `data`: create, update, delete, submit, cancel;
   - `customize`: custom field, property setter, role permissions, export, rollback;
-  - `developer`: `create_doctype`.
+  - `developer`: `create_doctype`, `update_doctype`, `delete_doctype`, `promote_custom_doctype`, and the configuration tools of stages 08–09 (`upsert_workflow`, `upsert_notification`, `upsert_report`, `upsert_workspace`).
 
   Select them with `FRAPPE_MCP_TOOLSETS` (comma-separated). `FRAPPE_MCP_READ_ONLY=YES` is shorthand for `read` only. Remove the tools that aren't selected at startup with `server.remove_tool`, so the host never sees them.
-- [ ] **Default toolsets: ask the user first.** Recommend `read,data` as the default, with `customize` and `developer` opt-in. This changes what existing users see. If the user hasn't decided, default to all four and record that in Handoff.
+- [ ] **Default toolsets: all four.** The target user is a developer (see the README goal), so every toolset is on by default and `FRAPPE_MCP_TOOLSETS` narrows it. Don't change this default without asking the user.
 - [ ] **Startup failures.** Fail at startup with a clear message for an unknown toolset name.
 
 ### Reports
@@ -98,7 +99,7 @@ uv run ruff check frappe_mcp tests
 
 ## Out of scope
 
-Lifecycle verbs (stage 08). MCP prompts and resources (backlog).
+Amend and workflow actions on documents (backlog). MCP prompts and resources (backlog).
 
 ## Handoff
 
@@ -107,7 +108,7 @@ _Fill this in at the end of the session._
 - Status:
 - Branch / commits:
 - What changed:
-- Default toolsets chosen (and who decided):
+- Toolset membership changes, if any:
 - Report permission finding:
 - Deviations from this plan:
 - Notes for the next stage:

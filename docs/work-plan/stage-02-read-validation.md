@@ -48,7 +48,7 @@ uv run ruff check frappe_mcp tests
 
 ## Out of scope
 
-Pagination, `order_by`, and counts (stage 06). Fetching metadata differently (stage 05). For now, keep calling `_doctype()` the way the code does today.
+Pagination, `order_by`, and counts (stage 10). Fetching metadata differently (stage 05). For now, keep calling `_doctype()` the way the code does today.
 
 ## Handoff
 
