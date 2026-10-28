@@ -103,12 +103,21 @@ Amend and workflow actions on documents (backlog). MCP prompts and resources (ba
 
 ## Handoff
 
-_Fill this in at the end of the session._
-
-- Status:
-- Branch / commits:
+- Status: done
+- Branch / commits: `stage-11-agent-ergonomics`, based on `main` at `22cba6e` (stage 10 merged).
 - What changed:
-- Toolset membership changes, if any:
-- Report permission finding:
+  - Errors: `_check()` builds `FrappeError` through `_frappe_error()`. It keeps `status`, `exc_type`, and `message`; decodes both JSON levels of `_server_messages` and strips HTML; falls back to `_error_message`, the `exception` line (module path dropped), or `message`; never uses `exc`. Text is `Frappe HTTP <status> <ExcType>: <text>` plus a `Hint:` line from `_ERROR_HINTS` for the seven listed types (`MandatoryError` also names the missing labels), capped at 2,000 characters with the hint kept. The constructor stays `FrappeError(message, exc_type=None, *, status=None)`, so existing callers and tests that branch on `exc_type` are unchanged.
+  - Agent guidance: `FastMCP("frappe", instructions=_INSTRUCTIONS)` (about 1,250 characters). Shared arguments use `Annotated[..., Field(description=...)]` aliases: `Filters`, `OrFilters`, `Fields`, `OrderBy`, `ExpectedModified`, `ExpectedPreview`, `Confirm`, `Detail`, `ReportFilters`; `create_doctype.fields` has its own description. `pydantic` is now a declared dependency (it was already installed through `mcp`).
+  - Annotations and toolsets: every tool registers through `_tool(toolset, title, destructive=, idempotent=)`, which fills `_TOOLSETS` and passes a `title` and `ToolAnnotations` (`openWorldHint=False` everywhere). `main()` calls `_apply_toolsets(_selected_toolsets())`, which reads `FRAPPE_MCP_TOOLSETS` and `FRAPPE_MCP_READ_ONLY` and removes the unselected tools before serving. All four toolsets are on by default.
+  - Reports: new `list_reports(search, ref_doctype, limit=50, offset=0)` (page shape of `list_documents`) and `get_report_filters(report_name)` (Report Filter rows plus the script cut to 8,000 characters; `html_format` dropped). `run_report` gained `offset` and `include_chart`, returns `total_rows`, `offset`, `limit`, `has_more`, and still `returned_rows` and `truncated` (the smoke runner reads them), and drops `chart` by default.
+  - Tests: `tests/test_ergonomics.py` (errors, instructions, annotations, descriptions, toolsets, startup failures, report tools); the expected-tools test and one transport assertion updated for the new tools and message format.
+- Toolset membership changes, if any: none beyond the plan; the two new report tools are in `read`. `list_installed_apps` is in `read`.
+- Report permission finding: Frappe v16.33.1's `Report` DocType gives read to `Administrator`, `System Manager`, `Report Manager`, and `Desk User`, so every Desk user can list reports; website-only users cannot, and the tool docstring and AI guide tell the agent to ask for the report name then. Listing does not apply each report's `roles`; `get_script` and `run` do (`get_report_doc` → `is_permitted()`). Not checked on v15.
 - Deviations from this plan:
-- Notes for the next stage:
+  - `update_doctype` is also marked `destructiveHint: true`, because its `remove_field` operation and field-type changes can drop data; the plan's list named five tools.
+  - `idempotentHint: true` on `update_document`, `delete_document`, `delete_doctype`, `set_field_property`, `set_role_permissions`, and the four `upsert_*` tools (same arguments leave the same end state); `false` on the other write tools.
+  - `list_reports` also takes `offset`, like the other list tools.
+  - `FRAPPE_MCP_READ_ONLY` accepts only `YES`/`NO`/unset (a typo such as `true` must not silently keep writes on), and `YES` together with a non-`read` toolset in `FRAPPE_MCP_TOOLSETS` fails at startup.
+  - The error text puts the exception class after the status (`Frappe HTTP 403 PermissionError: ...`) rather than in a separate field of the message.
+  - The plan's `preview_id` argument is named `expected_preview` in the tools; that argument got the description.
+- Notes for the next stage: tool registration is `@_tool(...)`, not `@server.tool()`; a new tool needs a toolset and title, and `test_every_tool_has_annotations_and_a_toolset` fails otherwise. Stage 12 can document `FRAPPE_MCP_TOOLSETS`/`FRAPPE_MCP_READ_ONLY` in packaged host configs. The e2e runners were not changed (the smoke runner's `run_report` call still works) and were not run.

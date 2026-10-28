@@ -2,6 +2,34 @@
 
 All tools execute in the standalone MCP process and use the configured Frappe HTTP session. Native Frappe permissions apply to every remote call. With password auth, an expired session is renewed and the rejected call retried once without any action from the caller; a real permission denial is returned unchanged. List tools cap result sizes; mutation tools preview before acting unless noted.
 
+## Toolsets, read-only mode, and annotations
+
+Tools are grouped into four toolsets. All four are on by default; `FRAPPE_MCP_TOOLSETS` (comma-separated) narrows the list, and the server removes the other tools at startup, so the host never sees them.
+
+| Toolset | Tools |
+|---|---|
+| `read` | `get_site_info`, `list_installed_apps`, `list_doctypes`, `get_doctype_schema`, `list_documents`, `count_documents`, `search_records`, `get_document`, `list_reports`, `get_report_filters`, `run_report`, `diff_doctype`, `list_app_drift`, `get_workflow`, `list_notifications`, `get_workspace` |
+| `data` | `create_document`, `update_document`, `delete_document`, `submit_document`, `cancel_document` |
+| `customize` | `create_custom_field`, `set_field_property`, `set_role_permissions`, `export_customizations`, `rollback_export` |
+| `developer` | `create_doctype`, `update_doctype`, `delete_doctype`, `promote_custom_doctype`, `upsert_workflow`, `upsert_notification`, `upsert_report`, `upsert_workspace` |
+
+`FRAPPE_MCP_READ_ONLY=YES` is shorthand for `FRAPPE_MCP_TOOLSETS=read`: use it to look at a site that must not change. The server refuses to start on an unknown toolset name, on a `FRAPPE_MCP_READ_ONLY` value other than `YES` or `NO`, and on `FRAPPE_MCP_READ_ONLY=YES` combined with a toolset other than `read`.
+
+Every tool carries MCP annotations and a `title`. Tools in `read` have `readOnlyHint: true`; the others have `readOnlyHint: false` and say whether they are destructive and idempotent. `destructiveHint: true` is set on `delete_document`, `cancel_document`, `delete_doctype`, `update_doctype` (it can remove fields and change field types), `set_role_permissions`, and `rollback_export`. `idempotentHint: true` is set where repeating the call with the same arguments leaves the same end state: `update_document`, `delete_document`, `delete_doctype`, `set_field_property`, `set_role_permissions`, and the four `upsert_*` tools. `openWorldHint` is `false` everywhere: the tools reach only the configured site and `FRAPPE_APPS_PATH`. Hosts use these hints to run read tools without asking and to ask a person before a write; see [security](security.md#human-approval).
+
+The server also sends MCP `instructions` in its initialize result: a short workflow (start with `get_site_info`, read the schema first, which tool changes what, preview then confirm, a permission denial is final). The arguments shared by many tools (`filters`, `or_filters`, `fields`, `order_by`, `expected_modified`, `expected_preview`, `confirm`, `detail`, and the `run_report` filters) carry descriptions in each tool's input schema.
+
+## Errors
+
+A Frappe error becomes a tool error whose text is readable, for example:
+
+```text
+Frappe HTTP 417 MandatoryError: Error: Value missing for Lab Sample: Title
+Hint: Missing: Title. Required fields are empty; map the labels to fieldnames with get_doctype_schema and add them to the values.
+```
+
+The text is `Frappe HTTP <status> <exception class>: <message>`. The message comes from Frappe's `_server_messages` (a JSON list of JSON objects): each `message` is decoded and its HTML tags are removed. When there are none, the last line of the exception is used without its module path. Frappe's traceback (`exc`) is never included. `PermissionError`, `DoesNotExistError`, `MandatoryError` (with the missing labels Frappe names), `LinkValidationError`, `DuplicateEntryError`, `TimestampMismatchError`, and `ValidationError` add a `Hint:` line saying what to do next; a `PermissionError` means asking the user, not retrying another way. The whole text is cut to 2,000 characters, keeping the hint.
+
 ## Discovery and records
 
 | Tool | Purpose | Important arguments |
@@ -14,7 +42,9 @@ All tools execute in the standalone MCP process and use the configured Frappe HT
 | `count_documents` | Count the records the user may read | `doctype`, `filters` |
 | `search_records` | Find records the way a Link field's dropdown does (`frappe.desk.search.search_link`) | `doctype`, `text`, `filters`, `limit` (max 50) |
 | `get_document` | Read a record through Frappe REST; always returns `doctype`, `name`, `modified`, and `docstatus` | `doctype`, `name`, `fields`, `child_row_limit` (max 200) |
-| `run_report` | Run a Query, Script, or Custom report through Frappe's Query Report endpoint (it returns no rows for Report Builder reports; `upsert_report` returns a sample of those) | `report_name`, `filters`, `limit` (max 500) |
+| `list_reports` | List enabled reports a page at a time: `name`, `ref_doctype`, `report_type`, `module`, `is_standard` | `search` (part of the name), `ref_doctype`, `limit` (max 100, default 50), `offset` |
+| `get_report_filters` | Read the filters a report takes: its Report Filter rows and its JavaScript, cut to about 8,000 characters | `report_name` |
+| `run_report` | Run a Query, Script, or Custom report through Frappe's Query Report endpoint (it returns no rows for Report Builder reports; `upsert_report` returns a sample of those) | `report_name`, `filters`, `limit` (max 500), `offset`, `include_chart` |
 
 The generic resource API is the common access path for standard and custom app DocTypes. A custom DocType or field that the connected user cannot read remains inaccessible.
 
@@ -35,6 +65,20 @@ The tool asks Frappe for `limit + 1` rows and returns `limit`; the extra row onl
 - `count_documents` calls `frappe.client.get_count` with the same `filters` validation and returns `{"doctype", "count"}`. Frappe counts only records the user may read.
 - `search_records` calls `frappe.desk.search.search_link` with the DocType's own search fields and title field, as a Link field does. It never sends a custom `query` method or `ignore_user_permissions`. `text` may be empty (up to 140 characters); `filters` uses the `list_documents` shapes. It returns `{"doctype", "results": [{"value", "label", "description"}]}`, where `value` is the record name and empty keys are left out.
 - `list_doctypes(search=...)` matches part of the DocType name, case-insensitively (`["name", "like", "%text%"]`). The text may hold letters, digits, spaces, `_`, `.`, and `-`; `_` matches any one character.
+
+### Reports
+
+`list_reports` reads the `Report` list (`disabled = 0`, sorted by name) and returns the `list_documents` page shape. In Frappe v16 every Desk user may read `Report` (the `Desk User` role has read access); a website-only user is refused, so ask the user for the report name. The list does not check each report's own roles; `run_report` does, and refuses a report the user may not run.
+
+`get_report_filters` calls `frappe.desk.query_report.get_script` and returns:
+
+```json
+{"report_name": "Open Tasks by Owner", "filters": [{"fieldname": "owner", "label": "Owner", "fieldtype": "Link", "options": "User", "mandatory": 1}], "script": "frappe.query_reports[\"Open Tasks by Owner\"] = {}", "script_truncated": false}
+```
+
+`filters` holds the Report Filter rows a Query Report keeps on its record (empty keys left out). Script Reports declare their filters in the JavaScript instead, in the `filters: [...]` array, and the model can read them there; `script` is cut to 8,000 characters (`script_truncated`). The report's print format (`html_format`) is never returned.
+
+`run_report` passes `filters` as `{fieldname: value}`. Frappe computes the whole result, so `offset` and `limit` page through it locally: `result` holds that page, `total_rows` counts every row, `returned_rows` the page, and `has_more` (also `truncated`) says whether rows remain. The `chart` is dropped unless `include_chart` is true.
 
 ### Site information
 

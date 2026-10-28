@@ -28,6 +28,8 @@ The executable is `mcp-frappe`; alternatively run `uv run python -m frappe_mcp.s
 | `FRAPPE_TIMEOUT` | No | HTTP timeout in seconds; a positive number, defaults to `30`. The server refuses to start with any other value |
 | `FRAPPE_META_TTL` | No | Seconds to cache DocType metadata; zero or a positive number, defaults to `300`. `0` turns the cache off. The server refuses to start with any other value |
 | `FRAPPE_ALLOW_INSECURE_HTTP` | No | Set to `YES` to allow plain HTTP to non-local hosts on a trusted development network; logs a warning at startup |
+| `FRAPPE_MCP_TOOLSETS` | No | Comma-separated toolsets to expose: `read`, `data`, `customize`, `developer`. Defaults to all four. The server refuses to start with an unknown name. See [tool-reference.md](tool-reference.md#toolsets-read-only-mode-and-annotations) |
+| `FRAPPE_MCP_READ_ONLY` | No | `YES` exposes only the `read` toolset, for checking a site that must not change; `NO` or unset changes nothing. The server refuses to start with any other value, or with `YES` and a non-`read` toolset in `FRAPPE_MCP_TOOLSETS` |
 
 Use either both API token variables or a username/password. Token auth is preferred for remote sites. Password login uses Frappe's `/api/method/login`.
 

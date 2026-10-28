@@ -20,6 +20,12 @@ The MCP server runs as an independent Python process launched by the MCP host. I
 | `e2e/` | Standalone acceptance runners/evidence and the historical report from the old hosted implementation |
 | `docs/` | User, agent, security, and compatibility documentation |
 
+## Tools, toolsets, and errors
+
+Tools register through `_tool(toolset, title, destructive=..., idempotent=...)`, which records the tool in `_TOOLSETS` (`read`, `data`, `customize`, `developer`) and passes a `title` and `ToolAnnotations` to `server.tool()`; the `read` toolset sets `readOnlyHint`. At startup, `main()` reads `FRAPPE_MCP_TOOLSETS` and `FRAPPE_MCP_READ_ONLY` through `_selected_toolsets()` and `_apply_toolsets()` calls `server.remove_tool()` for every tool outside the selection, so the host never lists it. `FastMCP("frappe", instructions=_INSTRUCTIONS)` sends the agent workflow in the initialize result. Arguments shared by many tools are typed with `Annotated[..., Field(description=...)]` aliases (`Filters`, `Fields`, `OrderBy`, `ExpectedModified`, `ExpectedPreview`, `Confirm`, `Detail`, ...), so their descriptions reach each tool's input schema.
+
+`_check()` turns an error response (or an `exc` inside a 200 response) into `FrappeError` through `_frappe_error()`: it decodes the two JSON levels of `_server_messages`, strips HTML, appends a hint from `_ERROR_HINTS` for the exception class, and caps the text at `_ERROR_MAX_CHARS`. The error keeps `status`, `exc_type`, and `message`; Frappe's traceback is dropped. Callers branch on `exc_type`, never on the message text.
+
 ## Authentication and permissions
 
 The process supports Frappe API token authentication or the standard login endpoint. Both auth modes require HTTPS for hosts other than loopback or `.localhost`, unless `FRAPPE_ALLOW_INSECURE_HTTP=YES` is set for a trusted development network. A password session is created only after a successful login; when it expires, `_request()` confirms the expiry with `frappe.auth.get_logged_user`, logs in again, and retries the request once. Credentials are read at process start and are never stored in the repository. Every API operation is made as that Frappe user, so native permissions and validation remain authoritative.

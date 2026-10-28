@@ -6,6 +6,7 @@ import ast
 import copy
 import difflib
 import hashlib
+import html
 import json
 import logging
 import math
@@ -19,17 +20,66 @@ import uuid
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from urllib.parse import quote, urlparse
 
 import httpx
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
+from pydantic import Field
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
 _log = logging.getLogger(__name__)
 
 
-server = FastMCP("frappe")
+_INSTRUCTIONS = """\
+Frappe MCP works on one Frappe site through its HTTP API, as the configured user.
+
+- Start with get_site_info: the user, app versions, and which apps have a checkout under \
+FRAPPE_APPS_PATH (file writes need one).
+- Find DocTypes with list_doctypes(search=...) and read get_doctype_schema before changing \
+anything; use its fieldnames.
+- Your own app's DocTypes: create_doctype, update_doctype, delete_doctype, \
+promote_custom_doctype. frappe/erpnext DocTypes: create_custom_field, set_field_property, \
+set_role_permissions, then export_customizations into your app. Workflows, Notifications, \
+Report Builder reports, Workspaces: the upsert_* tools.
+- Run diff_doctype before and after editing a standard DocType; list_app_drift shows what \
+differs between the site and the app files.
+- Keep limit small and page with offset; count_documents gives totals. Find reports with \
+list_reports and their filters with get_report_filters.
+- Every write is two calls: without confirm for a preview, then confirm=true with the token \
+the preview returned (expected_modified or expected_preview). Show the preview to the user \
+first. A stale token means: preview again.
+- A PermissionError is final: tell the user which access is missing; never work around it.
+"""
+
+server = FastMCP("frappe", instructions=_INSTRUCTIONS)
+# Tool names per toolset; `_tool()` fills it and `_apply_toolsets()` removes unselected ones.
+_TOOLSETS: dict[str, set[str]] = {
+    name: set() for name in ("read", "data", "customize", "developer")
+}
+
+
+def _tool(
+    toolset: str, title: str, *, destructive: bool = False, idempotent: bool = False
+) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    """Register an MCP tool in a toolset, with annotations hosts use to gate approval."""
+    read_only = toolset == "read"
+    annotations = ToolAnnotations(
+        title=title,
+        readOnlyHint=read_only,
+        destructiveHint=None if read_only else destructive,
+        idempotentHint=None if read_only else idempotent,
+        openWorldHint=False,
+    )
+
+    def register(fn: Callable[..., Any]) -> Callable[..., Any]:
+        _TOOLSETS[toolset].add(fn.__name__)
+        return server.tool(title=title, annotations=annotations)(fn)
+
+    return register
+
+
 _session: httpx.Client | None = None
 _SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _.-]{0,139}$")
 _RESERVED_FIELDS = {
@@ -113,6 +163,89 @@ _FILTER_OPERATORS = (
 _ORDER_TERM = re.compile(r"\s*([A-Za-z_][A-Za-z0-9_]*)(?:\s+(asc|desc))?\s*", re.I)
 _ORDER_MAX_TERMS = 3
 _STALE_DOCUMENT = "Document changed since preview; request a fresh preview"
+
+
+# Argument types shared by tools. The descriptions become part of each tool's MCP schema.
+Filters = Annotated[
+    dict[str, Any] | list[list[Any]] | None,
+    Field(
+        description=(
+            "Conditions on the DocType's fields (from get_doctype_schema) or standard columns. "
+            "An object {fieldname: value} or {fieldname: [operator, value]}, or a list of "
+            "[fieldname, operator, value] or [child_doctype, fieldname, operator, value]. "
+            f"Operators: {', '.join(_FILTER_OPERATORS)}. Example: "
+            '[["status", "=", "Open"], ["modified", ">", "2026-01-01"]]'
+        )
+    ),
+]
+OrFilters = Annotated[
+    dict[str, Any] | list[list[Any]] | None,
+    Field(description="Same shapes as filters; a record must match at least one of them."),
+]
+Fields = Annotated[
+    list[str] | None,
+    Field(
+        description=(
+            "Fieldnames to return: the DocType's fields from get_doctype_schema, or standard "
+            "columns (name, owner, creation, modified, modified_by, docstatus, idx). Omit for "
+            "the tool's default."
+        )
+    ),
+]
+OrderBy = Annotated[
+    str | None,
+    Field(
+        description=(
+            f"'<fieldname> [asc|desc]', up to {_ORDER_MAX_TERMS} joined by commas, for example "
+            "'modified desc'. Only stored fields and standard columns."
+        )
+    ),
+]
+ExpectedModified = Annotated[
+    str | None,
+    Field(
+        description=(
+            "The `modified` value this tool's preview returned. Required with confirm=true; "
+            "a mismatch means the record changed since, so preview again."
+        )
+    ),
+]
+ExpectedPreview = Annotated[
+    str | None,
+    Field(
+        description=(
+            "The `preview_id` this tool's preview returned. Required with confirm=true; "
+            "a mismatch means the files or data changed since, so preview again."
+        )
+    ),
+]
+Confirm = Annotated[
+    bool,
+    Field(
+        description=(
+            "false (default) returns a preview and changes nothing; true applies the change. "
+            "Confirm only after the user has seen the preview."
+        )
+    ),
+]
+Detail = Annotated[
+    Literal["compact", "full"],
+    Field(
+        description=(
+            "compact (default): the main properties of each field; full: Frappe's complete "
+            "metadata, which is much larger."
+        )
+    ),
+]
+ReportFilters = Annotated[
+    dict[str, Any] | None,
+    Field(
+        description=(
+            "Report filter values as {filter_fieldname: value}; get the fieldnames and which "
+            "are mandatory from get_report_filters."
+        )
+    ),
+]
 _DOCTYPE_PROPERTIES = {
     "editable_grid",
     "quick_entry",
@@ -484,11 +617,120 @@ def _session_expired(client: httpx.Client) -> bool:
 
 
 class FrappeError(RuntimeError):
-    """An error response from Frappe; `exc_type` names the server-side exception class."""
+    """An error response from Frappe, with its message decoded to plain text.
 
-    def __init__(self, message: str, exc_type: str | None = None) -> None:
+    `status` is the HTTP status (None for an application error inside a 200 response),
+    `exc_type` names the server-side exception class, and `message` is the readable text.
+    Frappe's traceback (`exc`) is never kept.
+    """
+
+    def __init__(
+        self, message: str, exc_type: str | None = None, *, status: int | None = None
+    ) -> None:
         super().__init__(message)
         self.exc_type = exc_type
+        self.status = status
+        self.message = message
+
+
+_ERROR_MAX_CHARS = 2000
+_ERROR_HINTS = {
+    "PermissionError": (
+        "The connected user lacks this permission. Report the missing access to the user; "
+        "do not retry the change another way."
+    ),
+    "DoesNotExistError": (
+        "The record or DocType does not exist; check the name with list_doctypes, "
+        "search_records, or list_documents."
+    ),
+    "MandatoryError": (
+        "Required fields are empty; map the labels to fieldnames with get_doctype_schema "
+        "and add them to the values."
+    ),
+    "LinkValidationError": (
+        "A Link field names a record that does not exist; find a valid one with "
+        "search_records on the linked DocType."
+    ),
+    "DuplicateEntryError": (
+        "A record with this name or unique value already exists; read it instead, or pick "
+        "another value."
+    ),
+    "TimestampMismatchError": (
+        "The record changed since the preview; call the tool again without confirm for a "
+        "fresh preview."
+    ),
+    "ValidationError": "Frappe rejected the values; fix what the message names and preview again.",
+}
+_HTML_TAG = re.compile(r"<[^>]*>")
+_MISSING_VALUE = re.compile(r"Value missing for(?: [^:\n]+)?: ([^\n]+)")
+# The last traceback line Frappe sends as `exception`: `frappe.exceptions.SomeError: text`.
+_EXCEPTION_PREFIX = re.compile(r"^[A-Za-z_][\w.]*(?:Error|Exception)\b:?\s*")
+
+
+def _plain_text(value: Any) -> str:
+    """Turn one Frappe message (HTML allowed) into collapsed plain text."""
+    text = re.sub(r"<br\s*/?>", "\n", str(value), flags=re.I)
+    text = html.unescape(_HTML_TAG.sub("", text))
+    lines = (" ".join(line.split()) for line in text.splitlines())
+    return "\n".join(line for line in lines if line)
+
+
+def _server_messages(raw: Any) -> list[str]:
+    """Decode `_server_messages`: a JSON list of JSON objects, each with an HTML `message`."""
+    try:
+        items = json.loads(raw) if isinstance(raw, str) else raw
+    except ValueError:
+        items = raw
+    if not isinstance(items, list):
+        items = [items]
+    messages = []
+    for item in items:
+        if isinstance(item, str):
+            try:
+                item = json.loads(item)
+            except ValueError:
+                pass
+        if isinstance(item, dict):
+            item = item.get("message")
+        text = _plain_text(item) if item else ""
+        if text and text not in messages:
+            messages.append(text)
+    return messages
+
+
+def _error_text(payload: Any) -> str:
+    """Pick readable text from an error payload; never the traceback in `exc`."""
+    if not isinstance(payload, dict):
+        return ""
+    messages = _server_messages(payload.get("_server_messages") or [])
+    if messages:
+        return "\n".join(messages)
+    for key in ("_error_message", "exception", "message"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            text = _plain_text(value)
+            return _EXCEPTION_PREFIX.sub("", text) if key == "exception" else text
+    return ""
+
+
+def _frappe_error(status: int | None, payload: Any) -> FrappeError:
+    exc_type = payload.get("exc_type") if isinstance(payload, dict) else None
+    exc_type = exc_type if isinstance(exc_type, str) and exc_type else None
+    text = _error_text(payload) or (
+        "request failed" if status is not None else "Frappe returned an application error"
+    )
+    head = "Frappe" if status is None else f"Frappe HTTP {status}"
+    hint = _ERROR_HINTS.get(exc_type or "")
+    if exc_type == "MandatoryError":
+        missing = _MISSING_VALUE.findall(text)
+        if missing:
+            hint = f"Missing: {', '.join(missing)}. {hint}"
+    suffix = f"\nHint: {hint}" if hint else ""
+    body = f"{head}{f' {exc_type}' if exc_type else ''}: {text}"
+    room = _ERROR_MAX_CHARS - len(suffix)
+    if len(body) > room:
+        body = body[: room - 15].rstrip() + " ...[truncated]"
+    return FrappeError(body + suffix, exc_type, status=status)
 
 
 def _check(response: httpx.Response) -> Any:
@@ -496,16 +738,10 @@ def _check(response: httpx.Response) -> Any:
         payload = response.json()
     except ValueError:
         payload = None
-    exc_type = payload.get("exc_type") if isinstance(payload, dict) else None
     if response.is_error:
-        message = payload.get("_server_messages") if isinstance(payload, dict) else None
-        if not message and isinstance(payload, dict):
-            message = payload.get("exception") or payload.get("message")
-        raise FrappeError(
-            f"Frappe HTTP {response.status_code}: {message or 'request failed'}", exc_type
-        )
+        raise _frappe_error(response.status_code, payload)
     if isinstance(payload, dict) and payload.get("exc"):
-        raise FrappeError("Frappe returned an application error", exc_type)
+        raise _frappe_error(None, payload)
     if isinstance(payload, dict):
         if "data" in payload:
             return payload["data"]
@@ -1430,7 +1666,7 @@ def _file_preview(path: Path, content: str) -> dict[str, Any]:
     }
 
 
-@server.tool()
+@_tool("read", "List installed apps")
 def list_installed_apps() -> list[dict[str, Any]]:
     """Discover apps and modules represented by the target site's Module Def records."""
     modules = _request(
@@ -1485,7 +1721,7 @@ def _local_apps(apps: list[str]) -> dict[str, Any]:
     return {"configured": True, "site_apps_found": found, "site_apps_missing": missing}
 
 
-@server.tool()
+@_tool("read", "Get site info")
 def get_site_info() -> dict[str, Any]:
     """Say who is connected and what the site runs: user, app versions, and the local checkout.
 
@@ -1517,7 +1753,7 @@ def get_site_info() -> dict[str, Any]:
     }
 
 
-@server.tool()
+@_tool("read", "List DocTypes")
 def list_doctypes(
     search: str | None = None,
     app: str | None = None,
@@ -1588,9 +1824,9 @@ def _compact_fields(meta: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
-@server.tool()
+@_tool("read", "Get DocType schema")
 def get_doctype_schema(
-    doctype: str, detail: Literal["compact", "full"] = "compact"
+    doctype: str, detail: Detail = "compact"
 ) -> dict[str, Any]:
     """Read a DocType's schema as Frappe's form sees it, with Custom Fields and Property Setters.
 
@@ -1621,15 +1857,15 @@ def get_doctype_schema(
     return compact
 
 
-@server.tool()
+@_tool("read", "List documents")
 def list_documents(
     doctype: str,
-    filters: dict[str, Any] | list[list[Any]] | None = None,
-    fields: list[str] | None = None,
+    filters: Filters = None,
+    fields: Fields = None,
     limit: int = 20,
     offset: int = 0,
-    order_by: str | None = None,
-    or_filters: dict[str, Any] | list[list[Any]] | None = None,
+    order_by: OrderBy = None,
+    or_filters: OrFilters = None,
 ) -> dict[str, Any]:
     """List permission-filtered records a page at a time through the standard Frappe REST API.
 
@@ -1679,9 +1915,9 @@ def _get_count(doctype: str, filters: dict[str, Any] | list[list[Any]] | None) -
     )
 
 
-@server.tool()
+@_tool("read", "Count documents")
 def count_documents(
-    doctype: str, filters: dict[str, Any] | list[list[Any]] | None = None
+    doctype: str, filters: Filters = None
 ) -> dict[str, Any]:
     """Count the records the user may read, with the same `filters` as `list_documents`."""
     _assert_filters(_meta_bundle(doctype), filters)
@@ -1691,11 +1927,11 @@ def count_documents(
     return {"doctype": doctype, "count": count}
 
 
-@server.tool()
+@_tool("read", "Search records")
 def search_records(
     doctype: str,
     text: str,
-    filters: dict[str, Any] | list[list[Any]] | None = None,
+    filters: Filters = None,
     limit: int = 10,
 ) -> dict[str, Any]:
     """Find records the way a Link field's dropdown does, by name and the DocType's search fields.
@@ -1729,9 +1965,9 @@ def search_records(
     return {"doctype": doctype, "results": results}
 
 
-@server.tool()
+@_tool("read", "Get document")
 def get_document(
-    doctype: str, name: str, fields: list[str] | None = None, child_row_limit: int = 100
+    doctype: str, name: str, fields: Fields = None, child_row_limit: int = 100
 ) -> dict[str, Any]:
     """Read one document, selecting fields and bounding any returned child-table rows.
 
@@ -1798,8 +2034,10 @@ def get_document(
     return result
 
 
-@server.tool()
-def create_document(doctype: str, values: dict[str, Any], confirm: bool = False) -> dict[str, Any]:
+@_tool("data", "Create document")
+def create_document(
+    doctype: str, values: dict[str, Any], confirm: Confirm = False
+) -> dict[str, Any]:
     """Preview or create a document via the native REST resource API.
 
     `values` may include `name` only when the DocType's autoname is `Prompt` (naming rule
@@ -1831,13 +2069,13 @@ def create_document(doctype: str, values: dict[str, Any], confirm: bool = False)
         _forget_meta_after_write(doctype)
 
 
-@server.tool()
+@_tool("data", "Update document", idempotent=True)
 def update_document(
     doctype: str,
     name: str,
     values: dict[str, Any],
-    expected_modified: str | None = None,
-    confirm: bool = False,
+    expected_modified: ExpectedModified = None,
+    confirm: Confirm = False,
 ) -> dict[str, Any]:
     """Preview or update a record; confirmation requires the preview's modified token."""
     _assert_writable_fields(_meta_bundle(doctype)["doctype"], values)
@@ -1870,9 +2108,12 @@ def update_document(
         _forget_meta_after_write(doctype)
 
 
-@server.tool()
+@_tool("data", "Delete document", destructive=True, idempotent=True)
 def delete_document(
-    doctype: str, name: str, expected_modified: str | None = None, confirm: bool = False
+    doctype: str,
+    name: str,
+    expected_modified: ExpectedModified = None,
+    confirm: Confirm = False,
 ) -> dict[str, Any]:
     """Preview or delete a record; confirmation requires the preview's modified token."""
     doc = _request("GET", _resource(doctype, name))
@@ -1926,9 +2167,12 @@ def _lifecycle_target(
     return bundle, doc
 
 
-@server.tool()
+@_tool("data", "Submit document")
 def submit_document(
-    doctype: str, name: str, expected_modified: str | None = None, confirm: bool = False
+    doctype: str,
+    name: str,
+    expected_modified: ExpectedModified = None,
+    confirm: Confirm = False,
 ) -> dict[str, Any]:
     """Preview or submit a draft (docstatus 0) of a submittable DocType, to test its controller.
 
@@ -1973,9 +2217,12 @@ def submit_document(
     }
 
 
-@server.tool()
+@_tool("data", "Cancel document", destructive=True)
 def cancel_document(
-    doctype: str, name: str, expected_modified: str | None = None, confirm: bool = False
+    doctype: str,
+    name: str,
+    expected_modified: ExpectedModified = None,
+    confirm: Confirm = False,
 ) -> dict[str, Any]:
     """Preview or cancel a submitted document (docstatus 1) of a submittable DocType.
 
@@ -2015,35 +2262,158 @@ def cancel_document(
     }
 
 
-@server.tool()
-def run_report(
-    report_name: str, filters: dict[str, Any] | None = None, limit: int = 200
+_REPORT_MAX_ROWS = 500
+_REPORT_LIST_LIMIT = 100
+_REPORT_SCRIPT_CHARS = 8000
+_REPORT_FILTER_KEYS = (
+    "fieldname",
+    "label",
+    "fieldtype",
+    "options",
+    "mandatory",
+    "default",
+    "wildcard_filter",
+)
+
+
+def _assert_report_name(value: Any, what: str = "report_name") -> str:
+    if not isinstance(value, str) or not 1 <= len(value.strip()) <= 140:
+        raise ValueError(f"{what} must be 1-140 characters")
+    return value.strip()
+
+
+@_tool("read", "List reports")
+def list_reports(
+    search: str | None = None,
+    ref_doctype: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
 ) -> dict[str, Any]:
-    """Run an enabled report using Frappe's permission-checked query-report API."""
-    if not 1 <= limit <= 500:
-        raise ValueError("limit must be between 1 and 500")
+    """List enabled reports a page at a time: `name`, `ref_doctype`, `report_type`, `module`,
+    and `is_standard`.
+
+    `search` is a case-insensitive part of the report name; `ref_doctype` keeps the reports
+    built on one DocType. Reading the Report list needs Desk access (Frappe v16 grants it to
+    every Desk user); a website-only user is refused, so ask the user for the report name.
+    The list does not apply each report's own roles; `run_report` does. Returns
+    `{"rows", "offset", "limit", "has_more"}`.
+    """
+    if not 1 <= limit <= _REPORT_LIST_LIMIT:
+        raise ValueError(f"limit must be between 1 and {_REPORT_LIST_LIMIT}")
+    _assert_offset(offset)
+    filters: list[list[Any]] = [["disabled", "=", 0]]
+    if search is not None:
+        filters.append(["name", "like", f"%{_assert_report_name(search, 'search')}%"])
+    if ref_doctype is not None:
+        if not isinstance(ref_doctype, str) or not _SAFE_NAME.fullmatch(ref_doctype):
+            raise ValueError("Invalid DocType name")
+        filters.append(["ref_doctype", "=", ref_doctype])
+    rows = _request(
+        "GET",
+        _resource("Report"),
+        params={
+            "fields": json.dumps(["name", "ref_doctype", "report_type", "module", "is_standard"]),
+            "filters": _filters(filters),
+            "order_by": "name asc",
+            "limit_start": offset,
+            "limit_page_length": limit + 1,
+        },
+    )
+    return _page(rows, offset, limit)
+
+
+@_tool("read", "Get report filters")
+def get_report_filters(report_name: str) -> dict[str, Any]:
+    """Read the filters a report takes, to pass to `run_report`.
+
+    Returns `filters`, the Report Filter rows Query Reports keep on the record (`fieldname`,
+    `label`, `fieldtype`, `options`, `mandatory`, `default`, `wildcard_filter`), and
+    `script`, the report's JavaScript cut to about 8,000 characters (`script_truncated`).
+    Script Reports declare their filters in that script, in the `filters: [...]` array of
+    `frappe.query_reports[...]`. The report's print format is never returned.
+    """
+    report_name = _assert_report_name(report_name)
+    data = _request(
+        "GET",
+        "/api/method/frappe.desk.query_report.get_script",
+        params={"report_name": report_name},
+    )
+    data = data if isinstance(data, dict) else {}
+    rows = data.get("filters") if isinstance(data.get("filters"), list) else []
+    filters = [
+        {key: row.get(key) for key in _REPORT_FILTER_KEYS if not _is_empty(row.get(key))}
+        for row in rows
+        if isinstance(row, dict)
+    ]
+    script = data.get("script") if isinstance(data.get("script"), str) else ""
+    return {
+        "report_name": report_name,
+        "filters": filters,
+        "script": script[:_REPORT_SCRIPT_CHARS],
+        "script_truncated": len(script) > _REPORT_SCRIPT_CHARS,
+    }
+
+
+@_tool("read", "Run report")
+def run_report(
+    report_name: str,
+    filters: ReportFilters = None,
+    limit: int = 200,
+    offset: int = 0,
+    include_chart: bool = False,
+) -> dict[str, Any]:
+    """Run an enabled report using Frappe's permission-checked query-report API.
+
+    Find report names with `list_reports` and their filters with `get_report_filters`.
+    Frappe computes the whole result; `result` holds rows `offset` to `offset + limit` of it,
+    and `total_rows` counts them all (`has_more` says whether rows remain). `chart` is left
+    out unless `include_chart` is true.
+    """
+    if not 1 <= limit <= _REPORT_MAX_ROWS:
+        raise ValueError(f"limit must be between 1 and {_REPORT_MAX_ROWS}")
+    _assert_offset(offset)
     result = _request(
         "GET",
         "/api/method/frappe.desk.query_report.run",
         params={
-            "report_name": report_name,
+            "report_name": _assert_report_name(report_name),
             "filters": json.dumps(filters or {}),
             "ignore_prepared_report": True,
         },
     )
-    rows = result.get("result", [])
-    result["returned_rows"] = min(limit, len(rows))
-    result["truncated"] = len(rows) > limit
-    result["result"] = rows[:limit]
+    result = result if isinstance(result, dict) else {}
+    rows = result.get("result") if isinstance(result.get("result"), list) else []
+    if not include_chart:
+        result.pop("chart", None)
+    page = rows[offset : offset + limit]
+    result.update(
+        {
+            "result": page,
+            "total_rows": len(rows),
+            "offset": offset,
+            "limit": limit,
+            "returned_rows": len(page),
+            "has_more": len(rows) > offset + limit,
+            "truncated": len(rows) > offset + limit,
+        }
+    )
     return result
 
 
-@server.tool()
+@_tool("developer", "Create DocType")
 def create_doctype(
     app: str,
     module: str,
     name: str,
-    fields: list[dict[str, Any]],
+    fields: Annotated[
+        list[dict[str, Any]],
+        Field(
+            description=(
+                "DocField definitions in form order, each with fieldname and fieldtype plus "
+                "optional DocField properties such as label, options, reqd, and in_list_view."
+            )
+        ),
+    ],
     is_submittable: bool = False,
     is_child_table: bool = False,
     is_single: bool = False,
@@ -2051,7 +2421,7 @@ def create_doctype(
     is_custom: bool = False,
     properties: dict[str, Any] | None = None,
     permissions: list[dict[str, Any]] | None = None,
-    confirm: bool = False,
+    confirm: Confirm = False,
 ) -> dict[str, Any]:
     """Preview or create a standard or site-custom DocType through Frappe.
 
@@ -2611,12 +2981,12 @@ def _doctype_matches(
     return all(_same(current.get(key), value) for key, value in plan["properties"].items())
 
 
-@server.tool()
+@_tool("developer", "Edit DocType", destructive=True)
 def update_doctype(
     doctype: str,
     operations: list[dict[str, Any]],
-    expected_modified: str | None = None,
-    confirm: bool = False,
+    expected_modified: ExpectedModified = None,
+    confirm: Confirm = False,
 ) -> dict[str, Any]:
     """Preview or apply a list of changes to an existing DocType's fields and settings.
 
@@ -2759,9 +3129,9 @@ def _doctype_links(doctype: str) -> list[dict[str, Any]]:
     return sorted(links, key=lambda link: (str(link["doctype"]), str(link["fieldname"])))
 
 
-@server.tool()
+@_tool("developer", "Delete DocType", destructive=True, idempotent=True)
 def delete_doctype(
-    doctype: str, expected_modified: str | None = None, confirm: bool = False
+    doctype: str, expected_modified: ExpectedModified = None, confirm: Confirm = False
 ) -> dict[str, Any]:
     """Preview or delete a DocType created by mistake during development.
 
@@ -3148,7 +3518,7 @@ _DRIFT_SUMMARIES = {
 }
 
 
-@server.tool()
+@_tool("read", "Diff DocType against app files")
 def diff_doctype(doctype: str, app: str | None = None) -> dict[str, Any]:
     """Compare a DocType on the site with its files in a local app checkout (read-only).
 
@@ -3265,7 +3635,7 @@ def _drift_item(module: str, slug: str, entry: dict[str, Any]) -> dict[str, Any]
     return {"doctype": name, "module": module, "verdict": verdict}
 
 
-@server.tool()
+@_tool("read", "List app drift")
 def list_app_drift(
     app: str, module: str | None = None, limit: int = 50, offset: int = 0
 ) -> dict[str, Any]:
@@ -3377,13 +3747,13 @@ def _custom_link_targets(doc: dict[str, Any]) -> list[str]:
     ]
 
 
-@server.tool()
+@_tool("developer", "Promote custom DocType to app")
 def promote_custom_doctype(
     doctype: str,
     app: str,
     module: str,
-    confirm: bool = False,
-    expected_modified: str | None = None,
+    confirm: Confirm = False,
+    expected_modified: ExpectedModified = None,
 ) -> dict[str, Any]:
     """Preview or turn a site-custom DocType into a standard DocType of an app module.
 
@@ -3533,13 +3903,13 @@ def promote_custom_doctype(
     }
 
 
-@server.tool()
+@_tool("customize", "Set role permissions", destructive=True, idempotent=True)
 def set_role_permissions(
     doctype: str,
     role: str,
     permissions: dict[str, bool],
     permlevel: int = 0,
-    confirm: bool = False,
+    confirm: Confirm = False,
 ) -> dict[str, Any]:
     """Preview or set DocType role permissions through Frappe's native manager."""
     if not _SAFE_NAME.fullmatch(doctype) or not _SAFE_NAME.fullmatch(role):
@@ -3622,13 +3992,13 @@ def set_role_permissions(
     }
 
 
-@server.tool()
+@_tool("customize", "Create custom field")
 def create_custom_field(
     doctype: str,
     field: dict[str, Any],
     app: str | None = None,
     module: str | None = None,
-    confirm: bool = False,
+    confirm: Confirm = False,
 ) -> dict[str, Any]:
     """Preview or create a Custom Field on a DocType through the standard Frappe REST API.
 
@@ -3683,7 +4053,7 @@ def _property_value(property: str, value: Any, property_type: str) -> str:
     return value
 
 
-@server.tool()
+@_tool("customize", "Set field property", idempotent=True)
 def set_field_property(
     doctype: str,
     property: str,
@@ -3692,8 +4062,8 @@ def set_field_property(
     property_type: str | None = None,
     app: str | None = None,
     module: str | None = None,
-    expected_modified: str | None = None,
-    confirm: bool = False,
+    expected_modified: ExpectedModified = None,
+    confirm: Confirm = False,
 ) -> dict[str, Any]:
     """Preview or save a Customize Form value as a Property Setter.
 
@@ -3814,7 +4184,7 @@ def _save_property_setter(
         raise
 
 
-@server.tool()
+@_tool("customize", "Export customizations to app")
 def export_customizations(
     app: str,
     module: str,
@@ -3823,8 +4193,8 @@ def export_customizations(
     apply_module_filter: bool = False,
     sync_on_migrate: bool = True,
     with_workflows: bool = False,
-    confirm: bool = False,
-    expected_preview: str | None = None,
+    confirm: Confirm = False,
+    expected_preview: ExpectedPreview = None,
 ) -> dict[str, Any]:
     """Preview or export site customizations into an app's files so `bench migrate` applies them.
 
@@ -3962,13 +4332,13 @@ def export_customizations(
     }
 
 
-@server.tool()
+@_tool("customize", "Roll back export", destructive=True)
 def rollback_export(
     app: str,
     module: str,
     rollback_id: str,
-    expected_preview: str | None = None,
-    confirm: bool = False,
+    expected_preview: ExpectedPreview = None,
+    confirm: Confirm = False,
 ) -> dict[str, Any]:
     """Preview or restore files from an export manifest without overwriting later edits.
 
@@ -4233,7 +4603,7 @@ def _save_config_record(
     doctype: str,
     values: dict[str, Any],
     name: str,
-    expected_modified: str | None = None,
+    expected_modified: ExpectedModified = None,
     *,
     forget: tuple[str, ...] = (),
 ) -> tuple[dict[str, Any], bool]:
@@ -4303,7 +4673,7 @@ def _workflow_view(doc: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-@server.tool()
+@_tool("read", "Get workflow")
 def get_workflow(doctype: str) -> dict[str, Any]:
     """Return a DocType's active Workflow: states, transitions, and its state field.
 
@@ -4551,7 +4921,7 @@ def _workflow_diff(current: dict[str, Any], values: dict[str, Any]) -> dict[str,
     }
 
 
-@server.tool()
+@_tool("developer", "Create or update workflow", idempotent=True)
 def upsert_workflow(
     doctype: str,
     name: str,
@@ -4560,8 +4930,8 @@ def upsert_workflow(
     is_active: bool = True,
     send_email_alert: bool = False,
     workflow_state_field: str = "workflow_state",
-    expected_modified: str | None = None,
-    confirm: bool = False,
+    expected_modified: ExpectedModified = None,
+    confirm: Confirm = False,
 ) -> dict[str, Any]:
     """Preview or create/replace an approval Workflow for a DocType.
 
@@ -4738,7 +5108,7 @@ def upsert_workflow(
     }
 
 
-@server.tool()
+@_tool("read", "List notifications")
 def list_notifications(document_type: str | None = None, limit: int = 50) -> dict[str, Any]:
     """List Notification rules: name, DocType, event, channel, enabled, and standard module."""
     if not 1 <= limit <= _CONFIG_LIST_LIMIT:
@@ -4855,7 +5225,7 @@ def _standard_module(module: Any, what: str) -> str:
     return app
 
 
-@server.tool()
+@_tool("developer", "Create or update notification", idempotent=True)
 def upsert_notification(
     name: str,
     document_type: str,
@@ -4869,12 +5239,12 @@ def upsert_notification(
     value_changed: str | None = None,
     date_changed: str | None = None,
     days_in_advance: int | None = None,
-    filters: dict[str, Any] | list[list[Any]] | None = None,
+    filters: Filters = None,
     enabled: bool = True,
     is_standard: bool = False,
     module: str | None = None,
-    expected_modified: str | None = None,
-    confirm: bool = False,
+    expected_modified: ExpectedModified = None,
+    confirm: Confirm = False,
 ) -> dict[str, Any]:
     """Preview or create/replace a Notification rule (email or in-app alert) for a DocType.
 
@@ -5180,19 +5550,19 @@ def _report_sample(doctype: str, settings: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-@server.tool()
+@_tool("developer", "Create or update report", idempotent=True)
 def upsert_report(
     name: str,
     ref_doctype: str,
     columns: list[str],
-    filters: dict[str, Any] | list[list[Any]] | None = None,
-    order_by: str | None = None,
+    filters: Filters = None,
+    order_by: OrderBy = None,
     group_by: dict[str, str] | None = None,
     add_totals_row: bool = False,
     is_standard: bool = False,
     module: str | None = None,
-    expected_modified: str | None = None,
-    confirm: bool = False,
+    expected_modified: ExpectedModified = None,
+    confirm: Confirm = False,
 ) -> dict[str, Any]:
     """Preview or create/replace a saved Report Builder report on a DocType.
 
@@ -5414,7 +5784,7 @@ def _workspace_cards(links: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return cards
 
 
-@server.tool()
+@_tool("read", "Get workspace")
 def get_workspace(name: str) -> dict[str, Any]:
     """Return a Workspace: module, visibility, shortcuts, link cards, number cards, and layout.
 
@@ -5587,15 +5957,15 @@ def _order_changes(before: list[str], after: list[str]) -> dict[str, list[str]]:
     }
 
 
-@server.tool()
+@_tool("developer", "Create or update workspace", idempotent=True)
 def upsert_workspace(
     name: str,
     module: str,
     shortcuts: list[dict[str, str]],
     link_cards: list[dict[str, Any]] | None = None,
     number_cards: list[str] | None = None,
-    expected_modified: str | None = None,
-    confirm: bool = False,
+    expected_modified: ExpectedModified = None,
+    confirm: Confirm = False,
 ) -> dict[str, Any]:
     """Preview or create/replace a public, standard Workspace that ships with an app module.
 
@@ -5834,11 +6204,43 @@ def upsert_workspace(
     }
 
 
+def _selected_toolsets() -> set[str]:
+    """Read FRAPPE_MCP_TOOLSETS and FRAPPE_MCP_READ_ONLY; every toolset is on by default."""
+    raw = os.environ.get("FRAPPE_MCP_TOOLSETS") or ""
+    names = {part.strip().lower() for part in raw.split(",") if part.strip()}
+    unknown = sorted(names - set(_TOOLSETS))
+    if unknown:
+        raise RuntimeError(
+            f"Unknown toolset in FRAPPE_MCP_TOOLSETS: {', '.join(unknown)}; "
+            f"choose from {', '.join(_TOOLSETS)}"
+        )
+    read_only = (os.environ.get("FRAPPE_MCP_READ_ONLY") or "").strip().upper()
+    if read_only not in ("", "YES", "NO"):
+        raise RuntimeError("FRAPPE_MCP_READ_ONLY must be YES or NO")
+    if read_only == "YES":
+        if names - {"read"}:
+            raise RuntimeError(
+                "FRAPPE_MCP_READ_ONLY=YES exposes only the read toolset; remove "
+                f"{', '.join(sorted(names - {'read'}))} from FRAPPE_MCP_TOOLSETS"
+            )
+        return {"read"}
+    return names or set(_TOOLSETS)
+
+
+def _apply_toolsets(selected: set[str]) -> None:
+    """Remove the tools of unselected toolsets, so the host never lists them."""
+    for toolset, names in _TOOLSETS.items():
+        if toolset not in selected:
+            for name in sorted(names):
+                server.remove_tool(name)
+
+
 def main() -> None:
     """Run the standalone server using the MCP stdio transport."""
     try:
         _timeout()
         _meta_ttl()
+        _apply_toolsets(_selected_toolsets())
     except RuntimeError as error:
         raise SystemExit(str(error)) from None
     if _insecure_http_allowed():

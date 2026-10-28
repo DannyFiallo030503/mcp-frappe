@@ -10,6 +10,8 @@
 - Review previews before confirming. For record updates/deletes, pass the exact `modified` token returned in the preview; if it changed, start over.
 - For DocTypes and fixtures, preview the app/module destination and hashes. After export, inspect the local diff and let the developer handle Git review and migrations.
 - Never place credentials in tool arguments, source code, logs, screenshots, or evidence.
+- Read tool errors to the end. They give Frappe's message as plain text and, for common exception types, a `Hint:` line: a `MandatoryError` lists the missing field labels, a `TimestampMismatchError` asks for a fresh preview, and a `PermissionError` is final.
+- The tools you see depend on the server's toolsets. With `FRAPPE_MCP_READ_ONLY=YES` only the read tools are listed; if a change needs a tool that isn't there, tell the user rather than looking for another route.
 
 ## Read a record type
 
@@ -38,6 +40,14 @@ Filters may use the standard columns (`docstatus`, `creation`, `modified`, `owne
 `list_documents` returns a page: `{"rows", "offset", "limit", "has_more"}`. Read the next page with `offset` set to `offset + limit` while `has_more` is true, and stop once you have what you need. Sort with `order_by="creation asc"` (fields of the DocType, up to three, `asc` or `desc`). For "this or that", put the alternatives in `or_filters`: `or_filters=[["status", "=", "Open"], ["priority", "=", "High"]]` returns records matching either, within whatever `filters` also requires.
 
 `docstatus` is 0 for drafts, 1 for submitted, and 2 for cancelled documents. To match on a child-table value, name the child DocType first: `["Sales Invoice Item", "item_code", "=", "ITEM-001"]`. Read the allowed operators in the tool reference rather than guessing; an unsupported operator is rejected.
+
+## Run a report
+
+1. Find the report: `list_reports(search="ledger")`, or `list_reports(ref_doctype="Sales Invoice")` for the reports built on one DocType. If listing is refused (a website-only user), ask the user for the report name instead of guessing.
+2. Call `get_report_filters(report_name)`. Query Reports list their filters in `filters`; a Script Report declares them in the `filters: [...]` array of its `script`. Note which are mandatory.
+3. Call `run_report(report_name, filters={...}, limit=20)`. Frappe computes the whole report; check `total_rows` and page with `offset` only if you need more rows. Ask for `include_chart=True` only when the chart matters.
+
+Report Builder reports return no rows from `run_report`; read their DocType with `list_documents` instead.
 
 ## Change a record
 

@@ -18,6 +18,16 @@ When a password session expires, Frappe treats requests as Guest and rejects the
 
 Administrator is a full-privilege account. If used for local development, supply its password through the MCP host's secret/environment facility. The project has no embedded default password and does not write credentials into files, tests, logs, or evidence. Do not use a known default password on a network reachable site.
 
+## Human approval
+
+`confirm=true` is not a human checkpoint: the model sets it itself. The preview tokens (`expected_modified`, `preview_id`) guard against stale state, so a change applies only to the record or files the preview showed; they do not stop a model that decides to confirm.
+
+The human checkpoint is the MCP host. Every tool declares MCP annotations: the `read` toolset has `readOnlyHint: true`, every other tool `readOnlyHint: false`, and tools that delete or can remove data (`delete_document`, `cancel_document`, `delete_doctype`, `update_doctype`, `set_role_permissions`, `rollback_export`) `destructiveHint: true`. A host can run read tools without asking and ask a person before any write, which is what the annotations are for. Annotations are hints a host chooses to follow; configure the host to require approval for non-read tools.
+
+To take writes away entirely, start the server with `FRAPPE_MCP_READ_ONLY=YES` (or narrow `FRAPPE_MCP_TOOLSETS`): the unselected tools are removed at startup and never listed. The connected Frappe user's permissions still bound what any remaining tool can do.
+
+Error text returned to the model is decoded from Frappe's messages and never includes the server traceback (`exc`), which can hold file paths and code; it is capped at 2,000 characters.
+
 ## Tool boundaries
 
 - There is no arbitrary Python, SQL, or unrestricted dotted-method tool.
@@ -34,7 +44,7 @@ Administrator is a full-privilege account. If used for local development, supply
 - `upsert_workflow` and `upsert_notification` build Workflow and Notification records from a checked shape: roles must exist, states and fields must belong to the DocType, and the fields Frappe evaluates as code are refused (next section). `get_workflow` and `list_notifications` are read-only. Both upserts preview first and need the current `modified` to replace a record.
 - `upsert_report` writes only Report Builder reports. Columns, filters, `order_by`, and `group_by` are checked against the DocType's metadata, and `order_by` is rebuilt from fieldnames, so no SQL text reaches the saved `json`. Its post-save sample uses `frappe.desk.reportview.get_list`, which applies the user's permissions, and returns at most 5 rows.
 - `upsert_workspace` saves public Workspaces of non-custom modules of apps other than `frappe` and `erpnext`. Every shortcut, link, and number card must point to an existing DocType, Report, Page, or Number Card; `URL` shortcuts are refused. `get_workspace` is read-only.
-- Report execution uses Frappe's report API; report permissions still apply.
+- Report execution uses Frappe's report API; report permissions still apply. `run_report` drops the `chart` unless asked and pages the rows. `list_reports` reads the `Report` list (Frappe v16 grants read to Desk users) and `get_report_filters` calls `frappe.desk.query_report.get_script`, which checks the report's roles; it returns the Report Filter rows and the report's JavaScript (cut to 8,000 characters), never its HTML print format.
 - `list_documents` rebuilds `order_by` from checked fieldnames and `asc`/`desc`, so no SQL text reaches Frappe; `or_filters` gets the same checks as `filters`. Pages are capped at 100 rows (500 for `list_doctypes`).
 - `count_documents` uses `frappe.client.get_count`, which counts only records the user may read. `search_records` calls `frappe.desk.search.search_link` with the DocType's own search settings; it never sends a `query` method (which would dispatch to an arbitrary whitelisted function) or `ignore_user_permissions`, and returns at most 50 results.
 - `get_site_info` returns the user, app titles and versions (branch and commit details dropped), and which site apps have a checkout under `FRAPPE_APPS_PATH`; it returns no local paths.

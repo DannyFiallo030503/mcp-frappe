@@ -305,7 +305,9 @@ def test_real_permission_denial_for_a_logged_in_user_is_not_retried(site, monkey
     site.handler = handler
     client = standalone._client()
 
-    with pytest.raises(RuntimeError, match="Frappe HTTP 403: No permission for ToDo"):
+    with pytest.raises(
+        RuntimeError, match="Frappe HTTP 403 PermissionError: No permission for ToDo"
+    ):
         standalone._request("POST", "/api/resource/ToDo", json={"description": "x"})
 
     assert site.paths() == [

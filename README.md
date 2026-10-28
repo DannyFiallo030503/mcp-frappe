@@ -12,7 +12,8 @@ It discovers installed apps and DocTypes at runtime, so the same server can work
 - Create, update, and delete documents through Frappe's standard resource API, with previews and stale-document checks.
 - Create standard DocTypes with native field definitions, DocType settings, role permissions, and Frappe-generated app files; create Custom Fields and Property Setters through the REST API.
 - Export site customizations into a configured local app tree as Frappe's native `custom/` files, which `bench migrate` applies, with a preview hash, backups, and rollback.
-- Run permitted Query and Script Reports through Frappe's report API.
+- Find reports and their filters, and run permitted Query and Script Reports through Frappe's report API.
+- Group tools into toolsets (`read`, `data`, `customize`, `developer`) with `FRAPPE_MCP_TOOLSETS`, or expose only reads with `FRAPPE_MCP_READ_ONLY=YES`. Every tool carries MCP annotations, so a host can run reads freely and ask before writes.
 - Connect to custom apps without maintaining app-specific catalogs.
 
 Frappe remains the source of truth for roles, permissions, validation, workflows, and document lifecycle rules. Tools never execute arbitrary Python or SQL. See the [tool reference](docs/tool-reference.md) for exact operations and limitations.
