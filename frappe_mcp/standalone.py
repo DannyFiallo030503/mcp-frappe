@@ -176,6 +176,143 @@ _DOCTYPE_PROPERTIES = {
     "rows_threshold_for_grid_search",
     "recipient_account_field",
 }
+# Table-valued DocType settings; update_doctype leaves them to their own rows.
+_DOCTYPE_TABLE_PROPERTIES = frozenset({"actions", "links", "states"})
+# DocField `fieldtype` options (frappe/core/doctype/docfield/docfield.json, v16.33.1).
+_FIELDTYPES = frozenset(
+    {
+        "Autocomplete",
+        "Attach",
+        "Attach Image",
+        "Attachment Gallery",
+        "Barcode",
+        "Button",
+        "Check",
+        "Code",
+        "Color",
+        "Column Break",
+        "Currency",
+        "Data",
+        "Date",
+        "Datetime",
+        "Duration",
+        "Dynamic Link",
+        "Float",
+        "Fold",
+        "Geolocation",
+        "Heading",
+        "HTML",
+        "HTML Editor",
+        "Icon",
+        "Image",
+        "Int",
+        "JSON",
+        "Link",
+        "Long Text",
+        "Markdown Editor",
+        "Password",
+        "Percent",
+        "Phone",
+        "Read Only",
+        "Rating",
+        "Section Break",
+        "Select",
+        "Signature",
+        "Small Text",
+        "Tab Break",
+        "Table",
+        "Table MultiSelect",
+        "Text",
+        "Text Editor",
+        "Time",
+    }
+)
+# DocField properties update_doctype may set (docfield.json, v16.33.1). Left out on purpose:
+# `collapsible_depends_on` (an expression Frappe evaluates; only the three that
+# set_field_property accepts are allowed), `ignore_xss_filter`, and Frappe's bookkeeping
+# `oldfieldname` / `oldfieldtype`. `fieldname` is set only when a field is added.
+_DOCFIELD_PROPERTIES = frozenset(
+    {
+        "label",
+        "fieldtype",
+        "reqd",
+        "precision",
+        "length",
+        "search_index",
+        "in_list_view",
+        "in_standard_filter",
+        "in_global_search",
+        "in_preview",
+        "allow_in_quick_entry",
+        "bold",
+        "translatable",
+        "collapsible",
+        "options",
+        "default",
+        "fetch_from",
+        "fetch_if_empty",
+        "depends_on",
+        "mandatory_depends_on",
+        "read_only_depends_on",
+        "hidden",
+        "read_only",
+        "unique",
+        "set_only_once",
+        "allow_bulk_edit",
+        "permlevel",
+        "ignore_user_permissions",
+        "allow_on_submit",
+        "report_hide",
+        "remember_last_selected_value",
+        "in_filter",
+        "no_copy",
+        "print_hide",
+        "print_hide_if_no_value",
+        "print_width",
+        "width",
+        "columns",
+        "description",
+        "alignment",
+        "hide_days",
+        "hide_seconds",
+        "hide_border",
+        "non_negative",
+        "max_height",
+        "show_dashboard",
+        "is_virtual",
+        "documentation_url",
+        "sort_options",
+        "link_filters",
+        "not_nullable",
+        "show_on_timeline",
+        "placeholder",
+        "make_attachment_public",
+        "sticky",
+        "mask",
+        "button_color",
+        "show_description_on_click",
+    }
+)
+_OPTIONS_REQUIRED_FIELDTYPES = frozenset({"Link", "Select", *_TABLE_FIELDTYPES})
+# HTML options are markup the form renders and Button options name a server method, so
+# update_doctype does not write either.
+_CODE_OPTIONS_FIELDTYPES = frozenset({"HTML", "Button"})
+# Customize Form's `ALLOWED_FIELDTYPE_CHANGE` (customize_form.py, v16.33.1): type changes
+# Frappe treats as safe for a column that holds data.
+_FIELDTYPE_CHANGE_GROUPS = (
+    frozenset({"Currency", "Float", "Percent"}),
+    frozenset({"Small Text", "Data"}),
+    frozenset({"Text", "Data"}),
+    frozenset({"Text", "Text Editor", "Code", "Signature", "HTML Editor"}),
+    frozenset({"Data", "Select"}),
+    frozenset({"Text", "Small Text", "Long Text"}),
+    frozenset({"Text", "Data", "Barcode"}),
+    frozenset({"Code", "Geolocation"}),
+    frozenset({"Table", "Table MultiSelect"}),
+)
+_NEW_FIELDNAME = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+_UPDATE_DOCTYPE_MAX_OPERATIONS = 50
+_DOCTYPE_LINKS_LIMIT = 100
 _ROLE_PERMISSION_FLAGS = {
     "read",
     "write",
@@ -1570,6 +1707,675 @@ def create_doctype(
         "native_files_complete": all(value is not False for value in file_status.values()),
         "reconciled_after_server_reload": reconciled,
         "app_path": str(app_path),
+    }
+
+
+_DOCTYPE_OPERATIONS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
+    # op: (required keys, optional keys)
+    "add_field": (frozenset({"field"}), frozenset({"insert_after"})),
+    "update_field": (frozenset({"fieldname", "set"}), frozenset()),
+    "remove_field": (frozenset({"fieldname"}), frozenset()),
+    "move_field": (frozenset({"fieldname", "insert_after"}), frozenset()),
+    "set_properties": (frozenset({"set"}), frozenset()),
+}
+
+
+def _module_app(module: Any) -> str:
+    if not isinstance(module, str) or not _SAFE_NAME.fullmatch(module):
+        raise ValueError("DocType has no valid module")
+    rows = _request(
+        "GET",
+        _resource("Module Def"),
+        params={
+            "fields": '["name","app_name"]',
+            "filters": _filters({"name": module}),
+            "limit_page_length": 2,
+        },
+    )
+    if len(rows) != 1:
+        raise ValueError(f"Unknown module on the target site: {module}")
+    return rows[0].get("app_name") or ""
+
+
+def _editable_doctype(doctype: str) -> tuple[dict[str, Any], str]:
+    """Read a DocType record and its app, refusing standard DocTypes of Frappe and ERPNext."""
+    if not isinstance(doctype, str) or not _SAFE_NAME.fullmatch(doctype):
+        raise ValueError("Invalid DocType name")
+    doc = _request("GET", _resource("DocType", doctype))
+    app = _module_app(doc.get("module"))
+    if not doc.get("custom") and app.casefold() in _PROTECTED_APPS:
+        raise ValueError(
+            f"{doctype} is a standard DocType of {app}; change it with create_custom_field "
+            "and set_field_property instead"
+        )
+    return doc, app
+
+
+def _doctype_files(app: str, module: str, doctype: str) -> dict[str, Any]:
+    """Locate the folder Frappe writes for a standard DocType, in the local checkout if any."""
+    slug = _slug(doctype)
+    try:
+        _, module_path = _app_path(app, module)
+    except (RuntimeError, ValueError):
+        folder = f"{app}/{app}/{_slug(module)}/doctype/{slug}"
+        return {"folder": folder, "json": f"{folder}/{slug}.json", "local_checkout": False}
+    folder_path = module_path / "doctype" / slug
+    return {
+        "folder": str(folder_path),
+        "json": str(folder_path / f"{slug}.json"),
+        "local_checkout": True,
+        "json_exists": (folder_path / f"{slug}.json").is_file(),
+    }
+
+
+def _blank(value: Any) -> bool:
+    return value is None or value == "" or value == 0
+
+
+def _same(left: Any, right: Any) -> bool:
+    """Compare DocField values the way Frappe stores them: unset, "", and 0 are alike."""
+    return left == right or (_blank(left) and _blank(right))
+
+
+def _field_values(values: Any, where: str, allowed: frozenset[str]) -> dict[str, Any]:
+    if not isinstance(values, dict) or not values:
+        raise ValueError(f"{where} must be a non-empty object")
+    if "fieldname" in values and "fieldname" not in allowed:
+        raise ValueError(
+            f"{where}: a fieldname cannot be changed; renaming fields is not supported"
+        )
+    unsupported = sorted(set(values) - allowed)
+    if unsupported:
+        raise ValueError(f"{where}: unsupported field properties: {', '.join(unsupported)}")
+    cleaned: dict[str, Any] = {}
+    for key, value in values.items():
+        if value is not None and not isinstance(value, str | int | float):
+            raise ValueError(f"{where}: {key} must be a string, number, boolean, or null")
+        cleaned[key] = int(value) if isinstance(value, bool) else value
+    return cleaned
+
+
+def _check_field_row(row: dict[str, Any], where: str, values: dict[str, Any]) -> None:
+    fieldtype = row.get("fieldtype")
+    if fieldtype not in _FIELDTYPES:
+        raise ValueError(f"{where}: unsupported fieldtype {fieldtype!r}")
+    if fieldtype in _OPTIONS_REQUIRED_FIELDTYPES and not row.get("options"):
+        raise ValueError(f"{where}: {fieldtype} fields need options")
+    if (
+        fieldtype in _CODE_OPTIONS_FIELDTYPES
+        and row.get("options")
+        and {"options", "fieldtype"} & set(values)
+    ):
+        raise ValueError(f"{where}: update_doctype does not set options on {fieldtype} fields")
+
+
+def _field_index(rows: list[dict[str, Any]], fieldname: Any, where: str) -> int:
+    for index, row in enumerate(rows):
+        if row.get("fieldname") == fieldname:
+            return index
+    raise ValueError(f"{where}: no field named {fieldname!r} in the DocType")
+
+
+def _insert_position(rows: list[dict[str, Any]], insert_after: Any, where: str) -> int:
+    """`insert_after: null` means first; otherwise the position after that field."""
+    if insert_after is None:
+        return 0
+    return _field_index(rows, insert_after, f"{where}: insert_after") + 1
+
+
+def _plan_doctype_update(
+    doc: dict[str, Any], operations: Any, taken: set[str]
+) -> dict[str, Any]:
+    """Apply `operations` in order to a copy of a DocType record's fields and settings.
+
+    `taken` holds fieldnames the DocType already has outside its own record (Custom Fields).
+    Returns the new `rows`, the DocType `properties` to set, the fields `moved` explicitly,
+    and the keys each operation `touched` per field.
+    """
+    if not isinstance(operations, list) or not (
+        1 <= len(operations) <= _UPDATE_DOCTYPE_MAX_OPERATIONS
+    ):
+        raise ValueError(
+            f"operations must be a list of 1 to {_UPDATE_DOCTYPE_MAX_OPERATIONS} operations"
+        )
+    rows = [dict(row) for row in doc.get("fields") or []]
+    properties: dict[str, Any] = {}
+    moved: list[str] = []
+    touched: dict[str, set[str]] = {}
+    for index, operation in enumerate(operations):
+        where = f"operations[{index}]"
+        if not isinstance(operation, dict) or operation.get("op") not in _DOCTYPE_OPERATIONS:
+            raise ValueError(
+                f"{where} must be an object whose op is one of: {', '.join(_DOCTYPE_OPERATIONS)}"
+            )
+        op = operation["op"]
+        required, optional = _DOCTYPE_OPERATIONS[op]
+        missing = sorted(required - set(operation))
+        extra = sorted(set(operation) - required - optional - {"op"})
+        if missing or extra:
+            raise ValueError(
+                f"{where}: {op} takes {', '.join(sorted(required | optional))}"
+                + (f"; missing {', '.join(missing)}" if missing else "")
+                + (f"; unexpected {', '.join(extra)}" if extra else "")
+            )
+        if op == "add_field":
+            values = _field_values(
+                operation["field"], f"{where}.field", _DOCFIELD_PROPERTIES | {"fieldname"}
+            )
+            fieldname = values.get("fieldname")
+            if not isinstance(fieldname, str) or not _NEW_FIELDNAME.fullmatch(fieldname):
+                raise ValueError(
+                    f"{where}: fieldname must be lowercase letters, digits, and underscores, "
+                    "starting with a letter, at most 64 characters"
+                )
+            if fieldname in taken or any(row.get("fieldname") == fieldname for row in rows):
+                raise ValueError(f"{where}: {doc.get('name')} already has a field {fieldname}")
+            row = {"doctype": "DocField", **values}
+            _check_field_row(row, where, values)
+            position = (
+                _insert_position(rows, operation["insert_after"], where)
+                if "insert_after" in operation
+                else len(rows)
+            )
+            rows.insert(position, row)
+            touched.setdefault(fieldname, set()).update(values)
+        elif op == "update_field":
+            row = rows[_field_index(rows, operation["fieldname"], where)]
+            values = _field_values(operation["set"], f"{where}.set", _DOCFIELD_PROPERTIES)
+            row.update(values)
+            _check_field_row(row, where, values)
+            touched.setdefault(row["fieldname"], set()).update(values)
+        elif op == "remove_field":
+            row = rows.pop(_field_index(rows, operation["fieldname"], where))
+            touched.pop(row["fieldname"], None)
+        elif op == "move_field":
+            if operation["insert_after"] == operation["fieldname"]:
+                raise ValueError(f"{where}: a field cannot be inserted after itself")
+            row = rows.pop(_field_index(rows, operation["fieldname"], where))
+            rows.insert(_insert_position(rows, operation["insert_after"], where), row)
+            moved.append(row["fieldname"])
+        else:
+            values = operation["set"]
+            if not isinstance(values, dict) or not values:
+                raise ValueError(f"{where}.set must be a non-empty object")
+            unsupported = sorted(
+                set(values) - (_DOCTYPE_PROPERTIES - _DOCTYPE_TABLE_PROPERTIES)
+            )
+            if unsupported:
+                raise ValueError(
+                    f"{where}: unsupported DocType properties: {', '.join(unsupported)}"
+                )
+            for key, value in values.items():
+                if value is not None and not isinstance(value, str | int | float):
+                    raise ValueError(
+                        f"{where}: {key} must be a string, number, boolean, or null"
+                    )
+                properties[key] = int(value) if isinstance(value, bool) else value
+    return {"rows": rows, "properties": properties, "moved": moved, "touched": touched}
+
+
+def _doctype_diff(doc: dict[str, Any], plan: dict[str, Any]) -> dict[str, Any]:
+    old_rows = doc.get("fields") or []
+    new_rows = plan["rows"]
+    before = {row.get("fieldname"): row for row in old_rows}
+    after = {row.get("fieldname"): row for row in new_rows}
+
+    def previous(rows: list[dict[str, Any]], fieldname: str) -> str | None:
+        index = next(i for i, row in enumerate(rows) if row.get("fieldname") == fieldname)
+        return rows[index - 1].get("fieldname") if index else None
+
+    added = [
+        {
+            "fieldname": row["fieldname"],
+            "fieldtype": row.get("fieldtype"),
+            "label": row.get("label"),
+            "insert_after": previous(new_rows, row["fieldname"]),
+        }
+        for row in new_rows
+        if row.get("fieldname") not in before
+    ]
+    removed = [
+        {
+            "fieldname": name,
+            "fieldtype": row.get("fieldtype"),
+            "label": row.get("label"),
+            **(
+                {"options": row.get("options")}
+                if row.get("fieldtype") in _TABLE_FIELDTYPES
+                else {}
+            ),
+        }
+        for name, row in before.items()
+        if name not in after
+    ]
+    moved = [
+        {"fieldname": name, "insert_after": previous(new_rows, name)}
+        for name in dict.fromkeys(plan["moved"])
+        if name in before
+        and name in after
+        and previous(new_rows, name) != previous(old_rows, name)
+    ]
+    changed: dict[str, dict[str, Any]] = {}
+    for name, row in after.items():
+        old = before.get(name)
+        if old is None:
+            continue
+        delta = {
+            key: {"from": old.get(key), "to": row.get(key)}
+            for key in sorted(_DOCFIELD_PROPERTIES)
+            if not _same(old.get(key), row.get(key))
+        }
+        if delta:
+            changed[name] = delta
+    properties = {
+        key: {"from": doc.get(key), "to": value}
+        for key, value in plan["properties"].items()
+        if not _same(doc.get(key), value)
+    }
+    return {
+        "added": added,
+        "removed": removed,
+        "moved": moved,
+        "changed": changed,
+        "properties": properties,
+    }
+
+
+def _check_link_targets(
+    doctype: str, before: dict[str, dict[str, Any]], rows: list[dict[str, Any]]
+) -> list[str]:
+    """Check the target DocType of each new or changed Link and Table field.
+
+    Returns the child DocTypes of Table fields that were added, removed, or changed.
+    """
+    targets: dict[str, tuple[str, str]] = {}
+    children: set[str] = set()
+    for row in rows:
+        fieldtype = row.get("fieldtype")
+        old = before.get(row.get("fieldname"))
+        if fieldtype not in {"Link", *_TABLE_FIELDTYPES}:
+            continue
+        if old and old.get("fieldtype") == fieldtype and old.get("options") == row.get("options"):
+            continue
+        target = row.get("options")
+        if fieldtype == "Link" and target == doctype:
+            continue
+        if not isinstance(target, str) or not _SAFE_NAME.fullmatch(target):
+            raise ValueError(f"{row.get('fieldname')}: options must name a DocType, got {target!r}")
+        targets[row["fieldname"]] = (fieldtype, target)
+        if fieldtype in _TABLE_FIELDTYPES:
+            children.add(target)
+    after = {row.get("fieldname"): row for row in rows}
+    for name in before.keys() | after.keys():
+        old, new = before.get(name), after.get(name)
+        if old and new and (old.get("fieldtype"), old.get("options")) == (
+            new.get("fieldtype"), new.get("options")
+        ):
+            continue
+        children.update(
+            row.get("options")
+            for row in (old, new)
+            if row and row.get("fieldtype") in _TABLE_FIELDTYPES
+        )
+    if targets:
+        names = sorted({target for _, target in targets.values()})
+        found = {
+            row.get("name"): row
+            for row in _request(
+                "GET",
+                _resource("DocType"),
+                params={
+                    "fields": '["name","istable"]',
+                    "filters": _filters([["name", "in", names]]),
+                    "limit_page_length": len(names),
+                },
+            )
+        }
+        for fieldname, (fieldtype, target) in targets.items():
+            if target not in found:
+                raise ValueError(f"{fieldname}: options names an unknown DocType: {target}")
+            if fieldtype in _TABLE_FIELDTYPES and not found[target].get("istable"):
+                raise ValueError(
+                    f"{fieldname}: a {fieldtype} field needs a child table DocType "
+                    f"(istable=1); {target} is not one"
+                )
+    return sorted(child for child in children if child)
+
+
+def _count_records(doctype: str, filters: list[list[Any]]) -> int | None:
+    """Count records through `frappe.client.get_count`; None when Frappe would not say."""
+    try:
+        count = _request(
+            "GET",
+            "/api/method/frappe.client.get_count",
+            params={"doctype": doctype, "filters": _filters(filters)},
+        )
+    except RuntimeError:
+        return None
+    return count if isinstance(count, int) and not isinstance(count, bool) else None
+
+
+def _review_doctype_update(doc: dict[str, Any], diff: dict[str, Any]) -> list[str]:
+    """Count the data a change touches, warn about it, and refuse type changes that lose it."""
+    doctype = doc["name"]
+    countable = not doc.get("issingle") and not doc.get("is_virtual")
+
+    def count(filters: list[list[Any]]) -> int | None:
+        return _count_records(doctype, filters) if countable else None
+
+    warnings: list[str] = []
+    for item in diff["removed"]:
+        fieldname, fieldtype = item["fieldname"], item["fieldtype"]
+        if fieldtype in _LAYOUT_FIELDTYPES:
+            continue
+        if fieldtype in _TABLE_FIELDTYPES:
+            warnings.append(
+                f"Removing table {fieldname}: its rows stay in the {item.get('options')} "
+                "table, but no form or API shows them again."
+            )
+            continue
+        item["records_with_value"] = filled = count([[fieldname, "is", "set"]])
+        held = "an unknown number of" if filled is None else str(filled)
+        warnings.append(
+            f"Removing {fieldname}: {held} records have a value. Frappe keeps the database "
+            "column and its values (until `bench trim-tables`), but forms, reports, and the "
+            "API stop showing them."
+        )
+    for fieldname, delta in diff["changed"].items():
+        if "fieldtype" in delta:
+            old, new = delta["fieldtype"]["from"], delta["fieldtype"]["to"]
+            if any(old in group and new in group for group in _FIELDTYPE_CHANGE_GROUPS):
+                warnings.append(
+                    f"{fieldname} changes from {old} to {new}; Frappe may change the column "
+                    "type, which Customize Form allows for these two types."
+                )
+            elif old in _LAYOUT_FIELDTYPES:
+                pass
+            elif old in _TABLE_FIELDTYPES or new in _TABLE_FIELDTYPES:
+                raise ValueError(
+                    f"Changing {fieldname} from {old} to {new} is not supported; "
+                    "add a new field instead"
+                )
+            else:
+                filled = count([[fieldname, "is", "set"]])
+                if filled != 0:
+                    held = "an unknown number of" if filled is None else str(filled)
+                    raise ValueError(
+                        f"Changing {fieldname} from {old} to {new} can lose data and {held} "
+                        "records have a value. Frappe's Customize Form allows only changes "
+                        "between related types; clear the values first or add a new field."
+                    )
+                warnings.append(
+                    f"{fieldname} changes from {old} to {new}; no record has a value, so the "
+                    "column type change loses nothing."
+                )
+        if "reqd" in delta and delta["reqd"]["to"]:
+            empty = count([[fieldname, "is", "not set"]])
+            if empty != 0:
+                held = "an unknown number of" if empty is None else str(empty)
+                warnings.append(
+                    f"{fieldname} becomes mandatory and {held} records leave it empty; saving "
+                    "them fails until it is filled."
+                )
+        if "unique" in delta and delta["unique"]["to"]:
+            warnings.append(
+                f"{fieldname} becomes unique: Frappe adds a unique index, and the save fails "
+                "if existing values repeat."
+            )
+    return warnings
+
+
+def _doctype_matches(
+    current: dict[str, Any], plan: dict[str, Any], expected_modified: str
+) -> bool:
+    """Tell whether a re-read DocType holds the planned change, for reload reconciliation."""
+    if str(current.get("modified")) == expected_modified:
+        return False
+    saved = current.get("fields") or []
+    if [row.get("fieldname") for row in saved] != [row.get("fieldname") for row in plan["rows"]]:
+        return False
+    for row in saved:
+        wanted = next(want for want in plan["rows"] if want["fieldname"] == row["fieldname"])
+        keys = plan["touched"].get(row["fieldname"], set())
+        if any(not _same(row.get(key), wanted.get(key)) for key in keys):
+            return False
+    return all(_same(current.get(key), value) for key, value in plan["properties"].items())
+
+
+@server.tool()
+def update_doctype(
+    doctype: str,
+    operations: list[dict[str, Any]],
+    expected_modified: str | None = None,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Preview or apply a list of changes to an existing DocType's fields and settings.
+
+    For DocTypes of your own apps and site-custom DocTypes; for Frappe and ERPNext DocTypes use
+    `create_custom_field` and `set_field_property`. Operations run in order on the current
+    DocType, and the result is saved in one request, so unchanged fields keep their rows:
+
+    - `{"op": "add_field", "field": {"fieldname": ..., "fieldtype": ..., ...},
+      "insert_after": "fieldname"}`; without `insert_after` the field goes last, and
+      `null` puts it first.
+    - `{"op": "update_field", "fieldname": ..., "set": {"label": ..., "reqd": 1, ...}}`;
+      a fieldname cannot be changed.
+    - `{"op": "remove_field", "fieldname": ...}`
+    - `{"op": "move_field", "fieldname": ..., "insert_after": "fieldname" or null}`
+    - `{"op": "set_properties", "set": {"track_changes": 1, ...}}` for DocType settings.
+
+    Fields accept the DocField properties (`label`, `fieldtype`, `options`, `reqd`, `hidden`,
+    `read_only`, `default`, `description`, `depends_on`, `in_list_view`, ...). Link and Table
+    `options` must name an existing DocType; a Table's must be a child table. Changing a
+    fieldtype is refused when it can lose data. The preview returns `changes` (added,
+    removed, moved, changed, properties), `warnings` with affected record counts, and
+    `modified`; confirm with the same operations and `expected_modified`. Saving a standard
+    DocType needs developer mode, and Frappe then rewrites its JSON in the app.
+    """
+    doc, app = _editable_doctype(doctype)
+    if confirm and (not expected_modified or str(doc.get("modified")) != expected_modified):
+        raise ValueError(_STALE_DOCUMENT)
+    own = {row.get("fieldname") for row in doc.get("fields") or []}
+    custom_fields = {
+        row.get("fieldname")
+        for row in _meta_bundle(doctype)["doctype"].get("fields", [])
+        if row.get("fieldname")
+    } - own
+    plan = _plan_doctype_update(doc, operations, custom_fields)
+    before = {row.get("fieldname"): row for row in doc.get("fields") or []}
+    children = _check_link_targets(doctype, before, plan["rows"])
+    changes = _doctype_diff(doc, plan)
+    if not any(changes.values()):
+        raise ValueError("The operations leave the DocType unchanged")
+    warnings = _review_doctype_update(doc, changes)
+    if not confirm:
+        preview: dict[str, Any] = {
+            "preview": True,
+            "action": "update_doctype",
+            "doctype": doctype,
+            "app": app,
+            "module": doc.get("module"),
+            "custom": bool(doc.get("custom")),
+            "modified": doc.get("modified"),
+            "changes": changes,
+            "warnings": warnings,
+            "requires_confirmation": True,
+        }
+        if not doc.get("custom"):
+            preview["app_files"] = _doctype_files(app, doc["module"], doctype)
+            preview["requires_developer_mode"] = True
+            preview["notes"] = [
+                "Frappe saves standard DocTypes only in developer mode, then rewrites the "
+                "DocType JSON in the app (and the controller's type annotations when the app "
+                "sets export_python_type_annotations). A developer-mode Bench may reload.",
+            ]
+        return preview
+    rows = [{**row, "idx": index} for index, row in enumerate(plan["rows"], start=1)]
+    reconciled = False
+    try:
+        # Sending `modified` makes Frappe compare it with the stored value under the row lock.
+        saved = _request(
+            "PUT",
+            _resource("DocType", doctype),
+            json={"data": {**plan["properties"], "fields": rows, "modified": expected_modified}},
+        )
+    except FrappeError as error:
+        if error.exc_type == "TimestampMismatchError":
+            raise ValueError(_STALE_DOCUMENT) from error
+        if error.exc_type == "CannotCreateStandardDoctypeError":
+            raise ValueError(
+                f"Frappe refused to save {doctype}: standard DocTypes can only be changed "
+                f"with developer mode on ({error})"
+            ) from error
+        raise
+    except httpx.TransportError as error:
+        # A developer-mode Bench can reload while Frappe writes the DocType files; find out
+        # what was saved instead of sending the change again.
+        _wait_for_server_ready()
+        saved = _request("GET", _resource("DocType", doctype))
+        if not _doctype_matches(saved, plan, expected_modified):
+            raise RuntimeError(
+                "Frappe disconnected while saving the DocType and the saved DocType does not "
+                "hold the change; request a fresh preview before retrying."
+            ) from error
+        reconciled = True
+    finally:
+        for name in (doctype, *children):
+            _forget_meta(name)
+    return {
+        "updated": True,
+        "doctype": doctype,
+        "modified": saved.get("modified") if isinstance(saved, dict) else None,
+        "changes": changes,
+        "warnings": warnings,
+        "reconciled_after_server_reload": reconciled,
+    }
+
+
+def _doctype_links(doctype: str) -> list[dict[str, Any]]:
+    """List the Link and Table fields of other DocTypes, Custom Fields included, using it."""
+    filters = _filters(
+        [["options", "=", doctype], ["fieldtype", "in", ["Link", *sorted(_TABLE_FIELDTYPES)]]]
+    )
+    standard = _request(
+        "GET",
+        _resource("DocField"),
+        params={
+            "fields": '["parent","fieldname","fieldtype"]',
+            "filters": filters,
+            "parent": "DocType",
+            "limit_page_length": _DOCTYPE_LINKS_LIMIT + 1,
+        },
+    )
+    custom = _request(
+        "GET",
+        _resource("Custom Field"),
+        params={
+            "fields": '["dt","fieldname","fieldtype"]',
+            "filters": filters,
+            "limit_page_length": _DOCTYPE_LINKS_LIMIT + 1,
+        },
+    )
+    links = [
+        {"doctype": row.get("parent"), "fieldname": row.get("fieldname"),
+         "fieldtype": row.get("fieldtype")}
+        for row in standard
+        if row.get("parent") != doctype
+    ] + [
+        {"doctype": row.get("dt"), "fieldname": row.get("fieldname"),
+         "fieldtype": row.get("fieldtype"), "custom_field": True}
+        for row in custom
+        if row.get("dt") != doctype
+    ]
+    return sorted(links, key=lambda link: (str(link["doctype"]), str(link["fieldname"])))
+
+
+@server.tool()
+def delete_doctype(
+    doctype: str, expected_modified: str | None = None, confirm: bool = False
+) -> dict[str, Any]:
+    """Preview or delete a DocType created by mistake during development.
+
+    Refuses Frappe and ERPNext DocTypes, and any DocType another DocType uses through a Link,
+    Table, or Table MultiSelect field (the error lists them). The preview says what Frappe
+    removes and keeps: it deletes the DocType record and, for a standard DocType in developer
+    mode, its folder in the app; it keeps the database table with its records, and the Custom
+    Fields and Property Setters defined on the DocType. Confirm with `expected_modified` from
+    the preview. Only Administrator can delete a standard DocType.
+    """
+    doc, app = _editable_doctype(doctype)
+    links = _doctype_links(doctype)
+    if links:
+        listed = ", ".join(
+            f"{link['doctype']}.{link['fieldname']} ({link['fieldtype']})"
+            for link in links[:_DOCTYPE_LINKS_LIMIT]
+        )
+        more = " and more" if len(links) > _DOCTYPE_LINKS_LIMIT else ""
+        raise ValueError(
+            f"Other DocTypes use {doctype}; remove or repoint these fields first: {listed}{more}"
+        )
+    custom = bool(doc.get("custom"))
+    countable = not doc.get("issingle") and not doc.get("is_virtual")
+    records = _count_records(doctype, []) if countable else None
+    leftovers = {
+        "custom_fields": _count_records("Custom Field", [["dt", "=", doctype]]),
+        "property_setters": _count_records("Property Setter", [["doc_type", "=", doctype]]),
+    }
+    removes = [
+        "the DocType record with its fields, permissions, actions, links, and states",
+        "Table-type Custom Fields on other DocTypes that point to it",
+        "its global search entries",
+    ]
+    files = None if custom else _doctype_files(app, doc["module"], doctype)
+    if files is not None:
+        removes.append(
+            f"in developer mode, the folder {files['folder']} with its JSON, controller, "
+            "JavaScript, and test files"
+        )
+    keeps = [
+        f"the database table `tab{doctype}` and its records",
+        "Custom Fields and Property Setters defined on this DocType",
+    ]
+    if not confirm:
+        preview: dict[str, Any] = {
+            "preview": True,
+            "action": "delete_doctype",
+            "doctype": doctype,
+            "app": app,
+            "module": doc.get("module"),
+            "custom": custom,
+            "istable": bool(doc.get("istable")),
+            "modified": doc.get("modified"),
+            "records": records,
+            "customizations_left": leftovers,
+            "frappe_removes": removes,
+            "frappe_keeps": keeps,
+            "requires_confirmation": True,
+        }
+        if files is not None:
+            preview["app_files"] = files
+            preview["requires_developer_mode"] = True
+            preview["requires_administrator"] = True
+        return preview
+    if not expected_modified or str(doc.get("modified")) != expected_modified:
+        raise ValueError(_STALE_DOCUMENT)
+    reconciled = False
+    try:
+        _request("DELETE", _resource("DocType", doctype))
+    except httpx.TransportError as error:
+        # Deleting a standard DocType removes Python files, which can reload a dev Bench.
+        if not _wait_for_document_deleted("DocType", doctype):
+            raise RuntimeError(
+                "Frappe disconnected during deletion and the DocType still exists; "
+                "request a fresh preview before retrying."
+            ) from error
+        reconciled = True
+    finally:
+        _forget_meta(doctype)
+    return {
+        "deleted": True,
+        "doctype": doctype,
+        "reconciled_after_server_reload": reconciled,
     }
 
 
