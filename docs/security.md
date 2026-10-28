@@ -35,6 +35,10 @@ Administrator is a full-privilege account. If used for local development, supply
 - `upsert_report` writes only Report Builder reports. Columns, filters, `order_by`, and `group_by` are checked against the DocType's metadata, and `order_by` is rebuilt from fieldnames, so no SQL text reaches the saved `json`. Its post-save sample uses `frappe.desk.reportview.get_list`, which applies the user's permissions, and returns at most 5 rows.
 - `upsert_workspace` saves public Workspaces of non-custom modules of apps other than `frappe` and `erpnext`. Every shortcut, link, and number card must point to an existing DocType, Report, Page, or Number Card; `URL` shortcuts are refused. `get_workspace` is read-only.
 - Report execution uses Frappe's report API; report permissions still apply.
+- `list_documents` rebuilds `order_by` from checked fieldnames and `asc`/`desc`, so no SQL text reaches Frappe; `or_filters` gets the same checks as `filters`. Pages are capped at 100 rows (500 for `list_doctypes`).
+- `count_documents` uses `frappe.client.get_count`, which counts only records the user may read. `search_records` calls `frappe.desk.search.search_link` with the DocType's own search settings; it never sends a `query` method (which would dispatch to an arbitrary whitelisted function) or `ignore_user_permissions`, and returns at most 50 results.
+- `get_site_info` returns the user, app titles and versions (branch and commit details dropped), and which site apps have a checkout under `FRAPPE_APPS_PATH`; it returns no local paths.
+- `submit_document` and `cancel_document` need the current `modified`, refuse DocTypes that aren't submittable, and refuse DocTypes with an active Workflow: a direct submit or cancel there would skip the workflow's transitions and roles, because Frappe only moves the document to the first state with the new docstatus.
 
 ## Code fields and templates
 

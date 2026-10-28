@@ -193,3 +193,39 @@ def test_upsert_workspace_through_an_mcp_session_never_sends_custom_blocks(fake_
     (post,) = fake_site.calls_to("POST", "/api/resource/Workspace")
     assert "custom_blocks" not in post.json["data"]
     assert [block["type"] for block in json.loads(post.json["data"]["content"])] == ["shortcut"]
+
+
+def test_paged_list_and_submit_preview_round_trip_through_an_mcp_session(fake_site) -> None:
+    fake_site.add_doctype("Lab Test", [{"fieldname": "title"}], is_submittable=1)
+    fake_site.add("GET", "/api/resource/Lab%20Test", [{"name": "LT-1"}, {"name": "LT-2"}])
+    fake_site.add(
+        "GET",
+        "/api/resource/Lab%20Test/LT-1",
+        {"doctype": "Lab Test", "name": "LT-1", "docstatus": 0, "modified": "2026-10-28 09:00"},
+    )
+
+    async def call_tools():
+        async with create_connected_server_and_client_session(
+            standalone.server._mcp_server
+        ) as client:
+            listed = await client.call_tool(
+                "list_documents", {"doctype": "Lab Test", "limit": 1, "order_by": "title desc"}
+            )
+            preview = await client.call_tool(
+                "submit_document", {"doctype": "Lab Test", "name": "LT-1"}
+            )
+            return listed, preview
+
+    listed, preview = anyio.run(call_tools)
+
+    assert not listed.isError and not preview.isError
+    assert json.loads(listed.content[0].text) == {
+        "rows": [{"name": "LT-1"}],
+        "offset": 0,
+        "limit": 1,
+        "has_more": True,
+    }
+    decoded = json.loads(preview.content[0].text)
+    assert decoded["preview"] is True
+    assert decoded["modified"] == "2026-10-28 09:00"
+    assert fake_site.calls_to("POST") == []

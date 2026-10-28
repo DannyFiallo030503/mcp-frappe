@@ -62,7 +62,7 @@ Standard DocType creation (`is_custom: false`, the default) requires **Developer
 
 ## Verify
 
-In the MCP host, connect and call `list_installed_apps`, then `list_doctypes`. For a raw login smoke check, keep the password out of shell history and output. An invalid password or missing role should fail through the standard Frappe API response; do not enable Guest access to work around it.
+In the MCP host, connect and call `get_site_info`, then `list_doctypes`. For a raw login smoke check, keep the password out of shell history and output. An invalid password or missing role should fail through the standard Frappe API response; do not enable Guest access to work around it.
 
 ## Removal
 
