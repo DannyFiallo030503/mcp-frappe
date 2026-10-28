@@ -151,7 +151,8 @@ async def run() -> dict:
                         )
                     )
                     evidence["customization_export_preview"] = bool(
-                        export.get("requires_confirmation") and export.get("preview_id")
+                        (export.get("requires_confirmation") and export.get("preview_id"))
+                        or export.get("nothing_to_export")
                     )
                     evidence["export_preview_file_count"] = len(export.get("files", []))
             return evidence

@@ -176,6 +176,11 @@ _PROPERTY_TYPES = {
 _CUSTOM_FIELD_FIXED_KEYS = ("doctype", "dt", "module")
 _HOOK_BEGIN = "# BEGIN MCP FRAPPE MANAGED FIXTURES"
 _HOOK_END = "# END MCP FRAPPE MANAGED FIXTURES"
+_EXPORT_MAX_DOCTYPES = 50
+_EXPORT_MAX_FILES = 200
+_EXPORT_ROW_LIMIT = 1000
+# Keys Frappe's `export_json` (`bench export-fixtures`) leaves out of fixture rows.
+_FIXTURE_DROPPED_KEYS = frozenset({"modified_by", "creation", "owner", "idx", "lft", "rgt"})
 _PROTECTED_APPS = {"frappe", "erpnext"}
 _LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
 
@@ -894,6 +899,12 @@ def _atomic_write(path: Path, content: str, mode: int | None = None) -> None:
 
 
 def _fixture_plan(app_path: Path, doctypes: list[str], module: str) -> tuple[Path, str]:
+    """Plan the managed `hooks.py` block that keeps exported Client Scripts in `fixtures`.
+
+    Only Client Script needs a hook entry: Custom Fields, Property Setters, and permissions
+    go to the module's native `custom/` file, which `bench migrate` reads without one. Entries
+    for other DocTypes left by older exports are dropped from the block.
+    """
     hooks = app_path / app_path.name / "hooks.py"
     if not hooks.is_file() or not os.access(hooks, os.W_OK):
         raise ValueError("Target app hooks.py is missing or not writable")
@@ -920,41 +931,21 @@ def _fixture_plan(app_path: Path, doctypes: list[str], module: str) -> tuple[Pat
             existing = ast.literal_eval(assignment.value)
         source = source[:begin].rstrip()
 
-    additions = [
-        {"dt": "Custom Field", "filters": [["dt", "in", doctypes], ["module", "in", [module]]]},
-        {
-            "dt": "Property Setter",
-            "filters": [["doc_type", "in", doctypes], ["module", "in", [module]]],
-        },
-        {"dt": "Client Script", "filters": [["dt", "in", doctypes], ["module", "in", [module]]]},
-        {"dt": "Custom DocPerm", "filters": [["parent", "in", doctypes]]},
-    ]
-    managed = list(existing)
-    for addition in additions:
-        target_field = {
-            "Custom Field": "dt",
-            "Property Setter": "doc_type",
-            "Client Script": "dt",
-            "Custom DocPerm": "parent",
-        }[addition["dt"]]
-        previous = next((row for row in managed if row.get("dt") == addition["dt"]), None)
-        if previous is None:
-            managed.append(addition)
-            continue
-        filters = list(previous.get("filters", []))
-        for key in (target_field, "module"):
-            incoming = next(
-                (condition[2] for condition in addition["filters"] if condition[0] == key), []
-            )
-            current = next(
-                (condition for condition in filters if len(condition) == 3 and condition[0] == key),
-                None,
-            )
-            if current and current[1] == "in":
-                current[2] = sorted(set(current[2]) | set(incoming))
-            elif incoming:
-                filters.append([key, "in", incoming])
-        previous["filters"] = filters
+    previous = next(
+        (row for row in existing if isinstance(row, dict) and row.get("dt") == "Client Script"),
+        None,
+    )
+    filters = list(previous.get("filters", [])) if previous else []
+    for key, incoming in (("dt", doctypes), ("module", [module])):
+        current = next(
+            (condition for condition in filters if len(condition) == 3 and condition[0] == key),
+            None,
+        )
+        if current and current[1] == "in":
+            current[2] = sorted(set(current[2]) | set(incoming))
+        else:
+            filters.append([key, "in", sorted(incoming)])
+    managed = [{"dt": "Client Script", "filters": filters}]
 
     block_text = (
         f"\n\n{_HOOK_BEGIN}\n"
@@ -963,6 +954,141 @@ def _fixture_plan(app_path: Path, doctypes: list[str], module: str) -> tuple[Pat
         f"{_HOOK_END}\n"
     )
     return hooks, source + block_text
+
+
+def _scrub(value: str) -> str:
+    """Frappe's `frappe.scrub`, which names a DocType's customization and fixture files."""
+    return value.replace(" ", "_").replace("-", "_").lower()
+
+
+def _frappe_json(value: Any, *, ensure_ascii: bool = True) -> str:
+    """Serialize like `frappe.as_json`, so exported files diff cleanly with Frappe's own."""
+    return json.dumps(
+        value, indent=1, sort_keys=True, separators=(",", ": "), ensure_ascii=ensure_ascii
+    )
+
+
+def _export_rows(
+    doctype: str, filters: list[list[Any]], order_by: str = "name asc", **params: Any
+) -> list[dict[str, Any]]:
+    """Read every column of the matching rows, refusing to silently truncate a large export."""
+    rows = _request(
+        "GET",
+        _resource(doctype),
+        params={
+            "fields": '["*"]',
+            "filters": _filters(filters),
+            "order_by": order_by,
+            "limit_page_length": _EXPORT_ROW_LIMIT + 1,
+            **params,
+        },
+    )
+    if len(rows) > _EXPORT_ROW_LIMIT:
+        raise ValueError(f"More than {_EXPORT_ROW_LIMIT} {doctype} rows; export fewer DocTypes")
+    return rows
+
+
+def _customized_doctypes(doctypes: list[str]) -> list[str]:
+    """Return the DocTypes and, like Frappe's export, every table DocType they use."""
+    ordered: list[str] = []
+    pending = list(doctypes)
+    while pending:
+        doctype = pending.pop(0)
+        if doctype in ordered:
+            continue
+        if len(ordered) >= _EXPORT_MAX_FILES:
+            raise ValueError("Export covers too many DocTypes; select fewer")
+        ordered.append(doctype)
+        children = [
+            row.get("options")
+            for row in _doctype(doctype).get("fields", [])
+            if row.get("fieldtype") in _TABLE_FIELDTYPES and row.get("options")
+        ]
+        pending[:0] = [child for child in children if child not in ordered]
+    return ordered
+
+
+def _native_customization(
+    doctype: str,
+    module: str,
+    *,
+    with_permissions: bool,
+    apply_module_filter: bool,
+    sync_on_migrate: bool,
+) -> dict[str, Any] | None:
+    """Build what `frappe.modules.utils.export_customizations` writes for one DocType.
+
+    Returns None when there are no Custom Fields, Property Setters, or (when asked)
+    Custom DocPerms, because Frappe skips the file in that case too.
+    """
+    module_filter = [["module", "=", module]] if apply_module_filter else []
+    custom = {
+        "custom_fields": _export_rows("Custom Field", [["dt", "=", doctype], *module_filter]),
+        "property_setters": _export_rows(
+            "Property Setter", [["doc_type", "=", doctype], *module_filter]
+        ),
+        "custom_perms": [],
+        # DocType Link is a child table, so Frappe only lists it under its parent DocType.
+        "links": _export_rows("DocType Link", [["parent", "=", doctype]], parent="DocType"),
+        "doctype": doctype,
+        "sync_on_migrate": int(sync_on_migrate),
+    }
+    if with_permissions:
+        custom["custom_perms"] = _export_rows("Custom DocPerm", [["parent", "=", doctype]])
+    if custom["custom_fields"] or custom["property_setters"] or custom["custom_perms"]:
+        return custom
+    return None
+
+
+def _client_script_fixture(
+    app_path: Path, doctypes: list[str], module: str
+) -> tuple[Path, str] | None:
+    """Plan `<app>/<app>/fixtures/client_script.json`, keeping rows outside this export."""
+    rows = _export_rows(
+        "Client Script",
+        [["dt", "in", doctypes], ["module", "=", module]],
+        order_by="idx asc, creation asc",
+    )
+    if not rows:
+        return None
+    exported = [
+        {
+            **{
+                key: value
+                for key, value in row.items()
+                if key not in _FIXTURE_DROPPED_KEYS and not key.startswith("_")
+            },
+            "doctype": "Client Script",
+        }
+        for row in rows
+    ]
+    path = app_path / app_path.name / "fixtures" / "client_script.json"
+    kept: list[dict[str, Any]] = []
+    if path.is_file():
+        try:
+            current = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as error:
+            raise ValueError(f"{path} is not valid JSON; fix it before exporting") from error
+        if not isinstance(current, list) or any(not isinstance(row, dict) for row in current):
+            raise ValueError(f"{path} is not a list of fixture rows; fix it before exporting")
+        names = {row.get("name") for row in exported}
+        kept = [
+            row
+            for row in current
+            if row.get("name") not in names
+            and not (row.get("dt") in doctypes and row.get("module") == module)
+        ]
+    return path, _frappe_json(kept + exported, ensure_ascii=False)
+
+
+def _created_dirs(app_path: Path, path: Path) -> list[str]:
+    """Return the app-relative directories that writing `path` creates, outermost first."""
+    missing = []
+    parent = path.parent
+    while not parent.exists() and parent != app_path:
+        missing.append(parent)
+        parent = parent.parent
+    return [str(directory.relative_to(app_path)) for directory in reversed(missing)]
 
 
 def _safe_app_file(app_path: Path, path: Path) -> Path:
@@ -1664,43 +1790,62 @@ def export_customizations(
     app: str,
     module: str,
     doctypes: list[str],
+    with_permissions: bool = False,
+    apply_module_filter: bool = False,
+    sync_on_migrate: bool = True,
     confirm: bool = False,
     expected_preview: str | None = None,
 ) -> dict[str, Any]:
-    """Preview or export DocType JSON and customization fixtures into an app, with rollback."""
+    """Preview or export site customizations into an app's files so `bench migrate` applies them.
+
+    Writes Frappe's native module customization file, the same one Customize Form's "Export
+    Customizations" writes: `<app>/<app>/<module>/custom/<doctype>.json` with the DocType's
+    Custom Fields, Property Setters, DocType Links, and (with `with_permissions`) Custom
+    DocPerms. Child-table DocTypes the DocType uses get their own file. A DocType with nothing
+    to export gets no file. Client Scripts for these DocTypes and `module` go to the app-level
+    `<app>/<app>/fixtures/client_script.json`, and a managed block in `hooks.py` keeps them in
+    the app's `fixtures`; `hooks.py` is untouched when there are none.
+
+    DocType JSON is never written: in developer mode Frappe writes standard DocType files itself.
+
+    Args:
+        app: App to write into (not frappe or erpnext); must be below FRAPPE_APPS_PATH.
+        module: Module of `app` whose `custom/` folder receives the files.
+        doctypes: 1-50 DocTypes whose customizations to export; any DocType, standard or not.
+        with_permissions: Also export Custom DocPerm rows. On migrate they replace the site's
+            Custom DocPerms for that DocType.
+        apply_module_filter: Export only Custom Fields and Property Setters whose module is
+            `module`, as Frappe's "Apply Module Export Filter" does.
+        sync_on_migrate: Have `bench migrate` import the file; Frappe's own default is off.
+        confirm: False returns a preview with diffs; True writes the files.
+        expected_preview: The preview's `preview_id`, required when confirm is True.
+    """
     _assert_writable_app(app)
     app_path, module_path = _assert_app_module(app, module)
-    if not doctypes or len(doctypes) > 50:
-        raise ValueError("Select between 1 and 50 DocTypes")
+    if not doctypes or len(doctypes) > _EXPORT_MAX_DOCTYPES:
+        raise ValueError(f"Select between 1 and {_EXPORT_MAX_DOCTYPES} DocTypes")
+    if any(not isinstance(name, str) or not _SAFE_NAME.fullmatch(name) for name in doctypes):
+        raise ValueError("Invalid DocType name")
+    covered = _customized_doctypes(doctypes)
     payloads: list[tuple[Path, str]] = []
-    for doctype in doctypes:
-        schema = _doctype_raw(doctype)
-        if schema.get("module") != module:
-            raise ValueError(f"DocType does not belong to module {module}: {doctype}")
-        leaf = _slug(doctype)
-        dest = module_path / "doctype" / leaf / f"{leaf}.json"
-        payloads.append((dest, json.dumps(schema, ensure_ascii=False, indent=1) + "\n"))
-    for dt, parent in (
-        ("Custom Field", "dt"),
-        ("Property Setter", "doc_type"),
-        ("Client Script", "dt"),
-    ):
-        rows = _request(
-            "GET",
-            _resource(dt),
-            params={
-                "fields": '["*"]',
-                "filters": _filters([[parent, "in", doctypes], ["module", "=", module]]),
-                "limit_page_length": 1000,
-            },
+    empty: list[str] = []
+    for doctype in covered:
+        custom = _native_customization(
+            doctype,
+            module,
+            with_permissions=with_permissions,
+            apply_module_filter=apply_module_filter,
+            sync_on_migrate=sync_on_migrate,
         )
-        if rows:
-            filename = dt.lower().replace(" ", "_") + ".json"
-            dest = module_path / "fixtures" / filename
-            payloads.append((dest, json.dumps(rows, ensure_ascii=False, indent=1) + "\n"))
-    hooks_path, hooks_content = _fixture_plan(app_path, doctypes, module)
-    payloads.append((hooks_path, hooks_content))
-    if len(payloads) > 55:
+        if custom is None:
+            empty.append(doctype)
+            continue
+        payloads.append((module_path / "custom" / f"{_scrub(doctype)}.json", _frappe_json(custom)))
+    client_scripts = _client_script_fixture(app_path, covered, module)
+    if client_scripts:
+        payloads.append(client_scripts)
+        payloads.append(_fixture_plan(app_path, covered, module))
+    if len(payloads) > _EXPORT_MAX_FILES:
         raise ValueError("Export produced too many files")
     previews = []
     total_size = 0
@@ -1710,13 +1855,23 @@ def export_customizations(
         if total_size > 5_000_000:
             raise ValueError("Export exceeds the 5 MB total output limit")
         previews.append(_file_preview(path, content))
+    summary = {"app": app, "module": module, "doctypes": covered, "empty": empty}
+    if not payloads:
+        if confirm:
+            raise ValueError("Nothing to export: these DocTypes have no customizations")
+        return {
+            "preview": True,
+            **summary,
+            "files": [],
+            "nothing_to_export": True,
+            "preview_id": None,
+            "requires_confirmation": False,
+        }
     preview_id = hashlib.sha256(json.dumps(previews, sort_keys=True).encode()).hexdigest()
     if not confirm:
         return {
             "preview": True,
-            "app": app,
-            "module": module,
-            "doctypes": doctypes,
+            **summary,
             "files": previews,
             "preview_id": preview_id,
             "requires_confirmation": True,
@@ -1727,6 +1882,7 @@ def export_customizations(
     backup_root.mkdir(parents=True, exist_ok=True)
     rollback_id = f"export-{preview_id[:32]}.json"
     manifest: list[dict[str, Any]] = []
+    app_root = app_path.resolve()
     for path, content in payloads:
         path = _safe_app_file(app_path, path)
         backup_name = None
@@ -1739,9 +1895,10 @@ def export_customizations(
             )
         manifest.append(
             {
-                "path": str(path.relative_to(app_path.resolve())),
+                "path": str(path.relative_to(app_root)),
                 "backup": backup_name,
                 "exported_sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+                "created_dirs": _created_dirs(app_root, path),
             }
         )
     manifest_path = backup_root / rollback_id
@@ -1754,8 +1911,7 @@ def export_customizations(
         _atomic_write(_safe_app_file(app_path, path), content)
     return {
         "exported": True,
-        "app": app,
-        "module": module,
+        **summary,
         "files": [str(path) for path, _ in payloads],
         "rollback_id": rollback_id,
     }
@@ -1769,7 +1925,12 @@ def rollback_export(
     expected_preview: str | None = None,
     confirm: bool = False,
 ) -> dict[str, Any]:
-    """Preview or restore files from an export manifest without overwriting later edits."""
+    """Preview or restore files from an export manifest without overwriting later edits.
+
+    Restores overwritten files from their backups, deletes files the export created, and
+    removes directories it created once they are empty. Refuses with `conflict` when an
+    exported file changed after the export.
+    """
     app_path, _ = _assert_app_module(app, module)
     if not re.fullmatch(r"export-[a-f0-9]{32}\.json", rollback_id):
         raise ValueError("Invalid rollback ID")
@@ -1778,7 +1939,7 @@ def rollback_export(
     if not manifest_path.is_file():
         raise ValueError("Export rollback manifest was not found")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if not isinstance(manifest, list) or len(manifest) > 55:
+    if not isinstance(manifest, list) or len(manifest) > _EXPORT_MAX_FILES:
         raise ValueError("Invalid export rollback manifest")
 
     changes = []
@@ -1828,6 +1989,14 @@ def rollback_export(
             backup = _safe_app_file(app_path, backup_root / backup_name)
             _atomic_write(target, backup.read_text(encoding="utf-8"))
             backup.unlink()
+    created_dirs = {
+        _safe_app_file(app_path, app_path / directory)
+        for item in manifest
+        for directory in item.get("created_dirs") or []
+    }
+    for directory in sorted(created_dirs, key=lambda path: len(path.parts), reverse=True):
+        if directory.is_dir() and not any(directory.iterdir()):
+            directory.rmdir()
     manifest_path.unlink()
     if backup_root.is_dir() and not any(backup_root.iterdir()):
         backup_root.rmdir()

@@ -57,7 +57,7 @@ If a stage turns out larger than one session, stop at a clean point (tests passi
 | 01 | [Authentication and transport fixes](stage-01-auth-transport.md) | 00 | done |
 | 02 | [Read validation and atomic updates](stage-02-read-validation.md) | 00 | done |
 | 03 | [Customization tool fixes](stage-03-customization-fixes.md) | 00 | done |
-| 04 | [Native customization export](stage-04-native-export.md) | 03 | todo |
+| 04 | [Native customization export](stage-04-native-export.md) | 03 | done |
 | 05 | [Metadata layer: cache, compact schema, fewer requests](stage-05-metadata-layer.md) | 02 | todo |
 | 06 | [Edit existing DocTypes](stage-06-update-doctype.md) | 05 | todo |
 | 07 | [Site and app sync, portable custom DocTypes](stage-07-app-sync.md) | 04, 06 | todo |

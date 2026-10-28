@@ -155,7 +155,8 @@ def test_fixture_plan_preserves_existing_hooks(tmp_path: Path) -> None:
     assert path == hooks
     assert "existing.json" in content
     assert "MCP FRAPPE MANAGED FIXTURES" in content
-    assert "Custom Field" in content
+    assert "Client Script" in content
+    assert "Custom Field" not in content
 
 
 def test_atomic_write_preserves_existing_mode_and_sets_public_source_mode(tmp_path: Path) -> None:

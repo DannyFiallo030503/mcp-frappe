@@ -50,7 +50,7 @@ Use the same preview-first pattern for creation/deletion. Do not pass `name`, `d
 2. For a standard DocType or an export, verify that the app/module exists below the configured `FRAPPE_APPS_PATH`. Custom Fields and Property Setters don't need a local checkout; pass `module` (and `app`) only if you will export them later.
 3. Preview `create_doctype`, `create_custom_field`, or `set_field_property`.
 4. Confirm only after reviewing names, field types, options, and destination.
-5. To export, call `export_customizations`, review every path, diff, and `preview_id`, then confirm with that ID.
+5. To export, call `export_customizations`, review every path, diff, and `preview_id`, then confirm with that ID. If it returns `nothing_to_export`, there is nothing to confirm. Tell the user that `bench migrate` applies the exported files.
 6. If the export needs reversal, preview `rollback_export` and confirm with its latest `preview_id`.
 7. Inspect the app's Git diff and use the project's normal deployment process. The MCP does not migrate or deploy.
 
@@ -60,4 +60,10 @@ Use the same preview-first pattern for creation/deletion. Do not pass `name`, `d
 - Edit a Custom Field: `update_document` on the `Custom Field` DocType, name `<DocType>-<fieldname>` (for example `Customer-custom_region`). Remove it with `delete_document` on the same record. Both follow the usual preview and `expected_modified` steps.
 - Change a form property (label, hidden, reqd, ...): `set_field_property`. Leave out `property_type`; the tool infers it. Check properties take `0`/`1` or booleans. If the preview says `mode: "update"`, a Property Setter already exists: confirm with the preview's `modified` as `expected_modified`. If a DocType-level preview lists `replaces_field_setters`, Frappe will delete those field-level setters; tell the user before confirming.
 
-The exporter supports DocType JSON, Custom Field, Property Setter, Client Script, and Custom DocPerm fixtures, plus a managed `hooks.py` fixture block. It does not export arbitrary Frappe state or custom app code.
+### Exporting customizations
+
+- `export_customizations(app="my_app", module="My Module", doctypes=["Customer"])` writes `my_app/my_app/my_module/custom/customer.json`, Frappe's native customization file, plus one file per child table of `Customer` that has customizations. `bench migrate` imports it.
+- Pass `with_permissions=True` only when the user wants Custom DocPerms in the app; on migrate they replace the site's Custom DocPerms for that DocType.
+- Pass `apply_module_filter=True` to export only the Custom Fields and Property Setters created with that `module`. Set `module` when you create them if you plan to use this.
+- Client Scripts with a matching `module` go to `my_app/my_app/fixtures/client_script.json`, and only then is `hooks.py` changed.
+- The exporter never writes DocType JSON; Frappe writes standard DocType files itself in developer mode. It doesn't export site-custom DocTypes, arbitrary Frappe state, or app code.
