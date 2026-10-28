@@ -22,6 +22,8 @@ def test_server_registers_expected_tools() -> None:
         "submit_document",
         "cancel_document",
         "run_report",
+        "list_reports",
+        "get_report_filters",
         "create_doctype",
         "update_doctype",
         "delete_doctype",

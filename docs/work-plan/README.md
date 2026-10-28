@@ -64,7 +64,7 @@ If a stage turns out larger than one session, stop at a clean point (tests passi
 | 08 | [Workflows and Notifications](stage-08-workflow-notification.md) | 07 | done |
 | 09 | [Report Builder reports and Workspaces](stage-09-reports-workspaces.md) | 08 | done |
 | 10 | [Read primitives, submit and cancel](stage-10-read-primitives.md) | 05 | done |
-| 11 | [Agent ergonomics: errors, instructions, annotations, toolsets, reports](stage-11-agent-ergonomics.md) | 09, 10 | todo |
+| 11 | [Agent ergonomics: errors, instructions, annotations, toolsets, reports](stage-11-agent-ergonomics.md) | 09, 10 | done |
 | 12 | [Distribution and releases](stage-12-distribution.md) | 11 | todo |
 | 13 | [Compatibility matrix and docs rewrite](stage-13-compat-and-docs.md) | 01–12 | todo |
 
