@@ -23,6 +23,10 @@ def test_server_registers_expected_tools() -> None:
         "diff_doctype",
         "list_app_drift",
         "promote_custom_doctype",
+        "get_workflow",
+        "upsert_workflow",
+        "list_notifications",
+        "upsert_notification",
         "set_role_permissions",
         "create_custom_field",
         "set_field_property",
@@ -156,7 +160,9 @@ def test_fixture_plan_preserves_existing_hooks(tmp_path: Path) -> None:
     hooks.parent.mkdir(parents=True)
     hooks.write_text("fixtures = ['existing.json']\n", encoding="utf-8")
 
-    path, content = standalone._fixture_plan(app_path, ["Example DocType"], "Example Module")
+    path, content = standalone._fixture_plan(
+        app_path, {"Client Script": {"dt": ["Example DocType"], "module": ["Example Module"]}}
+    )
 
     assert path == hooks
     assert "existing.json" in content

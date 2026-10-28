@@ -94,6 +94,34 @@ Things to tell the user before confirming:
 4. Confirm with `confirm=True` and `expected_modified` set to the preview's `modified`. The site needs developer mode.
 5. Check `native_files_complete`, then run `diff_doctype` again: it should say `in_sync`. Show the user the new folder in the Git diff.
 
+## Approval flows and alerts
+
+Workflows and Notifications are configuration records. Use `upsert_workflow` and `upsert_notification`, not `create_document`: they check roles, states, fields, and templates, and keep Python conditions and Jinja code out. Never try to work around a refused condition or template by writing the record with `create_document` or `update_document`; tell the user what was refused and why.
+
+### Add an approval workflow
+
+1. Read the DocType: `get_doctype_schema(doctype="Leave Request")`. Note `is_submittable` (only then can a state have `doc_status` 1 or 2) and the field to set on approval, if any.
+2. Check what exists: `get_workflow(doctype="Leave Request")`. If there is an active Workflow, ask whether to replace it (same `name`) or create another (the new one becomes active and Frappe deactivates the old).
+3. Confirm the role names with the user (`list_documents(doctype="Role", fields=["name"])`). Every `allow_edit` and `allowed` role must exist.
+4. Preview `upsert_workflow` with the states in order (the first one is the draft starting state) and the transitions. Show the user `creates` (masters that will be added), `state_field` (Frappe adds a hidden `workflow_state` Custom Field if needed), `deactivates`, and every `warnings` entry. A state that no transition reaches is refused; add the missing transition.
+5. Confirm with `confirm=True` (plus `expected_modified` from the preview when replacing). If the user can't express a rule with roles and states and asks for a transition condition, explain that conditions are Python that Frappe evaluates and this server doesn't write them; they can add one in Desk.
+6. To ship it with the app: `export_customizations(app=..., module=..., doctypes=["Leave Request"], with_workflows=True)`, review, and confirm with the `preview_id`.
+
+### Notify on submit
+
+1. Read the DocType with `get_doctype_schema` and pick the recipient field: `owner`, a Data field with options Email, or a Link to User. Or use a role.
+2. Write `subject` and `message` as plain text (Markdown or HTML is fine) with `{{ doc.<fieldname> }}` placeholders for real fields, and only the allowed filters (`upper`, `round(2)`, `default("n/a")`, ...). No `{% if %}`, loops, or `frappe.*` calls: the tool refuses them. To send only some documents, use `filters` (for example `{"status": "Approved"}`), never a Python condition.
+3. Preview:
+   ```text
+   upsert_notification(name="Leave Submitted", document_type="Leave Request", event="Submit",
+       channel="Email", recipients=[{"receiver_by_document_field": "leave_approver"}],
+       subject="Leave {{ doc.name }} submitted",
+       message="{{ doc.employee_name }} asks for leave from {{ doc.from_date }} to {{ doc.to_date }}.")
+   ```
+   Check `record` and `warnings` with the user. For an in-app alert instead of email, use `channel="System Notification"`.
+4. Confirm with `confirm=True` (plus `expected_modified` when replacing an existing rule; its `changes` show what moves).
+5. To ship it with the app, preview again with `is_standard=True` and `module` set to a module of the user's app, show `app_files`, and confirm. The site needs developer mode; Frappe writes the files.
+
 ## Customize a site
 
 1. Discover the owning app and module on the remote site.
@@ -116,4 +144,5 @@ Things to tell the user before confirming:
 - Pass `with_permissions=True` only when the user wants Custom DocPerms in the app; on migrate they replace the site's Custom DocPerms for that DocType.
 - Pass `apply_module_filter=True` to export only the Custom Fields and Property Setters created with that `module`. Set `module` when you create them if you plan to use this.
 - Client Scripts with a matching `module` go to `my_app/my_app/fixtures/client_script.json`, and only then is `hooks.py` changed.
+- Pass `with_workflows=True` to also export the DocTypes' Workflows (and the Workflow State and Workflow Action Master records they use) as fixtures. `bench migrate` re-imports them on every run, overwriting site edits; tell the user.
 - The exporter never writes DocType JSON; Frappe writes standard DocType files itself in developer mode. It doesn't export site-custom DocTypes (use `promote_custom_doctype`), arbitrary Frappe state, or app code.

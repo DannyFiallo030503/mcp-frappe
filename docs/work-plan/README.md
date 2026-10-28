@@ -61,7 +61,7 @@ If a stage turns out larger than one session, stop at a clean point (tests passi
 | 05 | [Metadata layer: cache, compact schema, fewer requests](stage-05-metadata-layer.md) | 02 | done |
 | 06 | [Edit existing DocTypes](stage-06-update-doctype.md) | 05 | done |
 | 07 | [Site and app sync, portable custom DocTypes](stage-07-app-sync.md) | 04, 06 | done |
-| 08 | [Workflows and Notifications](stage-08-workflow-notification.md) | 07 | todo |
+| 08 | [Workflows and Notifications](stage-08-workflow-notification.md) | 07 | done |
 | 09 | [Report Builder reports and Workspaces](stage-09-reports-workspaces.md) | 08 | todo |
 | 10 | [Read primitives, submit and cancel](stage-10-read-primitives.md) | 05 | todo |
 | 11 | [Agent ergonomics: errors, instructions, annotations, toolsets, reports](stage-11-agent-ergonomics.md) | 09, 10 | todo |

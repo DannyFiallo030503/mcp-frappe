@@ -114,3 +114,45 @@ def test_list_app_drift_pages_through_an_mcp_session(fake_site, tmp_path, monkey
     assert report["items"] == [
         {"doctype": "Lab Sample", "module": "Lab", "verdict": "missing_on_site"}
     ]
+
+
+def test_upsert_notification_through_an_mcp_session_never_sends_a_condition(fake_site) -> None:
+    fake_site.add_doctype(
+        "Lab Sample",
+        [{"fieldname": "title", "fieldtype": "Data"},
+         {"fieldname": "reviewer", "fieldtype": "Link", "options": "User"}],
+    )
+    fake_site.add("GET", "/api/resource/Notification", [])
+    fake_site.add("POST", "/api/resource/Notification", {"name": "Sample Saved"})
+    arguments = {
+        "name": "Sample Saved",
+        "document_type": "Lab Sample",
+        "event": "Save",
+        "channel": "System Notification",
+        "recipients": [{"receiver_by_document_field": "reviewer"}],
+        "subject": "{{ doc.title | upper }} saved",
+        "message": "Review {{ doc.name }}.",
+        # Not a parameter: FastMCP drops unknown arguments, so it must never reach Frappe.
+        "condition": "doc.title == 'x'",
+        "confirm": True,
+    }
+
+    async def run():
+        async with create_connected_server_and_client_session(
+            standalone.server._mcp_server
+        ) as client:
+            tools = (await client.list_tools()).tools
+            return tools, await client.call_tool("upsert_notification", arguments)
+
+    tools, result = anyio.run(run)
+
+    (tool,) = [tool for tool in tools if tool.name == "upsert_notification"]
+    assert "condition" not in tool.inputSchema["properties"]
+    assert tool.inputSchema["properties"]["event"]["enum"] == [
+        "New", "Save", "Submit", "Cancel", "Value Change", "Days Before", "Days After"
+    ]
+    assert tool.inputSchema["properties"]["channel"]["enum"] == ["Email", "System Notification"]
+    assert not result.isError, result.content
+    (post,) = fake_site.calls_to("POST", "/api/resource/Notification")
+    assert post.json["data"]["condition"] is None
+    assert post.json["data"]["subject"] == "{{ doc.title | upper }} saved"
