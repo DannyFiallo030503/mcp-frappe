@@ -10,6 +10,10 @@ One rule covers both auth modes: `FRAPPE_URL` must use HTTPS unless the host is 
 
 Development networks sometimes reach the site by a container service name such as `http://frontend:8080`. For those, set `FRAPPE_ALLOW_INSECURE_HTTP=YES` (exactly that value). The server then allows plain HTTP to any host and logs one warning to stderr at startup. Use it only on a network you trust; credentials and data travel unencrypted.
 
+## Setup check
+
+`mcp-frappe check` prints the settings it used without their secrets: the auth mode and username, never the API key, secret, or password, and `FRAPPE_URL` reduced to scheme, host, and port so that credentials embedded in the URL stay out. If an error message from the site or the network echoes a configured secret of eight or more characters, the output shows `***` instead. It does not print the `FRAPPE_APPS_PATH` path, only which site apps have a checkout there and whether each is writable. Its output is meant for the user's terminal; review it before pasting it into an issue.
+
 ## Sessions
 
 A failed password login is never cached: the next tool call tries to log in again instead of continuing as Guest.

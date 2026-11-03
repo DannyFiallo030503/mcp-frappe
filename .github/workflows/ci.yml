@@ -25,3 +25,40 @@ jobs:
       - run: uv run pytest -q
       # e2e/ and legacy/ are not lint-clean yet; lint only the package and its tests.
       - run: uv run ruff check frappe_mcp tests
+
+  package:
+    # Build the sdist and wheel, then install the wheel into a clean environment and run it.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - run: uv build
+      - name: Run the installed wheel
+        shell: bash
+        run: |
+          set -euo pipefail
+          wheel=$(ls dist/*.whl)
+          version=$(uvx --isolated --from "$wheel" mcp-frappe --version)
+          echo "$version"
+          [[ "$version" == "mcp-frappe $(sed -n 's/^__version__ = "\(.*\)"$/\1/p' frappe_mcp/__init__.py)" ]]
+          # No FRAPPE_URL here, so check must fail with a readable message and exit 1.
+          if output=$(uvx --isolated --from "$wheel" mcp-frappe check); then
+            echo "check passed without a site"; exit 1
+          fi
+          echo "$output"
+          grep -q "Set FRAPPE_URL" <<<"$output"
+          # Server mode: stdin at EOF, so it exits at once; stdout must stay empty.
+          out=$(uvx --isolated --from "$wheel" mcp-frappe </dev/null)
+          [[ -z "$out" ]]
+      - name: Check the archive contents
+        shell: bash
+        run: |
+          set -euo pipefail
+          if tar tzf dist/*.tar.gz | grep -E '/(legacy|e2e|docs)/'; then
+            echo "unexpected files in the sdist"; exit 1
+          fi
+          if unzip -l dist/*.whl | grep -E ' (legacy|e2e|tests)/'; then
+            echo "unexpected files in the wheel"; exit 1
+          fi

@@ -5,7 +5,8 @@
 ## Documentation
 
 - [README](README.md): install, configuration, capabilities, and links.
-- [Installation](docs/installation-and-configuration.md): Python install, environment, host config, and removal.
+- [Installation](docs/installation-and-configuration.md): `uvx mcp-frappe` install, the `mcp-frappe check` setup check, environment, host config, and removal.
+- [Changelog](CHANGELOG.md): releases, breaking changes, and the 0.x versioning policy.
 - [AI agent guide](docs/ai-agent-guide.md): safe discovery, read, mutation, customization, export, and rollback workflows.
 - [Tool reference](docs/tool-reference.md): current tools, arguments, caps, and unsupported features.
 - [Frappe capability study](docs/frappe-capability-study.md): framework/ERPNext capability inventory, current coverage, visual-equivalence checks, and test strategy.

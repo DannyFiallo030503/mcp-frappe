@@ -303,7 +303,7 @@ def test_bad_toolset_settings_fail_at_startup(tool_registry, env, message) -> No
     tool_registry.setattr(standalone.server, "run", lambda **kwargs: ran.append(kwargs))
 
     with pytest.raises(SystemExit, match=message):
-        standalone.main()
+        standalone.main([])
 
     assert ran == []
     assert len(standalone.server._tool_manager._tools) == sum(
@@ -320,7 +320,7 @@ def test_main_applies_the_toolsets_before_serving(tool_registry) -> None:
         lambda **kwargs: served.append(set(standalone.server._tool_manager._tools)),
     )
 
-    standalone.main()
+    standalone.main([])
 
     assert served == [standalone._TOOLSETS["read"]]
 

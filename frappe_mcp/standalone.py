@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import ast
 import copy
 import difflib
@@ -14,6 +15,7 @@ import os
 import re
 import shutil
 import stat
+import sys
 import tempfile
 import time
 import uuid
@@ -27,6 +29,8 @@ import httpx
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 from pydantic import Field
+
+from frappe_mcp import __version__
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
 _log = logging.getLogger(__name__)
@@ -6235,19 +6239,173 @@ def _apply_toolsets(selected: set[str]) -> None:
                 server.remove_tool(name)
 
 
-def main() -> None:
-    """Run the standalone server using the MCP stdio transport."""
+def _startup_settings() -> set[str]:
+    """Validate the settings read at startup and return the selected toolsets."""
+    _timeout()
+    _meta_ttl()
+    return _selected_toolsets()
+
+
+_INSECURE_HTTP_WARNING = (
+    "FRAPPE_ALLOW_INSECURE_HTTP=YES: credentials may be sent over plain HTTP to "
+    "non-local hosts; use this only on a trusted development network"
+)
+
+
+def _display_url(url: str) -> str:
+    """Return scheme://host[:port] of a URL, dropping any credentials, path, or query."""
+    parsed = urlparse(url)
+    if not parsed.scheme or not parsed.hostname:
+        return "(not a URL)"
+    host = f"[{parsed.hostname}]" if ":" in parsed.hostname else parsed.hostname
     try:
-        _timeout()
-        _meta_ttl()
-        _apply_toolsets(_selected_toolsets())
+        port = parsed.port
+    except ValueError:
+        port = None
+    return f"{parsed.scheme}://{host}" + (f":{port}" if port else "")
+
+
+_REDACT_MIN_CHARS = 8
+
+
+def _redact(text: str) -> str:
+    """Replace every configured secret that appears in text.
+
+    `check` never prints a secret itself; this guards against one echoed in an error
+    message. Values shorter than `_REDACT_MIN_CHARS` are left alone, because replacing them
+    would mangle ordinary words ("admin" inside "Administrator").
+    """
+    for name in ("FRAPPE_API_KEY", "FRAPPE_API_SECRET", "FRAPPE_PASSWORD"):
+        secret = os.environ.get(name) or ""
+        if len(secret) >= _REDACT_MIN_CHARS:
+            text = text.replace(secret, "***")
+    return text
+
+
+def _writable(path: Path) -> bool:
+    return os.access(path, os.W_OK)
+
+
+def _apps_path_check(site_apps: list[str]) -> tuple[bool, str]:
+    """Say whether FRAPPE_APPS_PATH can serve the file-writing tools, without its path."""
+    local = _local_apps(site_apps)
+    if not local["configured"]:
+        return True, "not set; standard DocType creation and file exports are unavailable"
+    if local.get("exists") is False:
+        return False, "FRAPPE_APPS_PATH does not exist or cannot be read"
+    found = local["site_apps_found"]
+    read_only = [app for app in found if not _writable(_app_root(app)[1])]
+    parts = [f"checkouts found: {', '.join(found) or 'none'}"]
+    if local["site_apps_missing"]:
+        parts.append(f"no checkout: {', '.join(local['site_apps_missing'])}")
+    if read_only:
+        parts.append(f"not writable: {', '.join(read_only)}")
+    return bool(found) and not read_only, "; ".join(parts)
+
+
+def _setup_check() -> list[tuple[str, str, str]]:
+    """Run the `check` command's steps; each row is (status, step, detail)."""
+    rows: list[tuple[str, str, str]] = []
+    problems = []
+    for step in (_timeout, _meta_ttl):
+        try:
+            step()
+        except RuntimeError as error:
+            problems.append(str(error))
+    try:
+        toolsets = _selected_toolsets()
+    except RuntimeError as error:
+        problems.append(str(error))
+        toolsets = set()
+    url = os.environ.get("FRAPPE_URL", "")
+    if not url:
+        problems.append("Set FRAPPE_URL to the target site's base URL")
+    target = _display_url(url) if url else "no site URL"
+    if os.environ.get("FRAPPE_SITE"):
+        target += f", site {os.environ['FRAPPE_SITE']}"
+    if not _password_auth():
+        target += ", API key auth"
+    else:
+        target += f", password login as {os.environ.get('FRAPPE_USERNAME', 'Administrator')}"
+    rows.append(("ok" if not problems else "FAIL", "settings", "; ".join([target, *problems])))
+    if _insecure_http_allowed():
+        rows.append(("warn", "transport", _INSECURE_HTTP_WARNING))
+    if problems:
+        return rows
+
+    try:
+        info = get_site_info()
+    except (RuntimeError, ValueError, OSError, httpx.HTTPError) as error:
+        rows.append(("FAIL", "connection", str(error) or type(error).__name__))
+        return rows
+    if info["user"] in (None, "", "Guest"):
+        rows.append(("FAIL", "connection", "the site answered as Guest; check the credentials"))
+        return rows
+    rows.append(("ok", "connection", f"logged in as {info['user']}"))
+    versions = ", ".join(f"{app['app']} {app['version']}" for app in info["apps"])
+    rows.append(("ok", "versions", versions or "the site reported no app versions"))
+    rows.append(("info", "developer mode", "not reported: Frappe has no API for it"))
+    selected = ", ".join(name for name in _TOOLSETS if name in toolsets)
+    if os.environ.get("FRAPPE_MCP_READ_ONLY", "").strip().upper() == "YES":
+        selected += " (read-only mode)"
+    rows.append(("ok", "toolsets", selected))
+    usable, detail = _apps_path_check([app["app"] for app in info["apps"]])
+    rows.append(("ok" if usable else "FAIL", "FRAPPE_APPS_PATH", detail))
+    return rows
+
+
+def _run_setup_check() -> int:
+    """Print the `check` report to stdout and return the exit code: 0 when ready, 1 if not."""
+    try:
+        rows = _setup_check()
+    finally:
+        _reset_session()
+    width = max(len(step) for _, step, _ in rows)
+    lines = [f"mcp-frappe {__version__}"]
+    lines += [f"  {status:<4}  {step:<{width}}  {detail}" for status, step, detail in rows]
+    failed = sum(status == "FAIL" for status, _, _ in rows)
+    lines.append("Ready." if not failed else f"{failed} problem(s) found.")
+    print(_redact("\n".join(lines)))
+    return 1 if failed else 0
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="mcp-frappe",
+        description=(
+            "Standalone MCP server for a Frappe site. With no command it serves MCP over "
+            "stdio; settings come from FRAPPE_* environment variables."
+        ),
+    )
+    parser.add_argument("--version", action="version", version=f"mcp-frappe {__version__}")
+    commands = parser.add_subparsers(dest="command", metavar="command")
+    commands.add_parser(
+        "check",
+        help="check the settings and the connection to the site, then exit",
+        description=(
+            "Read the FRAPPE_* settings, log in, and print the user, app versions, toolsets, "
+            "and whether FRAPPE_APPS_PATH is usable. Exits 0 when ready, 1 otherwise. "
+            "Secrets are never printed."
+        ),
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> None:
+    """Run the `mcp-frappe` command: the stdio server by default, or `check` / `--version`.
+
+    In server mode stdout is the MCP channel, so nothing else is written to it; logs and
+    startup errors go to stderr.
+    """
+    args = _parser().parse_args(sys.argv[1:] if argv is None else argv)
+    if args.command == "check":
+        raise SystemExit(_run_setup_check())
+    try:
+        _apply_toolsets(_startup_settings())
     except RuntimeError as error:
         raise SystemExit(str(error)) from None
     if _insecure_http_allowed():
-        _log.warning(
-            "FRAPPE_ALLOW_INSECURE_HTTP=YES: credentials may be sent over plain HTTP to "
-            "non-local hosts; use this only on a trusted development network"
-        )
+        _log.warning(_INSECURE_HTTP_WARNING)
     server.run(transport="stdio")
 
 

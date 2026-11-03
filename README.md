@@ -30,38 +30,86 @@ The account's Frappe permissions still apply. An Administrator account can do an
 
 ## Install
 
-Install the public package from a checkout:
+The main path is [`uvx`](https://docs.astral.sh/uv/guides/tools/), which runs the published package in its own cached environment, with no clone and no virtualenv to manage:
+
+```bash
+uvx mcp-frappe --version
+```
+
+Until the first PyPI release is out, run it from GitHub instead: `uvx --from git+https://github.com/DannyFiallo030503/mcp-frappe mcp-frappe`. `pipx run mcp-frappe` and `pip install mcp-frappe` work too.
+
+To work on the server itself, use a checkout:
 
 ```bash
 git clone https://github.com/DannyFiallo030503/mcp-frappe.git
 cd mcp-frappe
-uv sync
+uv sync --extra dev
+uv run mcp-frappe --version
 ```
 
-The project entry point is `mcp-frappe`. For a direct Python invocation, use `uv run python -m frappe_mcp.standalone`.
+## Check the setup first
+
+Export the settings in your shell (keep secrets out of shell history and shared files), then run `check`. It reads the settings, logs in, and prints the user, the app versions, the selected toolsets, and whether `FRAPPE_APPS_PATH` is usable. It exits 0 when ready, 1 otherwise, and never prints a key, secret, or password.
+
+```bash
+export FRAPPE_URL=http://127.0.0.1:8000 FRAPPE_SITE=site1.localhost
+export FRAPPE_API_KEY=... FRAPPE_API_SECRET=...
+uvx mcp-frappe check
+```
+
+```text
+mcp-frappe 0.3.0
+  ok    settings          http://127.0.0.1:8000, site site1.localhost, API key auth
+  ok    connection        logged in as Administrator
+  ok    versions          erpnext 16.2.0, frappe 16.33.1, my_app 0.0.1
+  info  developer mode    not reported: Frappe has no API for it
+  ok    toolsets          read, data, customize, developer
+  ok    FRAPPE_APPS_PATH  not set; standard DocType creation and file exports are unavailable
+Ready.
+```
 
 ## Configure an MCP host
 
-The server reads its connection settings from environment variables. Example shape for a host that launches local stdio servers:
+The host launches `uvx mcp-frappe` and passes the settings as environment variables. With no arguments, `mcp-frappe` serves MCP over stdio; it writes nothing else to stdout and logs to stderr.
+
+**Claude Code:**
+
+```bash
+claude mcp add frappe \
+  -e FRAPPE_URL=http://127.0.0.1:8000 \
+  -e FRAPPE_SITE=site1.localhost \
+  -e FRAPPE_API_KEY="$FRAPPE_API_KEY" \
+  -e FRAPPE_API_SECRET="$FRAPPE_API_SECRET" \
+  -e FRAPPE_APPS_PATH=/absolute/path/to/frappe-bench/apps \
+  -- uvx mcp-frappe
+```
+
+This stores the server for the current project in your user configuration (scope `local`). For a shared `.mcp.json` (`-s project`), write `"FRAPPE_API_SECRET": "${FRAPPE_API_SECRET}"` there instead of the value; Claude Code expands it from the environment at launch. Run `/mcp` in Claude Code to see the server's status.
+
+**Claude Desktop** (`claude_desktop_config.json`, opened from Settings → Developer → Edit Config):
 
 ```json
 {
   "mcpServers": {
     "frappe": {
-      "command": "uv",
-      "args": ["--directory", "/absolute/path/to/mcp-frappe", "run", "mcp-frappe"],
+      "command": "uvx",
+      "args": ["mcp-frappe"],
       "env": {
-        "FRAPPE_URL": "http://127.0.0.1:32783",
+        "FRAPPE_URL": "http://127.0.0.1:8000",
         "FRAPPE_SITE": "site1.localhost",
-        "FRAPPE_USERNAME": "Administrator",
-        "FRAPPE_PASSWORD": "${FRAPPE_PASSWORD}"
+        "FRAPPE_API_KEY": "<api key>",
+        "FRAPPE_API_SECRET": "<api secret>"
       }
     }
   }
 }
 ```
 
-Host-specific environment substitution varies. Supply secrets using the host's secret store or process environment; do not replace the placeholder with a password in a shared config file. `FRAPPE_SITE` is optional and is used as the HTTP `Host` header for a multi-site Bench. For non-local targets, use HTTPS and preferably an API key/secret pair.
+Claude Desktop does not expand variables, so the values live in that file; keep it private. If it cannot find `uvx`, use the absolute path that `which uvx` prints.
+
+**Other MCP hosts:** declare a stdio server with command `uvx`, arguments `["mcp-frappe"]`, and the `FRAPPE_*` variables in its environment. From a development checkout, use command `uv` with `["--directory", "/absolute/path/to/mcp-frappe", "run", "mcp-frappe"]`.
+
+`FRAPPE_SITE` is optional and is used as the HTTP `Host` header for a multi-site Bench. For non-local targets, use HTTPS and preferably an API key/secret pair.
 
 For file export, set `FRAPPE_APPS_PATH` to the local Bench `apps` directory visible to the MCP process. Only app/module paths that exist below that directory are writable. When the MCP host runs in a container, mount only the intended app directory and set the path to that mount; the MCP does not need to run inside the Frappe container.
 
@@ -83,6 +131,7 @@ The MCP does not run migrations, restart Bench, create sites, or deploy exported
 - [Frappe capability study and MCP coverage](docs/frappe-capability-study.md) — framework/app capability model, current coverage, visual-equivalence criteria, and test roadmap.
 - [Manual functional verification report](e2e/manual_functional_report.md) — Administrator-driven live checks of DocTypes, field settings, generated files, database state, customizations, and known failures.
 - [Installation and configuration](docs/installation-and-configuration.md)
+- [Changelog](CHANGELOG.md) — releases, breaking changes, and the versioning policy
 - [Tool reference](docs/tool-reference.md)
 - [AI agent guide](docs/ai-agent-guide.md)
 - [Security model](docs/security.md)

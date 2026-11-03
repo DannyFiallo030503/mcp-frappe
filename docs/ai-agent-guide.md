@@ -2,6 +2,7 @@
 
 ## Operating principles
 
+- If no Frappe tools are listed, or the first call fails on settings or login, ask the user to run `mcp-frappe check` (`uvx mcp-frappe check`) in a terminal with the host's environment. It names the failing setting without printing secrets. Do not ask the user to paste a key, secret, or password into the chat.
 - Begin with `get_site_info` (who you are connected as, the Frappe major version, installed apps, and which apps have a local checkout), then `list_doctypes(search=...)` to find the DocType, then `get_doctype_schema`. Do not assume an ERPNext, HRMS, or custom app catalog.
 - Use the target site's naming and field options exactly as returned by Frappe.
 - Request only fields and rows needed. Keep output limits low and narrow filters.
