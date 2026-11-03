@@ -1,92 +1,55 @@
 # Frappe MCP
 
-Frappe MCP is a **standalone Model Context Protocol server**. An MCP host launches it as a local process over `stdio`; it connects to a Frappe site over HTTP using that site's regular API. You do not install this project as a Frappe app, add it to a Bench, or migrate the target site.
+A Model Context Protocol server for **Frappe developers**. Point Claude Code or Claude Desktop at a development site and let it create and change DocTypes, customize ERPNext forms, keep the site and your app's files in sync, and set up workflows, reports, and Workspaces. Every change is previewed before it happens.
 
-It discovers installed apps and DocTypes at runtime, so the same server can work with Frappe Framework, ERPNext, HRMS, official apps, and custom apps. Permissions and validation remain enforced by Frappe's standard REST APIs. Schema exports are written locally into an explicitly configured app directory.
+It runs as a local stdio process and talks to the site only through Frappe's REST API. You don't install it as a Frappe app, add it to a Bench, or migrate anything. Frappe's own permissions and validation apply to every call, and there is no SQL, Python eval, or arbitrary method call.
 
-> **Status:** The standalone transport and core tools are implemented. The previous Frappe app implementation is archived under `legacy/` and is not included in the installable package. See [validation](docs/compatibility-and-validation.md) for completed real-site checks and known limits.
+## What you can ask
 
-## Capabilities
+- "Create a submittable DocType **Lab Sample** in `lab_app`, module Lab, with a title, a customer link, a status select, and a child table of readings."
+- "Add a required **Priority** field after the title on Lab Sample, show it in the list view, and drop the old `legacy_code` field."
+- "On the ERPNext **Customer** form, add a Custom Field *Account Manager* linked to User, make *Territory* mandatory, then export the customizations to `lab_app`."
+- "Has anything drifted between the site and `lab_app`? Show me what `bench migrate` would change for Lab Sample."
+- "I prototyped **Lab Equipment** as a custom DocType on the site. Move it into `lab_app` so it ships with the app."
+- "Add an approval workflow to Lab Sample: Draft → Pending → Approved, approved by Lab Manager."
+- "Send a System Notification to Lab Managers when a Lab Sample is submitted."
+- "Build a **Lab** Workspace with shortcuts to Lab Sample and an *Open Samples* report."
+- "Create three test Lab Samples, submit one, and check the controller set its status."
 
-- Discover apps, modules, DocTypes, fields, schemas, and records from the connected site.
-- Create, update, and delete documents through Frappe's standard resource API, with previews and stale-document checks.
-- Create standard DocTypes with native field definitions, DocType settings, role permissions, and Frappe-generated app files; create Custom Fields and Property Setters through the REST API.
-- Export site customizations into a configured local app tree as Frappe's native `custom/` files, which `bench migrate` applies, with a preview hash, backups, and rollback.
-- Find reports and their filters, and run permitted Query and Script Reports through Frappe's report API.
-- Group tools into toolsets (`read`, `data`, `customize`, `developer`) with `FRAPPE_MCP_TOOLSETS`, or expose only reads with `FRAPPE_MCP_READ_ONLY=YES`. Every tool carries MCP annotations, so a host can run reads freely and ask before writes.
-- Connect to custom apps without maintaining app-specific catalogs.
-
-Frappe remains the source of truth for roles, permissions, validation, workflows, and document lifecycle rules. Tools never execute arbitrary Python or SQL. See the [tool reference](docs/tool-reference.md) for exact operations and limitations.
-
-## Requirements
-
-- Python 3.10 or newer.
-- An MCP-capable host that supports a local `stdio` server.
-- Network access from the MCP process to the target Frappe site.
-- API key credentials, or password login with automatic session renewal. Both require HTTPS except for loopback and `.localhost` hosts, unless `FRAPPE_ALLOW_INSECURE_HTTP=YES` is set for a trusted development network.
-- For file export only: read/write access to the intended local Bench `apps/` directory, configured through `FRAPPE_APPS_PATH`.
-
-The account's Frappe permissions still apply. An Administrator account can do anything that account is allowed to do in Desk, so use it only in a controlled development environment. The MCP does not assume or embed a password.
+The server answers by reading the schema first, returning a preview (fields added, moved, and removed; files Frappe will write; records affected), and acting only after you confirm.
 
 ## Install
-
-The main path is [`uvx`](https://docs.astral.sh/uv/guides/tools/), which runs the published package in its own cached environment, with no clone and no virtualenv to manage:
 
 ```bash
 uvx mcp-frappe --version
 ```
 
-Until the first PyPI release is out, run it from GitHub instead: `uvx --from git+https://github.com/DannyFiallo030503/mcp-frappe mcp-frappe`. `pipx run mcp-frappe` and `pip install mcp-frappe` work too.
+Until the first PyPI release, run it from GitHub: `uvx --from git+https://github.com/DannyFiallo030503/mcp-frappe mcp-frappe`. You need Python 3.10+ and an MCP host that runs local stdio servers.
 
-To work on the server itself, use a checkout:
+## Configure
 
-```bash
-git clone https://github.com/DannyFiallo030503/mcp-frappe.git
-cd mcp-frappe
-uv sync --extra dev
-uv run mcp-frappe --version
-```
-
-## Check the setup first
-
-Export the settings in your shell (keep secrets out of shell history and shared files), then run `check`. It reads the settings, logs in, and prints the user, the app versions, the selected toolsets, and whether `FRAPPE_APPS_PATH` is usable. It exits 0 when ready, 1 otherwise, and never prints a key, secret, or password.
+Create an API key for a user on your development site, export the settings, and check them:
 
 ```bash
 export FRAPPE_URL=http://127.0.0.1:8000 FRAPPE_SITE=site1.localhost
 export FRAPPE_API_KEY=... FRAPPE_API_SECRET=...
+export FRAPPE_APPS_PATH=/absolute/path/to/frappe-bench/apps   # for standard DocTypes and exports
 uvx mcp-frappe check
 ```
 
-```text
-mcp-frappe 0.3.0
-  ok    settings          http://127.0.0.1:8000, site site1.localhost, API key auth
-  ok    connection        logged in as Administrator
-  ok    versions          erpnext 16.2.0, frappe 16.33.1, my_app 0.0.1
-  info  developer mode    not reported: Frappe has no API for it
-  ok    toolsets          read, data, customize, developer
-  ok    FRAPPE_APPS_PATH  not set; standard DocType creation and file exports are unavailable
-Ready.
-```
+`check` logs in and prints the user, app versions, toolsets, and whether `FRAPPE_APPS_PATH` holds the site's apps. It never prints a secret. HTTPS is required except for loopback and `.localhost` hosts.
 
-## Configure an MCP host
-
-The host launches `uvx mcp-frappe` and passes the settings as environment variables. With no arguments, `mcp-frappe` serves MCP over stdio; it writes nothing else to stdout and logs to stderr.
-
-**Claude Code:**
+Then add the server to your host. **Claude Code:**
 
 ```bash
 claude mcp add frappe \
-  -e FRAPPE_URL=http://127.0.0.1:8000 \
-  -e FRAPPE_SITE=site1.localhost \
-  -e FRAPPE_API_KEY="$FRAPPE_API_KEY" \
-  -e FRAPPE_API_SECRET="$FRAPPE_API_SECRET" \
+  -e FRAPPE_URL=http://127.0.0.1:8000 -e FRAPPE_SITE=site1.localhost \
+  -e FRAPPE_API_KEY="$FRAPPE_API_KEY" -e FRAPPE_API_SECRET="$FRAPPE_API_SECRET" \
   -e FRAPPE_APPS_PATH=/absolute/path/to/frappe-bench/apps \
   -- uvx mcp-frappe
 ```
 
-This stores the server for the current project in your user configuration (scope `local`). For a shared `.mcp.json` (`-s project`), write `"FRAPPE_API_SECRET": "${FRAPPE_API_SECRET}"` there instead of the value; Claude Code expands it from the environment at launch. Run `/mcp` in Claude Code to see the server's status.
-
-**Claude Desktop** (`claude_desktop_config.json`, opened from Settings → Developer → Edit Config):
+**Claude Desktop** (`claude_desktop_config.json`):
 
 ```json
 {
@@ -105,44 +68,39 @@ This stores the server for the current project in your user configuration (scope
 }
 ```
 
-Claude Desktop does not expand variables, so the values live in that file; keep it private. If it cannot find `uvx`, use the absolute path that `which uvx` prints.
+Other hosts: a stdio server with command `uvx` and arguments `["mcp-frappe"]`. Password login, shared `.mcp.json` files, containers, and every setting are covered in [installation and configuration](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/docs/installation-and-configuration.md).
 
-**Other MCP hosts:** declare a stdio server with command `uvx`, arguments `["mcp-frappe"]`, and the `FRAPPE_*` variables in its environment. From a development checkout, use command `uv` with `["--directory", "/absolute/path/to/mcp-frappe", "run", "mcp-frappe"]`.
+Standard DocTypes, DocType edits, and file exports need **developer mode** on the site and `FRAPPE_APPS_PATH` pointing at the site's Bench `apps` folder. Site-custom DocTypes, Custom Fields, and records need neither.
 
-`FRAPPE_SITE` is optional and is used as the HTTP `Host` header for a multi-site Bench. For non-local targets, use HTTPS and preferably an API key/secret pair.
+## Toolsets
 
-For file export, set `FRAPPE_APPS_PATH` to the local Bench `apps` directory visible to the MCP process. Only app/module paths that exist below that directory are writable. When the MCP host runs in a container, mount only the intended app directory and set the path to that mount; the MCP does not need to run inside the Frappe container.
+| Toolset | What it does |
+|---|---|
+| `read` | Site info, DocTypes and schemas, records, counts, search, reports, drift checks, workflows, notifications, Workspaces |
+| `data` | Create, update, delete, submit, and cancel records |
+| `customize` | Custom Fields, Property Setters, role permissions, export to app files, rollback |
+| `developer` | Create, edit, delete, and promote DocTypes; Workflows, Notifications, Report Builder reports, Workspaces |
 
-All settings are described in [installation and configuration](docs/installation-and-configuration.md).
+All four are on by default. `FRAPPE_MCP_TOOLSETS=read,customize` narrows them, and `FRAPPE_MCP_READ_ONLY=YES` exposes only `read`. Every tool carries MCP annotations, so a host can run reads freely and ask before writes.
 
-## First-use workflow
+## Safety
 
-1. Call `get_site_info`, then `list_doctypes(search=...)`, to discover the target site.
-2. Call `get_doctype_schema` before constructing filters or write payloads.
-3. Read with `list_documents` (paged with `offset` and `has_more`), `count_documents`, `search_records`, or `get_document`, requesting only needed data.
-4. For a mutation, call the tool with `confirm: false`, review the preview, then confirm with its current `modified` token when required.
-5. For schema changes, preview the operation first and verify the configured app/module ownership.
-6. Call `export_customizations` to preview filesystem changes. Confirm with the returned `preview_id`, then inspect and commit the app files through normal source control.
+- Writes return a preview first. Updates and deletes are bound to the record's `modified` timestamp, and exports to a hash of the preview, so nothing changes if the site moved in between.
+- File writes stay inside the configured app, refuse `frappe` and `erpnext`, back up what they overwrite, and can be rolled back.
+- Fields Frappe evaluates as code (Python conditions, Query and Script Reports, custom HTML blocks) are refused.
+- The server never runs `bench migrate`, restarts Bench, or deploys. Review and commit the generated files yourself.
 
-The MCP does not run migrations, restart Bench, create sites, or deploy exported code.
+Use an Administrator key only on a development site. See the [security model](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/docs/security.md).
 
 ## Docs
 
-- [Frappe capability study and MCP coverage](docs/frappe-capability-study.md) — framework/app capability model, current coverage, visual-equivalence criteria, and test roadmap.
-- [Manual functional verification report](e2e/manual_functional_report.md) — Administrator-driven live checks of DocTypes, field settings, generated files, database state, customizations, and known failures.
-- [Installation and configuration](docs/installation-and-configuration.md)
-- [Changelog](CHANGELOG.md) — releases, breaking changes, and the versioning policy
-- [Tool reference](docs/tool-reference.md)
-- [AI agent guide](docs/ai-agent-guide.md)
-- [Security model](docs/security.md)
-- [Architecture](docs/architecture.md)
-- [Compatibility and validation](docs/compatibility-and-validation.md)
-- [Development guide](docs/development.md)
-- [Contributing](CONTRIBUTING.md)
-- [Security policy](SECURITY.md)
-- [LLM documentation index](llms.txt)
-- [Roadmap](ROADMAP.md)
+- [Tool reference](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/docs/tool-reference.md): every tool, its arguments, and its limits
+- [AI agent guide](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/docs/ai-agent-guide.md): the workflows an agent should follow
+- [Compatibility and validation](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/docs/compatibility-and-validation.md): what has been run on v15 and v16 sites
+- [Architecture](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/docs/architecture.md), [security](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/docs/security.md), [development](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/docs/development.md)
+- [Frappe capability study](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/docs/frappe-capability-study.md): what Frappe offers and what the server covers
+- [Changelog](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/CHANGELOG.md), [roadmap](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/ROADMAP.md), [contributing](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/CONTRIBUTING.md), [security policy](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/SECURITY.md), [LLM index](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/llms.txt)
 
 ## License
 
-MIT. Archived vendored transport code retains its upstream notices; see [UPSTREAM.md](UPSTREAM.md) and [third-party notices](THIRD_PARTY_LICENSES-frappe-mcp.txt).
+MIT. The archived code under `legacy/` keeps its upstream notices; see [UPSTREAM.md](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/UPSTREAM.md) and the [third-party notices](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/THIRD_PARTY_LICENSES-frappe-mcp.txt).

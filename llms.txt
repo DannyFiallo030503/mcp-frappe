@@ -1,28 +1,27 @@
 # Frappe MCP
 
-> Standalone, permission-aware Model Context Protocol server for Frappe sites. Runs as a local MCP stdio process and connects over Frappe HTTP APIs. It is not installed as a Frappe app.
+> Standalone, permission-aware Model Context Protocol server for Frappe developers. Runs as a local MCP stdio process and connects to a development site over Frappe's HTTP API. It creates and edits DocTypes, customizes standard forms, checks site/app drift, exports customizations to app files, and sets up Workflows, Notifications, Report Builder reports, and Workspaces, previewing every change. It is not installed as a Frappe app.
 
 ## Documentation
 
-- [README](README.md): install, configuration, capabilities, and links.
+- [README](README.md): example prompts, install with `uvx mcp-frappe`, configuration, toolsets, and safety.
 - [Installation](docs/installation-and-configuration.md): `uvx mcp-frappe` install, the `mcp-frappe check` setup check, environment, host config, and removal.
+- [AI agent guide](docs/ai-agent-guide.md): discovery, schema-first reads, preview and confirm, DocType edits, drift checks, exports, and rollback.
+- [Tool reference](docs/tool-reference.md): every tool, its arguments, caps, and unsupported features.
+- [Compatibility and validation](docs/compatibility-and-validation.md): the v15/v16 matrix, evidence, and how to run the live runners.
+- [Security](docs/security.md): credentials, native permissions, previews, code fields, and file boundaries.
+- [Architecture](docs/architecture.md): stdio, HTTP authentication, metadata cache, and local app writes.
+- [Frappe capability study](docs/frappe-capability-study.md): Frappe/ERPNext capability inventory and current coverage.
+- [Development](docs/development.md): unit tests, releases, and real local-site acceptance runners.
 - [Changelog](CHANGELOG.md): releases, breaking changes, and the 0.x versioning policy.
-- [AI agent guide](docs/ai-agent-guide.md): safe discovery, read, mutation, customization, export, and rollback workflows.
-- [Tool reference](docs/tool-reference.md): current tools, arguments, caps, and unsupported features.
-- [Frappe capability study](docs/frappe-capability-study.md): framework/ERPNext capability inventory, current coverage, visual-equivalence checks, and test strategy.
-- [Manual functional verification](e2e/manual_functional_report.md): live Administrator checks for DocTypes, generated artifacts, database persistence, customizations, and defects.
-- [Security](docs/security.md): credentials, native permissions, previews, and file boundaries.
-- [Architecture](docs/architecture.md): stdio, HTTP authentication, and local app exports.
-- [Compatibility and validation](docs/compatibility-and-validation.md): tested site stack, evidence, and release limits.
-- [Development](docs/development.md): unit tests and real local-site acceptance scripts.
-- [Roadmap](ROADMAP.md): implemented scope and planned Frappe surfaces.
+- [Roadmap](ROADMAP.md): implemented scope and the backlog.
 - [Security policy](SECURITY.md): vulnerability reporting.
 
 ## Important rules
 
-- Discover target app/module/DocType metadata; do not assume an ERPNext or HRMS catalog.
-- Use Frappe's permissions. Do not bypass denied access.
-- Preview mutations and confirm only after review. Updates/deletes require the preview's exact `modified` token.
-- Export only to an explicitly configured local app root; review the diff and use normal Git/deployment workflows.
-- Do not expose credentials in prompts, config committed to source, logs, or test evidence.
-- Arbitrary SQL/Python and unrestricted method dispatch are not provided.
+- Start with `get_site_info`, then read the DocType schema before building filters or write payloads; do not assume an ERPNext or HRMS catalog.
+- Use Frappe's permissions. A permission denial is final; do not work around it.
+- Preview mutations and confirm only after review. Updates and deletes require the preview's exact `modified` token; exports and rollbacks require the `preview_id`.
+- Write files only into an explicitly configured local app; review the diff and commit through Git. The server never migrates or deploys.
+- Do not expose credentials in prompts, committed config, logs, or test evidence.
+- Arbitrary SQL/Python, unrestricted method dispatch, and fields Frappe evaluates as code are not provided.

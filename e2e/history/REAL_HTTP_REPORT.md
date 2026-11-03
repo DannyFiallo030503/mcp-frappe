@@ -29,7 +29,7 @@ These versions were left unchanged.
 - 80 MCP tool calls covered all 30 tool names returned by `tools/list`.
 - 75 tool calls succeeded. Five returned expected MCP errors for negative checks: stale `expected_modified`, file-size cap, unwhitelisted method, unreadable field, and nonexistent workflow document.
 - Previews, confirmations, subsequent reads, workflow transition, fixture export, and rollback were exercised.
-- Evidence: [`real_http_evidence.jsonl`](./real_http_evidence.jsonl). Runner: [`run_real_http.py`](./run_real_http.py). The evidence contains no credentials.
+- Evidence: [`real_http_evidence.jsonl`](./real_http_evidence.jsonl). Runner: [`run_real_http.py`](../../legacy/e2e/run_real_http.py). The evidence contains no credentials.
 
 The runner needs a Frappe API user with appropriate site permissions and a local JSON credential file containing `api_key` and `api_secret`, selected by `MCP_FRAPPE_CREDENTIALS`. The temporary user and file used for this run were removed afterward.
 

@@ -3,6 +3,9 @@
 This test changes the development site and app files temporarily. It is
 restricted to loopback .localhost sites, requires explicit opt-in, and attempts
 to roll back exports and delete the temporary Custom Field in a finally block.
+
+Set FRAPPE_ALLOW_CUSTOMIZATION_TEST=YES, FRAPPE_APPS_PATH, and FRAPPE_TEST_APP and
+FRAPPE_TEST_MODULE (a disposable test app that owns at least one DocType).
 """
 
 from __future__ import annotations
@@ -17,6 +20,10 @@ from urllib.parse import urlparse
 
 from mcp import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
+
+# The disposable test app and module the runner writes to (never frappe or erpnext).
+APP = os.environ.get("FRAPPE_TEST_APP", "")
+MODULE = os.environ.get("FRAPPE_TEST_MODULE", "")
 
 
 def value(result):
@@ -114,6 +121,8 @@ async def run() -> dict:
         raise RuntimeError("Customization acceptance is restricted to loopback .localhost sites")
     if not os.environ.get("FRAPPE_APPS_PATH"):
         raise RuntimeError("Set FRAPPE_APPS_PATH to the local Bench apps directory")
+    if not (APP and MODULE) or APP in {"frappe", "erpnext"}:
+        raise RuntimeError("Set FRAPPE_TEST_APP and FRAPPE_TEST_MODULE to a disposable test app")
 
     root = Path(__file__).resolve().parents[1]
     params = StdioServerParameters(
@@ -130,8 +139,8 @@ async def run() -> dict:
                 await session.call_tool(
                     "list_doctypes",
                     {
-                        "app": "erp_app",
-                        "module": "CubaZone",
+                        "app": APP,
+                        "module": MODULE,
                         "limit": 1,
                     },
                 )
@@ -150,8 +159,8 @@ async def run() -> dict:
                     await session.call_tool(
                         "create_custom_field",
                         {
-                            "app": "erp_app",
-                            "module": "CubaZone",
+                            "app": APP,
+                            "module": MODULE,
                             "doctype": doctype,
                             "field": {
                                 "fieldname": fieldname,
@@ -167,8 +176,8 @@ async def run() -> dict:
                     await session.call_tool(
                         "create_custom_field",
                         {
-                            "app": "erp_app",
-                            "module": "CubaZone",
+                            "app": APP,
+                            "module": MODULE,
                             "doctype": doctype,
                             "field": {
                                 "fieldname": fieldname,
@@ -184,8 +193,8 @@ async def run() -> dict:
                     raise AssertionError("Frappe did not return the Custom Field name")
 
                 property_data = {
-                    "app": "erp_app",
-                    "module": "CubaZone",
+                    "app": APP,
+                    "module": MODULE,
                     "doctype": doctype,
                     "fieldname": fieldname,
                     "property": "label",
@@ -216,8 +225,8 @@ async def run() -> dict:
                     await session.call_tool(
                         "export_customizations",
                         {
-                            "app": "erp_app",
-                            "module": "CubaZone",
+                            "app": APP,
+                            "module": MODULE,
                             "doctypes": [doctype],
                         },
                     )
@@ -231,8 +240,8 @@ async def run() -> dict:
                     await session.call_tool(
                         "export_customizations",
                         {
-                            "app": "erp_app",
-                            "module": "CubaZone",
+                            "app": APP,
+                            "module": MODULE,
                             "doctypes": [doctype],
                             "confirm": True,
                             "expected_preview": export_preview["preview_id"],
@@ -248,14 +257,14 @@ async def run() -> dict:
                 rollback_preview = await read_tool(
                     session,
                     "rollback_export",
-                    {"app": "erp_app", "module": "CubaZone", "rollback_id": rollback_id},
+                    {"app": APP, "module": MODULE, "rollback_id": rollback_id},
                 )
                 rolled = value(
                     await session.call_tool(
                         "rollback_export",
                         {
-                            "app": "erp_app",
-                            "module": "CubaZone",
+                            "app": APP,
+                            "module": MODULE,
                             "rollback_id": rollback_id,
                             "expected_preview": rollback_preview["preview_id"],
                             "confirm": True,
@@ -264,6 +273,9 @@ async def run() -> dict:
                 )
                 rolled_back = bool(rolled.get("rolled_back"))
 
+                setter_deleted = await delete_if_present(
+                    session, "Property Setter", property_setter_name
+                )
                 field_deleted = await delete_if_present(
                     session, "Custom Field", custom_field_name
                 )
@@ -281,6 +293,7 @@ async def run() -> dict:
                     "export_preview_and_confirm": True,
                     "native_custom_file_export": True,
                     "rollback_preview_and_confirm": rolled_back,
+                    "temporary_property_setter_deleted": setter_deleted,
                     "temporary_custom_field_deleted": field_deleted,
                     "field_absent_from_schema": absent,
                     "exported_file_count": len(exported.get("files", [])),
@@ -291,14 +304,14 @@ async def run() -> dict:
                         preview = await read_tool(
                             session,
                             "rollback_export",
-                            {"app": "erp_app", "module": "CubaZone", "rollback_id": rollback_id},
+                            {"app": APP, "module": MODULE, "rollback_id": rollback_id},
                         )
                         value(
                             await session.call_tool(
                                 "rollback_export",
                                 {
-                                    "app": "erp_app",
-                                    "module": "CubaZone",
+                                    "app": APP,
+                                    "module": MODULE,
                                     "rollback_id": rollback_id,
                                     "expected_preview": preview["preview_id"],
                                     "confirm": True,

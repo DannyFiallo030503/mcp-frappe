@@ -18,7 +18,7 @@ The MCP server runs as an independent Python process launched by the MCP host. I
 | `frappe_mcp/__init__.py` | `__version__`, the only version source (`pyproject.toml` reads it through hatch's dynamic version) |
 | `frappe_mcp/standalone.py` | `mcp-frappe` command line (`main()`), MCP stdio server, HTTP authentication, tools, bounded inputs, and optional local exports |
 | `legacy/` | Previous Frappe app and transport source retained for reference; excluded from the installable package |
-| `e2e/` | Standalone acceptance runners/evidence and the historical report from the old hosted implementation |
+| `e2e/` | Live-site acceptance runners over MCP stdio; `e2e/history/` holds earlier reports and evidence, including the old hosted implementation's |
 | `docs/` | User, agent, security, and compatibility documentation |
 
 ## Command line

@@ -80,6 +80,8 @@ and setting up configuration records. It covers work-plan stages 00–12.
   never retried.
 - Write paths that can make a developer-mode Bench reload its web worker check the site's
   state after a dropped connection instead of reporting a failure.
+- The README (also the PyPI page) starts with example developer prompts and uses absolute
+  links; the compatibility page is a v15/v16 matrix that links each cell to its evidence.
 
 ### Fixed
 
