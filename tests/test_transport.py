@@ -157,7 +157,7 @@ def test_insecure_opt_in_logs_one_warning_at_startup(monkeypatch, caplog) -> Non
     monkeypatch.setattr(standalone.server, "run", lambda transport: runs.append(transport))
 
     with caplog.at_level(logging.WARNING, logger=standalone.__name__):
-        standalone.main()
+        standalone.main([])
 
     warnings = [record for record in caplog.records if record.levelno == logging.WARNING]
     assert len(warnings) == 1
@@ -171,7 +171,7 @@ def test_strict_default_logs_no_warning_at_startup(monkeypatch, caplog) -> None:
     monkeypatch.setattr(standalone.server, "run", lambda transport: None)
 
     with caplog.at_level(logging.WARNING, logger=standalone.__name__):
-        standalone.main()
+        standalone.main([])
 
     assert caplog.records == []
 
@@ -190,7 +190,7 @@ def test_invalid_timeout_stops_startup(monkeypatch) -> None:
     monkeypatch.setattr(standalone.server, "run", lambda transport: pytest.fail("server ran"))
 
     with pytest.raises(SystemExit, match="FRAPPE_TIMEOUT must be a positive number"):
-        standalone.main()
+        standalone.main([])
 
 
 def test_valid_timeout_is_used(site, monkeypatch) -> None:

@@ -1,0 +1,62 @@
+name: Release
+
+# Builds the sdist and wheel and publishes them to PyPI with trusted publishing (no API token).
+#
+# Only a manual run is enabled: Actions -> Release -> Run workflow, choosing a `v*` tag as the
+# ref. To publish on every pushed tag instead, uncomment the `push` trigger below. Before the
+# first run, set up once:
+#   1. On PyPI, a pending trusted publisher for project `mcp-frappe`: owner
+#      `DannyFiallo030503`, repository `mcp-frappe`, workflow `release.yml`, environment `pypi`.
+#   2. In this repository's settings, an environment named `pypi` (optionally with required
+#      reviewers, so each publish waits for approval).
+# A release to PyPI is public and cannot be replaced: a version number can never be reused.
+
+on:
+  workflow_dispatch:
+  # push:
+  #   tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - name: Tag matches the package version
+        shell: bash
+        run: |
+          version=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' frappe_mcp/__init__.py)
+          if [[ "${GITHUB_REF_NAME}" != "v${version}" ]]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match __version__ ${version}"; exit 1
+          fi
+      - run: uv sync --extra dev --locked
+      - run: uv run pytest -q
+      - run: uv build
+      - name: Run the installed wheel
+        shell: bash
+        run: uvx --isolated --from "$(ls dist/*.whl)" mcp-frappe --version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/mcp-frappe/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1

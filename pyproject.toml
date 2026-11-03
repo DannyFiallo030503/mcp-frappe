@@ -1,17 +1,43 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [project]
 name = "mcp-frappe"
-version = "0.2.0"
-description = "Standalone MCP server for connecting to Frappe sites over HTTP"
+dynamic = ["version"]
+description = "Standalone MCP server for Frappe developers: DocTypes, customizations, and app sync over HTTP"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Dennis Fiallo" }, { name = "Danny Fiallo" }]
 requires-python = ">=3.10"
+keywords = ["mcp", "model-context-protocol", "frappe", "erpnext", "doctype", "claude", "llm"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Software Development :: Code Generators",
+  "Topic :: Software Development :: Libraries :: Application Frameworks",
+]
 dependencies = [
   "httpx>=0.27,<1.0",
   "mcp>=1.26,<2.0",
   "pydantic>=2.11,<3.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/DannyFiallo030503/mcp-frappe"
+Documentation = "https://github.com/DannyFiallo030503/mcp-frappe/tree/main/docs"
+Repository = "https://github.com/DannyFiallo030503/mcp-frappe"
+Issues = "https://github.com/DannyFiallo030503/mcp-frappe/issues"
+Changelog = "https://github.com/DannyFiallo030503/mcp-frappe/blob/main/CHANGELOG.md"
 
 [project.scripts]
 mcp-frappe = "frappe_mcp.standalone:main"
@@ -19,8 +45,14 @@ mcp-frappe = "frappe_mcp.standalone:main"
 [project.optional-dependencies]
 dev = ["pytest>=8.0,<9.0", "ruff>=0.11,<1.0"]
 
+[tool.hatch.version]
+path = "frappe_mcp/__init__.py"
+
 [tool.hatch.build.targets.wheel]
 packages = ["frappe_mcp"]
+
+[tool.hatch.build.targets.sdist]
+only-include = ["frappe_mcp", "tests", "README.md", "CHANGELOG.md", "LICENSE"]
 
 [tool.ruff]
 line-length = 100

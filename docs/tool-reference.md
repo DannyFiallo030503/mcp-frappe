@@ -2,6 +2,8 @@
 
 All tools execute in the standalone MCP process and use the configured Frappe HTTP session. Native Frappe permissions apply to every remote call. With password auth, an expired session is renewed and the rejected call retried once without any action from the caller; a real permission denial is returned unchanged. List tools cap result sizes; mutation tools preview before acting unless noted.
 
+Before a host lists any tool, `mcp-frappe check` (a command, not a tool) tests the same settings and the login from a terminal; see [installation and configuration](installation-and-configuration.md#command-line).
+
 ## Toolsets, read-only mode, and annotations
 
 Tools are grouped into four toolsets. All four are on by default; `FRAPPE_MCP_TOOLSETS` (comma-separated) narrows the list, and the server removes the other tools at startup, so the host never sees them.

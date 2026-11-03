@@ -15,10 +15,15 @@ The MCP server runs as an independent Python process launched by the MCP host. I
 
 | Path | Responsibility |
 |---|---|
-| `frappe_mcp/standalone.py` | MCP stdio entry point, HTTP authentication, tools, bounded inputs, and optional local exports |
+| `frappe_mcp/__init__.py` | `__version__`, the only version source (`pyproject.toml` reads it through hatch's dynamic version) |
+| `frappe_mcp/standalone.py` | `mcp-frappe` command line (`main()`), MCP stdio server, HTTP authentication, tools, bounded inputs, and optional local exports |
 | `legacy/` | Previous Frappe app and transport source retained for reference; excluded from the installable package |
 | `e2e/` | Standalone acceptance runners/evidence and the historical report from the old hosted implementation |
 | `docs/` | User, agent, security, and compatibility documentation |
+
+## Command line
+
+`main(argv)` parses the arguments with `argparse`. With no command it validates the startup settings (`_startup_settings()`: timeout, metadata TTL, toolsets), removes the unselected toolsets, and runs `server.run(transport="stdio")`. In that mode stdout carries only MCP messages; the insecure-HTTP warning and other logs go to stderr through `logging`, and a bad setting exits through `SystemExit` with a one-line message on stderr. `--version` prints `mcp-frappe <__version__>`. `check` runs `_setup_check()`: the same settings checks, then `get_site_info()` for the login, versions, and `FRAPPE_APPS_PATH` (plus a writability check of each found app package), printed as one status row per step. It prints `FRAPPE_URL` as `scheme://host[:port]` only, and `_redact()` replaces any configured key, secret, or password of eight or more characters in the output, in case an error message echoes one.
 
 ## Tools, toolsets, and errors
 
