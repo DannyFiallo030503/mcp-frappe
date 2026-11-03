@@ -1,30 +1,80 @@
 # Compatibility and validation
 
-## Standalone server
+What has been run against a real Frappe site, on which version, and where the evidence is. Unit tests (`uv run pytest -q`, on Python 3.10 and 3.12 in CI) cover every tool against a fake site built from Frappe v16.33.1's source; this page is about live sites.
 
-The standalone MCP server was exercised through its real MCP stdio transport against the existing Aspire-managed development site on **2026-10-19**, using `Administrator` for the requested manual operations. Credentials are not included in evidence. The connected stack was Frappe 15.96.0, ERPNext 15.96.1, HRMS 15.60.0, Cuba 14.3.7, and erp_app 0.0.1.
+## Matrix
 
-The [manual functional report](../e2e/manual_functional_report.md) covers real MCP calls as Administrator, broad DocType/field/property creation, generated files and database checks, child rows, tree links, role permissions, Custom Fields, Property Setters, record CRUD, export/rollback, cleanup, and the failures found. The redacted [DocType matrix evidence](../e2e/doctype_matrix_evidence.json), [acceptance report](../e2e/standalone_real_http_report.md), and [evidence summary](../e2e/standalone_real_http_evidence.json) cover the scripted matrix and smoke/mutation/customization checks. The test runners are in `e2e/run_standalone_*.py`.
+Each cell links to the redacted evidence for that run, or says **not tested**. "0.2.0" means the run used the server as it was on 2026-10-16/19, before the work-plan stages that changed most tool contracts. Treat those cells as history: the paths passed then, and the current code has not been re-run on a live site yet.
 
-The mutation, customization, and DocType-matrix acceptance runners are opt-in and refuse non-loopback targets. They create unique temporary data and delete records/metadata through Frappe; the customization runner also restores exported app files and consumes its backup manifest. Frappe leaves physical SQL tables after DocType deletion, so inspect and remove only verified-empty test tables separately. The manual matrix cleanup confirmed zero remaining `MCP Matrix` metadata, Single values, or tables, and the `erp_app` Git working tree was clean.
+| Area | Tools | Frappe v15 (15.96, ERPNext 15.96) | Frappe v16 |
+|---|---|---|---|
+| Setup check | `mcp-frappe check` | not tested | not tested |
+| Discovery and schema | `list_installed_apps`, `list_doctypes`, `get_doctype_schema` | 0.2.0, Administrator: passed ([smoke](../e2e/history/standalone_real_http_evidence.json)) | not tested |
+| Site information | `get_site_info` | not tested | not tested |
+| Record reads | `list_documents`, `get_document` | 0.2.0, Administrator: passed ([smoke](../e2e/history/standalone_real_http_evidence.json)) | not tested |
+| Counts and search | `count_documents`, `search_records` | not tested | not tested |
+| Record writes | `create_document`, `update_document`, `delete_document` | 0.2.0, Administrator: passed on ToDo, stale tokens refused ([mutation](../e2e/history/standalone_real_http_evidence.json)) | not tested |
+| Submit and cancel | `submit_document`, `cancel_document` | not tested | not tested |
+| Reports | `list_reports`, `get_report_filters`, `run_report` | `run_report` 0.2.0, Administrator: passed ([smoke](../e2e/history/standalone_real_http_evidence.json)); the other two not tested | not tested |
+| DocType creation | `create_doctype` (standard and site-custom) | 0.2.0, Administrator: passed for regular, child, Single, Tree, submittable, Virtual, and site-custom, with all 43 field types ([matrix](../e2e/history/doctype_matrix_evidence.json), [manual report](../e2e/history/manual_functional_report.md)) | not tested |
+| DocType edits and deletion | `update_doctype`, `delete_doctype` | not tested | not tested |
+| Site and app sync | `diff_doctype`, `list_app_drift`, `promote_custom_doctype` | not tested | not tested |
+| Custom Fields and Property Setters | `create_custom_field`, `set_field_property` | 0.2.0, Administrator: passed, 43 field types and 15 properties ([matrix](../e2e/history/doctype_matrix_evidence.json)) | not tested |
+| Role permissions | `set_role_permissions` | 0.2.0, Administrator: passed for one role ([manual report](../e2e/history/manual_functional_report.md)) | not tested |
+| Customization export and rollback | `export_customizations`, `rollback_export` | 0.2.0 fixture format: passed ([customization](../e2e/history/standalone_real_http_evidence.json)); the native `custom/` format (current) not tested | not tested |
+| Workflows and Notifications | `get_workflow`, `upsert_workflow`, `list_notifications`, `upsert_notification` | not tested | not tested |
+| Reports and Workspaces | `upsert_report`, `get_workspace`, `upsert_workspace` | not tested | not tested |
 
-Manual DocType checks confirmed representative native files and database behavior, but exposed important defects: Single DocType files could be written without a persisted DocType row; Frappe's autoreloader can disconnect the MCP after writes, leaving an uncertain result; and delete left an empty physical table. Two further defects found in that run are now fixed: `get_document` always returns `docstatus`, and generated-file writes (DocType creation and exports) refuse the `frappe` and `erpnext` apps. The manual report records cleanup and remaining gaps. This does not establish visual equality against Desk, compatibility with every Frappe version/custom app, or ERPNext end-to-end business process coverage. The historical [HTTP acceptance report](../e2e/REAL_HTTP_REPORT.md) documents the former Frappe-hosted implementation and is retained for migration history; it is not evidence for the standalone server.
+All runs so far used Administrator. A limited-user run (a temporary user with only `Sales User`, running the read-only smoke runner) has not happened; a column for it will be added when it does. Until then, which read tools work for a non-System-Manager user is known only from Frappe's source (see [tool reference](tool-reference.md#metadata-and-who-can-use-the-record-tools)).
 
-For the intended Frappe + ERPNext minimum, generic-app contract, exact current tool coverage, missing surfaces, and the proposed clean-site/version matrix, see the [Frappe capability study](frappe-capability-study.md). The current evidence is a v15 development site, not a clean-site or v16 compatibility claim.
+## Filling in a cell
 
-## Current boundaries
+The runners in `e2e/` launch the server over real MCP stdio, as a host would. Run them only on a disposable development site on a loopback or `.localhost` host, in developer mode, with Frappe, ERPNext, and a disposable test app under `FRAPPE_APPS_PATH`. Set the connection variables from [installation and configuration](installation-and-configuration.md), then:
 
-- Read and core document operations use standard Frappe REST APIs.
-- Reports use Frappe's Query Report endpoint (`run_report`), which returns no rows for Report Builder reports.
-- `list_reports` relies on the `Report` read permission that Frappe v16 gives the `Desk User` role; on other versions, check that the connected user can list `Report`. `get_report_filters` uses `frappe.desk.query_report.get_script` as of v16.33.1.
-- DocType metadata comes from Frappe's `frappe.desk.form.load.getdoctype`, so Frappe itself merges Custom Fields and Property Setters and orders the fields (checked against the v16.33.1 source: `Meta.process` calls `add_custom_fields`, `apply_property_setters`, and `sort_fields`). Record tools no longer need System Manager to validate fields; this has not yet been checked live as a non-System-Manager user.
-- App export writes Frappe's native module customization files (`<module>/custom/<doctype>.json`, the format of Frappe v16.33.1's `export_customizations`) and Client Script fixtures in `<app>/fixtures/client_script.json` with a managed `hooks.py` block. It backs up overwritten files and supports guarded rollback. That `bench migrate` re-imports an exported Custom Field has not yet been checked on a live site.
-- `update_doctype` and `delete_doctype` follow Frappe v16.33.1's source: the developer-mode check in `DocType.validate`, child-row sync in `Document.update_child_table`, `on_update` exporting the JSON, the DocType branch of `frappe.delete_doc` (no link check, table kept, folder removed in developer mode), and Customize Form's `ALLOWED_FIELDTYPE_CHANGE`. Neither has been run against a live site yet, and v15 was not compared.
-- `diff_doctype`, `list_app_drift`, and `promote_custom_doctype` follow Frappe v16.33.1's source: `import_file_by_path` (a DocType JSON is re-imported whenever its MD5 differs from `migration_hash`), `export_doc`/`before_export`/`strip_default_fields` (the normalization), `sync_customizations`, and `DocType.on_update` (export and boilerplate when `custom=0` in developer mode). None has been run against a live site yet, and v15 was not compared.
-- `get_workflow`, `upsert_workflow`, `list_notifications`, `upsert_notification`, and Workflow fixture export follow Frappe v16.33.1's source: `Workflow.validate`/`on_update` (`set_active`, `validate_docstatus`, the state Custom Field, default states), `Notification.validate`/`on_update` (`export_module_json` for standard rules, `validate_standard`), `create_system_notification` (alert text from `notification_message`), Jinja's `SandboxedEnvironment` with Frappe's `int`/`str`/`flt`/`json`/`len` filters, `export_json`, and `import_doc` (fixtures imported with `ignore_links` and `force`). None has been run against a live site yet, and v15 was not compared.
-- `upsert_report`, `get_workspace`, and `upsert_workspace` follow Frappe v16.33.1's source: `Report.validate`/`on_update`/`run_standard_report`, `reportview.save_report` and `get_list`, the Report view's saved settings (`report_view.js`, `group_by.js`, `sort_selector.js`), `Workspace.validate`/`on_update`, the Workspace block editor (`views/workspace/blocks`), and `validate_route_conflict`. None has been run against a live site yet, and v15 was not compared.
-- `list_documents` paging and `or_filters`, `count_documents`, `search_records`, `get_site_info`, `submit_document`, and `cancel_document` follow Frappe v16.33.1's source: `frappe.client.get_list` (`limit_start`, `or_filters`), `frappe.client.get_count`, `frappe.desk.search.search_link` and `build_for_autosuggest`, `frappe.utils.change_log.get_versions`, `frappe.auth.get_logged_user`, `frappe.client.submit` (rebuilds the document from the posted dict, so `check_if_latest` compares `modified`) and `frappe.client.cancel` (no `modified`), `Document.validate_workflow` and `set_workflow_state_on_action`, and `FormMeta.load_workflows`. Developer mode is only in the Desk page's boot data (`boot.load_conf_settings`, rendered by `www/desk.py`); no whitelisted method returns it. None has been run against a live site yet, and v15 was not compared.
-- Applying workflow actions to documents, amend, rename, file download/upload, print rendering, translations, private Workspaces, user-role membership/User Permissions, and arbitrary app-specific methods remain outside this standalone release.
-- File writes require a local app checkout and `FRAPPE_APPS_PATH`. Standard DocType writes can cause a development Bench to reload its web worker and disconnect the MCP request even when some DB/filesystem changes succeeded. Reconcile site and source state before retrying; this behavior is a known correctness issue, not a successful-operation guarantee.
+```bash
+export FRAPPE_TEST_APP=<test app> FRAPPE_TEST_MODULE=<one of its modules>
+uv run python e2e/run_standalone_smoke.py                                                   # read-only
+FRAPPE_ALLOW_MUTATION_TEST=YES uv run python e2e/run_standalone_mutation_acceptance.py
+FRAPPE_ALLOW_CUSTOMIZATION_TEST=YES uv run python e2e/run_standalone_customization_acceptance.py
+FRAPPE_ALLOW_DOCTYPE_MATRIX=YES uv run python e2e/run_standalone_doctype_matrix.py
+FRAPPE_ALLOW_DEVELOPER_FLOW_TEST=YES uv run python e2e/run_standalone_developer_flow.py
+```
 
-Validate every new Frappe release line or unusual app combination on a disposable site before relying on it.
+| Runner | Matrix rows it fills |
+|---|---|
+| `run_standalone_smoke.py` | Discovery and schema, site information, record reads, `run_report` (needs ERPNext); with the test app set, previews of DocType creation, customization, and export |
+| `run_standalone_mutation_acceptance.py` | Record writes |
+| `run_standalone_customization_acceptance.py` | Custom Fields and Property Setters, customization export and rollback |
+| `run_standalone_doctype_matrix.py` | DocType creation, Custom Fields and Property Setters (every field type and variant) |
+| `run_standalone_developer_flow.py` | DocType creation, edits and deletion, site and app sync, customization export and rollback, submit and cancel, Workflows and Notifications, reports and Workspaces |
+
+The developer flow creates a child table and a submittable DocType in the test app and checks that `diff_doctype` reports `in_sync`. It then edits the DocType with `update_doctype` and checks the app JSON and `diff_doctype` again. Next it adds a Custom Field to `ToDo` (`FRAPPE_TEST_CUSTOMIZE_DOCTYPE` picks another `frappe` DocType), exports it, and rolls the export back. It promotes a site-custom DocType into the app, then creates, submits, cancels, and deletes a document. Finally it adds a Workflow, a Notification, a Report Builder report, and a Workspace, removes everything, and checks that the test module's files and `list_app_drift` match their state before the run. It needs Administrator (deleting standard DocTypes requires it). It prints JSON with the MCP version and commit, the site's app versions, whether Frappe wrote standard files (which shows developer mode was on), and `pass`, `fail`, or `skipped` per area, and exits non-zero when anything failed.
+
+Save each runner's output as `e2e/evidence/<date>-v<major>-<runner>.json`. Before committing it, read it for hostnames other than placeholders or `.localhost`, credentials, and record values (the runners print none, but a site's app list can name private apps). Then update the matrix cell with the version, the role, and the link.
+
+## Known issues from the 0.2.0 runs
+
+The [manual report](../e2e/history/manual_functional_report.md) found these on v15. Each has a change since then, but none has been re-checked live:
+
+- A Single DocType's files could be written without a persisted DocType row. `create_doctype` now checks that Frappe saved the record and removes the partial folder when it didn't.
+- Frappe's autoreloader can drop the MCP request after a standard DocType write, leaving the result uncertain. The write tools now wait for the site and re-read what was saved (`reconciled_after_server_reload`) instead of assuming failure.
+- Deleting a DocType leaves its database table. This is Frappe's behavior; `delete_doctype`'s preview says so (`frappe_keeps`).
+- `get_document` omitted `docstatus`, and exports could target `frappe` or `erpnext`. Both are fixed and unit-tested.
+
+## Checked against Frappe's source, not yet on a site
+
+Every tool added after 0.2.0 follows Frappe v16.33.1's source, as recorded in each work-plan stage's handoff in [docs/work-plan](work-plan/README.md). v15 was not compared. The behaviors a live run most needs to confirm:
+
+- **Metadata for non-System-Manager users.** `get_doctype_schema` and the record tools read `frappe.desk.form.load.getdoctype`, which any logged-in user may call (Frappe merges Custom Fields and Property Setters and orders the fields).
+- **Developer-mode saves.** `update_doctype` and `promote_custom_doctype` rely on `DocType.on_update` exporting the JSON and boilerplate. `delete_doctype` relies on the DocType branch of `frappe.delete_doc` (no link check, table kept, folder removed in developer mode).
+- **Drift verdicts.** `diff_doctype` and `list_app_drift` rely on `import_file_by_path` (a DocType JSON is re-imported when its MD5 differs from `migration_hash`) and on `export_doc`'s normalization. Whether a freshly promoted or edited DocType compares `in_sync` against a real REST record is the open question; the developer flow checks it.
+- **Customization export.** The native `<module>/custom/<doctype>.json` follows Frappe v16.33.1's `export_customizations`. That `bench migrate` re-imports an exported Custom Field has not been checked.
+- **Configuration records.** Workflows (`set_active`, `validate_docstatus`, the state Custom Field), Notifications (`export_module_json` for standard rules, the sandboxed Jinja filters), Report Builder settings (`reportview.save_report`, `get_list`), and Workspaces (`Workspace.validate`, the block editor's `content`, `validate_route_conflict`). How Frappe normalizes `doc_status` and `allow_self_approval` on read is unconfirmed.
+- **Reads and lifecycle.** `frappe.client.get_list` paging and `or_filters`, `get_count`, `search_link`, `get_versions`, `frappe.client.submit` (which rebuilds the document, so its timestamp check applies) and `frappe.client.cancel`. v15's `get_versions` and `search_link` may differ.
+- **Reports.** `list_reports` relies on the `Report` read permission v16 gives `Desk User`; on v15, check the connected user can list `Report`. `run_report` returns no rows for Report Builder reports; `upsert_report` samples those through `reportview.get_list`.
+
+## Boundaries
+
+- Applying workflow actions to documents, amend, rename, file upload and download, print rendering, translations, private Workspaces, User Permissions, and app-specific methods are not available; see the [roadmap](../ROADMAP.md).
+- File writes need a local app checkout under `FRAPPE_APPS_PATH` that is the site's own Bench `apps` folder. A developer-mode Bench reloads its web worker after many of these writes; reconcile the site and the files before retrying anything a tool reported as uncertain.
+- Validate every new Frappe release line, or an unusual app combination, on a disposable site before relying on it.

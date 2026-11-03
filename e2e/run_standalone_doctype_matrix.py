@@ -5,6 +5,9 @@ stdio transport. It is limited to loopback ``.localhost`` sites and deletes
 records, Custom Fields, Property Setters, and DocType metadata through Frappe.
 Frappe leaves physical tables after DocType deletion; a separate database
 cleanup may drop only verified-empty ``tabMCP Matrix ...`` tables.
+
+Set FRAPPE_ALLOW_DOCTYPE_MATRIX=YES, FRAPPE_APPS_PATH, and FRAPPE_TEST_APP and
+FRAPPE_TEST_MODULE (a disposable test app and one of its modules).
 """
 
 from __future__ import annotations
@@ -19,6 +22,10 @@ from urllib.parse import urlparse
 
 from mcp import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
+
+# The disposable test app and module the runner writes to (never frappe or erpnext).
+APP = os.environ.get("FRAPPE_TEST_APP", "")
+MODULE = os.environ.get("FRAPPE_TEST_MODULE", "")
 
 
 FIELD_TYPES = [
@@ -54,7 +61,7 @@ async def full_schema(session, doctype: str) -> dict:
 
 
 async def create_doctype(session, name: str, fields: list[dict], **flags):
-    payload = {"app": "erp_app", "module": "CubaZone", "name": name, "fields": fields, **flags}
+    payload = {"app": APP, "module": MODULE, "name": name, "fields": fields, **flags}
     preview = await call(session, "create_doctype", payload)
     if not preview.get("requires_confirmation"):
         raise AssertionError(f"No create preview for {name}")
@@ -207,6 +214,8 @@ async def run() -> dict:
         raise RuntimeError("DocType matrix is restricted to loopback .localhost sites")
     if not os.environ.get("FRAPPE_APPS_PATH"):
         raise RuntimeError("Set FRAPPE_APPS_PATH to the shared local Bench apps directory")
+    if not (APP and MODULE) or APP in {"frappe", "erpnext"}:
+        raise RuntimeError("Set FRAPPE_TEST_APP and FRAPPE_TEST_MODULE to a disposable test app")
 
     root = Path(__file__).resolve().parents[1]
     params = StdioServerParameters(
@@ -308,7 +317,7 @@ async def run() -> dict:
                         for row in generated_json.get("permissions", [])
                     ),
                     "database_doctype_row_matches": schema.get("name") == names["table"]
-                    and schema.get("module") == "CubaZone"
+                    and schema.get("module") == MODULE
                     and schema.get("istable") == 0
                     and schema.get("is_submittable") == 0
                     and set(FIELD_TYPES).issubset(schema_field_types),
@@ -339,8 +348,8 @@ async def run() -> dict:
                 # Frappe site-custom DocTypes are stored in site metadata, unlike
                 # standard DocTypes they do not generate files in an app checkout.
                 site_custom_payload = {
-                    "app": "erp_app",
-                    "module": "CubaZone",
+                    "app": APP,
+                    "module": MODULE,
                     "name": names["site_custom"],
                     "fields": [field("title", "Data", reqd=1)],
                     "is_custom": True,
@@ -508,12 +517,12 @@ async def run() -> dict:
                 for fname, fieldtype, opts in cf_specs:
                     custom_field = field(fname, fieldtype, **opts)
                     created_cf = await call(session, "create_custom_field", {
-                        "app": "erp_app", "module": "CubaZone", "doctype": names["custom"], "field": custom_field,
+                        "app": APP, "module": MODULE, "doctype": names["custom"], "field": custom_field,
                     })
                     if not created_cf.get("requires_confirmation"):
                         raise AssertionError(f"No Custom Field preview for {fieldtype}")
                     created_cf = await call(session, "create_custom_field", {
-                        "app": "erp_app", "module": "CubaZone", "doctype": names["custom"], "field": custom_field, "confirm": True,
+                        "app": APP, "module": MODULE, "doctype": names["custom"], "field": custom_field, "confirm": True,
                     })
                     custom_results.append((fname, fieldtype, bool(created_cf.get("name"))))
                     if len(custom_results) % 10 == 0:
@@ -524,13 +533,13 @@ async def run() -> dict:
                     section_name, "Section Break", "MCP Fold boundary", insert_after="append"
                 )
                 section_created = await call(session, "create_custom_field", {
-                    "app": "erp_app", "module": "CubaZone", "doctype": names["custom"],
+                    "app": APP, "module": MODULE, "doctype": names["custom"],
                     "field": section_payload, "confirm": True,
                 })
                 custom_results.append((section_name, "Section Break", bool(section_created.get("name"))))
                 fold_name = "mcp_cf_fold_marker"
                 fold_created = await call(session, "create_custom_field", {
-                    "app": "erp_app", "module": "CubaZone", "doctype": names["custom"],
+                    "app": APP, "module": MODULE, "doctype": names["custom"],
                     "field": field(
                         fold_name, "Fold", "MCP Fold marker",
                         insert_after=f"mcp_cf_{len(FIELD_TYPES) - 1:02d}",
@@ -577,10 +586,10 @@ async def run() -> dict:
                     fname = f"mcp_ps_{index:02d}"
                     cf_payload = field(fname, "Data", f"PS target {prop}")
                     await call(session, "create_custom_field", {
-                        "app": "erp_app", "module": "CubaZone", "doctype": names["table"], "field": cf_payload, "confirm": True,
+                        "app": APP, "module": MODULE, "doctype": names["table"], "field": cf_payload, "confirm": True,
                     })
                     args = {
-                        "app": "erp_app", "module": "CubaZone", "doctype": names["table"],
+                        "app": APP, "module": MODULE, "doctype": names["table"],
                         "fieldname": fname, "property": prop, "value": prop_value,
                     }
                     preview = await call(session, "set_field_property", args)
@@ -601,7 +610,7 @@ async def run() -> dict:
                 evidence["property_setters"] = property_results
 
                 doc_property_args = {
-                    "app": "erp_app", "module": "CubaZone", "doctype": names["table"],
+                    "app": APP, "module": MODULE, "doctype": names["table"],
                     "property": "description", "value": "Description set on the DocType itself",
                 }
                 await call(session, "set_field_property", doc_property_args)
@@ -620,11 +629,11 @@ async def run() -> dict:
                 for key in ("child", "single", "tree", "submit"):
                     fieldname = f"mcp_variant_{key}"
                     created_cf = await call(session, "create_custom_field", {
-                        "app": "erp_app", "module": "CubaZone", "doctype": names[key],
+                        "app": APP, "module": MODULE, "doctype": names[key],
                         "field": field(fieldname, "Data", f"Variant {key}", insert_after="append"), "confirm": True,
                     })
                     setter = await call(session, "set_field_property", {
-                        "app": "erp_app", "module": "CubaZone", "doctype": names[key],
+                        "app": APP, "module": MODULE, "doctype": names[key],
                         "fieldname": fieldname, "property": "label", "value": f"Updated {key}",
                         "property_type": "Data", "confirm": True,
                     })
@@ -638,7 +647,7 @@ async def run() -> dict:
 
                 # Export the test DocTypes' native customization files,
                 # then roll back to the exact prior app state.
-                export_args = {"app": "erp_app", "module": "CubaZone", "doctypes": created_names}
+                export_args = {"app": APP, "module": MODULE, "doctypes": created_names}
                 export_preview = await call(session, "export_customizations", export_args)
                 if export_preview.get("nothing_to_export"):
                     evidence["export_rollback"] = {"nothing_to_export": True}
@@ -649,10 +658,10 @@ async def run() -> dict:
                     })
                     rollback_id = exported.get("rollback_id")
                     rollback_preview = await call(session, "rollback_export", {
-                        "app": "erp_app", "module": "CubaZone", "rollback_id": rollback_id,
+                        "app": APP, "module": MODULE, "rollback_id": rollback_id,
                     })
                     rolled = await call(session, "rollback_export", {
-                        "app": "erp_app", "module": "CubaZone", "rollback_id": rollback_id,
+                        "app": APP, "module": MODULE, "rollback_id": rollback_id,
                         "expected_preview": rollback_preview["preview_id"], "confirm": True,
                     })
                     evidence["export_rollback"] = {

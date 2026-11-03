@@ -3,6 +3,10 @@
 Required environment: FRAPPE_URL and either an API key/secret or
 FRAPPE_PASSWORD. This script performs read-only MCP calls. It prints only
 aggregate metadata and does not save credentials or record contents.
+
+It expects ERPNext (the Customer schema and the "Item Balance (Simple)" report). With
+FRAPPE_APPS_PATH, FRAPPE_TEST_APP, and FRAPPE_TEST_MODULE set, it also previews (never
+confirms) DocType creation, a Custom Field, a Property Setter, and an export in that app.
 """
 
 from __future__ import annotations
@@ -15,6 +19,10 @@ from pathlib import Path
 
 from mcp import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
+
+# The disposable test app and module the runner writes to (never frappe or erpnext).
+APP = os.environ.get("FRAPPE_TEST_APP", "")
+MODULE = os.environ.get("FRAPPE_TEST_MODULE", "")
 
 
 def result_value(result):
@@ -76,18 +84,18 @@ async def run() -> dict:
                 "report_tool_truncated": report.get("truncated"),
                 "read_only": True,
             }
-            if os.environ.get("FRAPPE_APPS_PATH"):
+            if os.environ.get("FRAPPE_APPS_PATH") and APP and MODULE:
                 app_doctypes = result_value(
                     await session.call_tool(
-                        "list_doctypes", {"app": "erp_app", "module": "CubaZone", "limit": 5}
+                        "list_doctypes", {"app": APP, "module": MODULE, "limit": 5}
                     )
                 )["rows"]
                 preview = result_value(
                     await session.call_tool(
                         "create_doctype",
                         {
-                            "app": "erp_app",
-                            "module": "CubaZone",
+                            "app": APP,
+                            "module": MODULE,
                             "name": "MCP Standalone Preview Only DocType",
                             "fields": [
                                 {"fieldname": "title", "fieldtype": "Data", "label": "Title"}
@@ -103,8 +111,8 @@ async def run() -> dict:
                         await session.call_tool(
                             "create_custom_field",
                             {
-                                "app": "erp_app",
-                                "module": "CubaZone",
+                                "app": APP,
+                                "module": MODULE,
                                 "doctype": selected,
                                 "field": {
                                     "fieldname": "mcp_preview_field",
@@ -130,8 +138,8 @@ async def run() -> dict:
                             await session.call_tool(
                                 "set_field_property",
                                 {
-                                    "app": "erp_app",
-                                    "module": "CubaZone",
+                                    "app": APP,
+                                    "module": MODULE,
                                     "doctype": selected,
                                     "fieldname": fields[0]["fieldname"],
                                     "property": "label",
@@ -147,8 +155,8 @@ async def run() -> dict:
                         await session.call_tool(
                             "export_customizations",
                             {
-                                "app": "erp_app",
-                                "module": "CubaZone",
+                                "app": APP,
+                                "module": MODULE,
                                 "doctypes": [selected],
                             },
                         )

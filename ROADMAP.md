@@ -1,35 +1,42 @@
 # Roadmap
 
-Frappe MCP is a standalone stdio server. The roadmap separates implemented behavior from Frappe surfaces that still need explicit, permission-aware API wrappers.
-
-The staged execution plan, with confirmed bugs and the order of work, is in [docs/work-plan](docs/work-plan/README.md).
-
-See the [Frappe capability study](docs/frappe-capability-study.md) for the detailed framework/ERPNext inventory, coverage definitions, DocType visual-equivalence criteria, and test strategy.
+Frappe MCP is a standalone stdio server for Frappe developers. This page lists what is implemented and what is planned. The staged plan that built it, with each stage's handoff notes, is in [docs/work-plan](docs/work-plan/README.md); what has been run against live sites is in the [compatibility matrix](docs/compatibility-and-validation.md#matrix).
 
 ## Implemented
 
-1. **Standalone host integration** — launch by an MCP host over stdio; connect to any configured Frappe site over HTTP with API token or local password login.
-2. **Runtime discovery** — installed apps/modules represented by Module Def, DocTypes, and schemas merged with Custom Fields and Property Setters.
-3. **Document access** — bounded lists and document reads through Frappe's resource API.
-4. **Core document mutations** — create/update/delete with previews and confirmation; update/delete require a current `modified` token.
-5. **Reports** — run permitted Query/Script Reports with bounded MCP output.
-6. **Customization** — create standard DocTypes, Custom Fields, and allowlisted Property Setters through Frappe APIs.
-7. **Portable export and rollback** — DocType JSON, selected fixtures, managed `hooks.py` fixture registration, preview hashes, local backups, manifests, and guarded rollback.
-8. **Validation** — unit coverage and real MCP stdio acceptance runs on an isolated local development site.
+1. **Host integration and setup**: `uvx mcp-frappe`, the `mcp-frappe check` setup check, API-key or password login with session renewal, multi-site `Host` routing, and a PyPI release workflow.
+2. **Discovery and reads**: site info, apps and modules, paged DocType lists, compact or full schemas from Frappe's form metadata (Custom Fields and Property Setters merged, cached), paged record lists with sorting and OR filters, counts, Link-style search, and bounded document reads.
+3. **Records**: create, update, and delete with previews and `modified`-bound confirmation; submit and cancel for testing a submittable DocType.
+4. **DocTypes**: create standard and site-custom DocTypes (every variant and field type), edit them with add, change, move, and remove operations, delete DocTypes created by mistake, and promote a site-custom DocType into an app.
+5. **Customization**: Custom Fields, allowlisted Property Setters, and role permissions.
+6. **Site and app sync**: `diff_doctype` and `list_app_drift` verdicts based on `modified` and `migration_hash`, and native `custom/` exports with Client Script and Workflow fixtures, backups, and guarded rollback.
+7. **Configuration records**: Workflows, Email and System Notifications, Report Builder reports, and public Workspaces, with code fields refused.
+8. **Reports**: list reports, read their filters, and run Query and Script Reports with paging.
+9. **Agent ergonomics**: readable Frappe errors with hints, MCP instructions and annotations, and toolsets with a read-only mode.
+10. **Validation**: unit tests against a fake site built from Frappe's source, an in-memory MCP contract test, and opt-in live runners, including the end-to-end developer flow.
 
-## Future work
+## Next
 
-- Workflow transitions and lifecycle actions.
-- Permission-aware workspace, print, file, and translation tools.
-- More role combinations, error-path coverage, and additional Frappe versions.
-- Better report pagination where supported by the target Frappe report API.
-- Explicit support for idempotent exports when a Bench reload interrupts the MCP response.
-- Controlled custom app method adapters with per-method allowlists.
+- **Fill the compatibility matrix**: run the e2e runners, including the developer flow, on disposable v15 and v16 development sites, plus a limited-user smoke run, and record the evidence.
+
+## Backlog
+
+Detailed plans for the first three are in [docs/work-plan/backlog](docs/work-plan/backlog/):
+
+- **[Document lifecycle and workflow actions](docs/work-plan/backlog/lifecycle-workflow.md)**: amend, workflow transitions on documents, update diffs, and mandatory-field previews.
+- **[Collaboration and files](docs/work-plan/backlog/collaboration-files.md)**: document activity, comments, assignments, and attachments.
+- **[Allowlisted method adapters](docs/work-plan/backlog/method-allowlist.md)**: mapped documents and app-specific methods through a per-method allowlist.
+- **Async HTTP**: move to `httpx.AsyncClient` so Bench reload waits stop blocking the MCP event loop.
+- **Streamable HTTP transport** with per-user authentication, for teams sharing one server. Needs its own security design.
+- **Print formats and PDF**: render to text or HTML, and optionally save a PDF to a confined path. Print Format templates are Jinja, so they count as code.
+- **Rename DocTypes and fields** with data migration (`frappe.rename_doc`, `rename_field`).
+- **MCP resources and prompts**: DocType schemas as resources, and prompts such as "add a field to this DocType".
 
 ## Security boundaries
 
-- Do not add arbitrary SQL, Python, or unrestricted method dispatch.
+- No arbitrary SQL, Python, or unrestricted method dispatch.
 - Preserve the connected user's Frappe permissions.
-- Preview and explicitly confirm mutations; bind existing-document changes to fresh state.
-- Restrict filesystem writes to the configured app root and keep backups/rollback information.
-- Treat Administrator credentials as full access and keep them outside source control.
+- Preview and explicitly confirm mutations; bind changes to existing records to fresh state.
+- Keep filesystem writes inside the configured app, with backups and rollback.
+- Refuse fields Frappe evaluates as code unless a stage explicitly designs and approves them.
+- Treat Administrator credentials as full access and keep them out of source control.

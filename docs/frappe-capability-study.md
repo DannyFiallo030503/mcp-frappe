@@ -2,7 +2,7 @@
 
 **Purpose:** define what “works with Frappe” means for this project, record the framework and ERPNext surfaces that matter, and provide a traceable coverage plan before claiming broad parity with Desk.
 
-**Study date:** 2026-10-19. The official documentation is a moving target; validate version-specific behavior against the target site's Frappe release and live metadata.
+**Study date:** 2026-10-19; coverage updated 2026-11-03. The official documentation is a moving target; validate version-specific behavior against the target site's Frappe release and live metadata.
 
 ## Executive summary
 
@@ -10,7 +10,7 @@ Frappe is a metadata-driven application framework. A DocType is simultaneously a
 
 The MCP should therefore be app-generic and metadata-driven: connect to a site, discover installed apps/modules/DocTypes, read their live schemas, and expose safe operations over the native APIs. It must not contain a site-specific app or module, or a fixed ERPNext DocType catalog. Frappe + ERPNext are the minimum expected site apps, but additional installed apps must work through discovery and generic document operations without MCP code changes.
 
-The current standalone implementation is a useful base, not full Desk parity. It has runtime discovery, schema/document CRUD, reports, core schema customization, role-permission changes, and guarded fixture export. Important Desk/API surfaces remain unwrapped: amend/rename and workflow actions (submit and cancel exist only for testing a DocType without an active Workflow), files, print/PDF, comments/shares/assignments, user permissions, web forms/workspaces, translations, dashboards, and many app-specific actions. A successful smoke test of a few DocTypes does not prove those capabilities.
+The current standalone implementation covers the developer workflow: runtime discovery, schema and record CRUD, creating and editing DocTypes, Custom Fields and Property Setters, role permissions, site/app drift checks, native customization export, Workflows, Notifications, Report Builder reports, and public Workspaces. Important Desk/API surfaces remain unwrapped: amend/rename and workflow actions (submit and cancel exist only for testing a DocType without an active Workflow), files, print/PDF, comments/shares/assignments, user permissions, web forms, private Workspaces, translations, dashboards, and many app-specific actions. A successful smoke test of a few DocTypes does not prove those capabilities.
 
 “Everything Frappe offers” cannot mean sending arbitrary Python, SQL, or any whitelisted method name: those interfaces can execute arbitrary site code and bypass the MCP's safe, reviewable tool contract. The practical goal is **coverage of Frappe's user-facing operations through explicit, bounded, permission-preserving tools**, with narrowly scoped adapters for app-specific actions where needed. Features that require code, app installation, patches, migrations, build assets, or deployment must be documented as development/release workflows rather than implied to be a database-only MCP operation.
 
@@ -32,7 +32,7 @@ The generic resource layer can operate on DocTypes from any installed app, subje
 
 ### Version support
 
-Frappe v15 documents API v2 as available from v15. API v1 remains `/api/`, with `/api/v1/` aliases from v15. Endpoints and metadata fields can vary by release. The current recorded real-site acceptance is Frappe 15.96.0 + ERPNext 15.96.1 and additional apps; it is a sample, not a support guarantee. Dennis's separate reported v16 run was against a different implementation/revision and must not be presented as validation of the current standalone server. Maintain a release matrix for every supported major line (at minimum v15 and v16) and test against clean sites with Frappe + ERPNext.
+Frappe v15 documents API v2 as available from v15. API v1 remains `/api/`, with `/api/v1/` aliases from v15. Endpoints and metadata fields can vary by release. The recorded real-site runs are Frappe 15.96.0 + ERPNext 15.96.1 with server 0.2.0; they are a sample, not a support guarantee. An earlier v16 run used the legacy Frappe-hosted implementation and is not evidence for the standalone server. The [compatibility matrix](compatibility-and-validation.md#matrix) tracks every supported major line (at minimum v15 and v16); fill it from runs on disposable sites with Frappe + ERPNext.
 
 ## Frappe's capability model
 
@@ -87,39 +87,39 @@ ERPNext is not a single schema. Its installed modules provide domain-specific Do
 
 Generic CRUD can read and create draft records where permissions and required fields permit. It does **not** prove a complete ERPNext flow. Each domain needs real scenarios covering prerequisites, controller calculations, workflow state, submit/cancel/amend, ledger/stock side effects, and report reconciliation. Do not bypass ERPNext controllers to manufacture ledger or stock entries.
 
-## Current MCP coverage (repository snapshot)
+## Current MCP coverage
 
-Status meanings: **Implemented** means code exists; **site-verified** means the cited standalone real-site report exercised that path. These are independent. **Missing** means there is no explicit tool in the current standalone tool list. An API endpoint existing in Frappe is not by itself MCP coverage.
+**Implemented** means a tool exists and is unit-tested against Frappe's source (v16.33.1 unless noted). **Site-verified** names the Frappe version, server version, and role of the live run that exercised it, with the evidence in the [compatibility matrix](compatibility-and-validation.md#matrix); "not yet" means no live run. The 0.2.0 runs predate most work-plan stages, so they verified the path, not the current contract. **Missing** means there is no tool; an endpoint existing in Frappe is not coverage.
 
-| Capability | Current MCP surface | Status / gap |
-|---|---|---|
-| Site information | `get_site_info` | Implemented from Frappe v16.33.1 source (`get_logged_user`, `get_versions`); not run live. Developer mode is not reported: no whitelisted method returns it. |
-| App/module discovery | `list_installed_apps` | Implemented; site-verified on one v15 stack. Discovery uses Module Def; verify app list accuracy against `installed applications` for unusual apps. |
-| DocType discovery and schema | `list_doctypes`, `get_doctype_schema` | Implemented; live-verified as Administrator on v15, including a Customer schema and temporary Custom Field/Property Setter merge. A temporary limited user received 403 on DocType metadata. Per-item virtual DocType exceptions, v16 metadata, and broader field permission-level filtering still need testing. |
-| Record counts, search, submit, cancel | `count_documents`, `search_records`, `submit_document`, `cancel_document` | Implemented from Frappe v16.33.1 source; not run live. Submit and cancel refuse DocTypes with an active Workflow. |
-| Record list/read/create/update/delete | `list_documents`, `get_document`, `create_document`, `update_document`, `delete_document` | Implemented; live-verified on ToDo and temporary regular/child DocTypes, including stale-token rejection and child-row roundtrip. A temporary Single value was also written and read back under the fixed Single name, then cleaned up. `get_document` omitted system `docstatus` for a submittable DocType; virtual DocTypes, broader permission cases, and rollback after partial lifecycle failures still need testing. |
-| Query/Script report execution | `run_report` | Implemented; one valid report site-verified. Its endpoint returns no rows for Report Builder reports (Frappe's `get_report_result` skips them); `upsert_report` samples those through `reportview.get_list`. Prepared report/download flows are not established. Errors, role restrictions, pagination, and large reports need coverage. |
-| Standard DocType creation | `create_doctype(is_custom=false)` | Manually verified on Frappe 15.96.0 for regular, child, Single, Tree, submittable, and Virtual metadata definitions; all 43 v15 DocField types round-tripped; representative tracking, naming, search/sort, layout, import/copy, title, attachment, and permission settings round-tripped; standard source scaffolding was generated. Record checks covered Single storage behavior, Table/Table MultiSelect rows, Tree parent links, naming, and draft docstatus. Not every DocType-level option/value combination or Desk rendering was tested. |
-| Site-custom DocType creation | `create_doctype(is_custom=true)` | Manually verified as Administrator on v15: preview, `custom=1` metadata persistence, no generated app files, and generic record create/list. The path requires a matching remote Module Def but not a local checkout or Developer Mode. Custom Virtual DocTypes are rejected by Frappe. |
-| DocType edits and deletion | `update_doctype`, `delete_doctype` | Added in work-plan stage 06 and unit-tested against Frappe v16.33.1 source behavior; not yet live-verified. Editing refuses `frappe`/`erpnext` DocTypes, field renames, and data-losing fieldtype changes; deletion refuses DocTypes that others link to. |
-| Site and app sync | `diff_doctype`, `list_app_drift`, `promote_custom_doctype` | Added in work-plan stage 07 and unit-tested against Frappe v16.33.1 source behavior; not yet live-verified. Comparison is read-only and reads only below `FRAPPE_APPS_PATH`; promotion lets Frappe write the files in developer mode. |
-| Workflows and Notifications | `get_workflow`, `upsert_workflow`, `list_notifications`, `upsert_notification` | Added in work-plan stage 08 and unit-tested against Frappe v16.33.1 source behavior; not yet live-verified. Python conditions are refused, Notification templates allow only `{{ doc.<field> }}` placeholders with allowlisted filters, and only Email and System Notification channels are supported. Workflows export as app fixtures. |
-| Reports and Workspaces | `upsert_report`, `get_workspace`, `upsert_workspace` | Added in work-plan stage 09 and unit-tested against Frappe v16.33.1 source behavior; not yet live-verified. Report Builder reports only (Query and Script Reports are code); Workspaces are public and standard, built from checked shortcuts, link cards, and existing Number Cards; URL shortcuts and custom HTML blocks are refused. |
-| Role permission changes | `set_role_permissions` | Live-verified for one Sales User permission setup on a temporary DocType through native Permission Manager methods. Does not create roles/users, assign memberships, manage User Permissions, shares, or Page/Report role rules. |
-| Custom Field creation | `create_custom_field` | Manually verified 43/43 Frappe 15 DocField types as Custom Fields on a temporary standard DocType, including layout ordering; representative Custom Fields also round-tripped on child, Single, Tree, and submittable DocTypes. Export/rollback and cleanup passed. This tests type acceptance, not every optional field-property combination. |
-| Property Setter | `set_field_property` | Manually verified all 15 public allowlisted properties (`label`, `hidden`, `read_only`, `reqd`, `default`, `in_list_view`, `in_standard_filter`, `options`, `description`, `depends_on`, `mandatory_depends_on`, `read_only_depends_on`, `collapsible`, `bold`, `width`) by merged-schema readback; DocType-level description and setters on child, Single, Tree, and submittable DocTypes also passed. This is the MCP's allowlist, not the full Customize Form surface. |
-| Portable customizations | `export_customizations`, `rollback_export` | Live-verified for selected fixtures and rollback. Only selected fixture DocTypes are exported; no deploy/migrate/remote DB rollback. Preview currently accepts `frappe` as the destination app, which can target core source files; no confirm/write was performed. |
-| Submit/cancel/amend/rename/workflow actions | none | Missing. These are separate lifecycle transitions and essential for ERPNext transactions. Workflow definitions are covered above; applying their actions to documents is not. |
-| Comments, shares, assignments, tags, versions | none | Missing explicit tools; do not infer from generic DocType CRUD. |
-| File upload/download/attach | none | Missing; binary limits, privacy, and File permissions need a dedicated design. |
-| Print format/PDF/email | none | Missing. Requires permission-aware render/download/send wrappers. |
-| User/Role/User Permission management | none except DocType role permissions | Missing as a general identity and row-restriction surface. High impact; require least privilege. |
-| Page/dashboard/chart/filter, private Workspaces | none | Missing (public Workspaces: see `upsert_workspace` above). A portion is metadata CRUD, but special endpoints and user-specific visibility/preferences need explicit tools. |
-| Web Form/portal, translations, notifications | none | Missing. Website/public access and code execution/security have distinct risk models. |
-| App code/hooks/server/client scripts/patches | guarded fixture export only | Missing as general code editing. Must remain a reviewed development workflow; no arbitrary code execution by the MCP. |
-| ERPNext end-to-end flows | generic records/reports only | Not proven. No end-to-end sales, procurement, accounting, stock, manufacturing, project, asset, or quality scenario is in the current report. |
+| Capability | MCP tools | Implemented | Site-verified (version, role) |
+|---|---|---|---|
+| Site information | `get_site_info` | Yes; developer mode is not reported, because no whitelisted method returns it | not yet |
+| App/module discovery | `list_installed_apps` | Yes, from Module Def | [v15, 0.2.0, Administrator](compatibility-and-validation.md#matrix) |
+| DocType discovery and schema | `list_doctypes`, `get_doctype_schema` | Yes; metadata from `getdoctype`, so any logged-in user can read it | [v15, 0.2.0, Administrator](compatibility-and-validation.md#matrix); the limited-user check is open |
+| Record list/read/create/update/delete | `list_documents`, `get_document`, `create_document`, `update_document`, `delete_document` | Yes, with paging, OR filters, and `modified`-bound writes | [v15, 0.2.0, Administrator](compatibility-and-validation.md#matrix), on ToDo and temporary DocTypes |
+| Counts and search | `count_documents`, `search_records` | Yes | not yet |
+| Submit and cancel (testing) | `submit_document`, `cancel_document` | Yes; refused on DocTypes with an active Workflow | not yet |
+| Reports | `list_reports`, `get_report_filters`, `run_report` | Yes; `run_report` returns no rows for Report Builder reports | `run_report` only: [v15, 0.2.0, Administrator](compatibility-and-validation.md#matrix) |
+| Standard DocType creation | `create_doctype(is_custom=false)` | Yes; Frappe writes the files in developer mode | [v15, 0.2.0, Administrator](compatibility-and-validation.md#matrix): regular, child, Single, Tree, submittable, Virtual, all 43 field types |
+| Site-custom DocType creation | `create_doctype(is_custom=true)` | Yes; no files, no developer mode | [v15, 0.2.0, Administrator](compatibility-and-validation.md#matrix) |
+| DocType edits and deletion | `update_doctype`, `delete_doctype` | Yes; refuses `frappe`/`erpnext`, renames, and data-losing fieldtype changes | not yet |
+| Site and app sync | `diff_doctype`, `list_app_drift`, `promote_custom_doctype` | Yes; comparison is read-only | not yet |
+| Custom Fields | `create_custom_field` | Yes | [v15, 0.2.0, Administrator](compatibility-and-validation.md#matrix): all 43 field types |
+| Property Setters | `set_field_property` | Yes, for 15 allowlisted Customize Form properties | [v15, 0.2.0, Administrator](compatibility-and-validation.md#matrix): all 15 |
+| Role permissions | `set_role_permissions` | Yes, through Permission Manager | [v15, 0.2.0, Administrator](compatibility-and-validation.md#matrix): one role |
+| Portable customizations | `export_customizations`, `rollback_export` | Yes; native `custom/` files, Client Script and Workflow fixtures, backups, rollback | [v15, 0.2.0, Administrator](compatibility-and-validation.md#matrix), for the older fixture format; the native `custom/` format not yet |
+| Workflows and Notifications | `get_workflow`, `upsert_workflow`, `list_notifications`, `upsert_notification` | Yes; Python conditions refused, Jinja limited to `{{ doc.<field> }}` placeholders, Email and System Notification only | not yet |
+| Report Builder reports and Workspaces | `upsert_report`, `get_workspace`, `upsert_workspace` | Yes; no Query/Script Reports, URL shortcuts, custom HTML blocks, or private Workspaces | not yet |
+| Amend, rename, workflow actions on documents | none | Missing ([backlog](work-plan/backlog/lifecycle-workflow.md)) | n/a |
+| Comments, shares, assignments, tags, versions, files | none | Missing ([backlog](work-plan/backlog/collaboration-files.md)) | n/a |
+| Print format, PDF, email | none | Missing | n/a |
+| Users, User Permissions, role membership | none (DocType role permissions only) | Missing | n/a |
+| Dashboards, charts, Number Cards, private Workspaces, Web Forms, translations | none | Missing | n/a |
+| App code, hooks, server and client scripts, patches | managed fixture export only | Missing by design: code stays a reviewed development workflow | n/a |
+| App-specific methods, mapped documents | none | Missing ([backlog](work-plan/backlog/method-allowlist.md)) | n/a |
+| ERPNext end-to-end flows | generic records and reports | Not proven | not yet |
 
-The [manual functional report](../e2e/manual_functional_report.md) and [standalone real-site acceptance report](../e2e/standalone_real_http_report.md) document the paths exercised against one populated v15 development site. They are not evidence for v16, a clean site, every DocType type/configuration, all roles, visual parity against Desk, or ERPNext business-process parity.
+The 0.2.0 runs used one populated v15 development site. They are not evidence for v16, a clean site, every DocType configuration, other roles, visual parity with Desk, or ERPNext business processes.
 
 ## What visual equivalence requires for DocType creation
 

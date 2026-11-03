@@ -57,7 +57,7 @@ Both auth modes require HTTPS unless `FRAPPE_URL` points at a loopback host (`lo
 
 ## MCP host configuration
 
-The host launches `uvx mcp-frappe` with the settings in its environment. The [README](../README.md#configure-an-mcp-host) has ready snippets for Claude Code (`claude mcp add frappe -e FRAPPE_URL=... -- uvx mcp-frappe`) and Claude Desktop. A generic local server declaration:
+The host launches `uvx mcp-frappe` with the settings in its environment. The [README](../README.md#configure) has ready snippets for Claude Code (`claude mcp add frappe -e FRAPPE_URL=... -- uvx mcp-frappe`) and Claude Desktop. A generic local server declaration:
 
 ```json
 {
