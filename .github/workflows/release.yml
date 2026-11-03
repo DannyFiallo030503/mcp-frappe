@@ -10,6 +10,8 @@ name: Release
 #   2. In this repository's settings, an environment named `pypi` (optionally with required
 #      reviewers, so each publish waits for approval).
 # A release to PyPI is public and cannot be replaced: a version number can never be reused.
+# Every action is pinned to a commit SHA (tag in the comment), because the publish job holds a
+# PyPI token; bump the SHAs deliberately.
 
 on:
   workflow_dispatch:
@@ -24,8 +26,8 @@ jobs:
     if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
         with:
           python-version: "3.12"
       - name: Tag matches the package version
@@ -41,7 +43,7 @@ jobs:
       - name: Run the installed wheel
         shell: bash
         run: uvx --isolated --from "$(ls dist/*.whl)" mcp-frappe --version
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: dist
           path: dist/
@@ -55,8 +57,8 @@ jobs:
     permissions:
       id-token: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: dist
           path: dist/
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # release/v1
