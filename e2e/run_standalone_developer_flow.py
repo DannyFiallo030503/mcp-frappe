@@ -517,6 +517,8 @@ class Flow:
         self.details["workspace_file_written"] = written
         if not saved.get("saved") or len(layout.get("shortcuts", [])) != 2:
             raise AssertionError("Workspace was not saved with its shortcuts")
+        if not written:
+            raise AssertionError("Frappe did not write the Workspace to the test module")
 
     # -- Cleanup ---------------------------------------------------------------------------
 

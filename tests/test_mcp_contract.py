@@ -169,6 +169,7 @@ def test_upsert_workspace_through_an_mcp_session_never_sends_custom_blocks(fake_
     )
     fake_site.add("GET", "/api/resource/Workspace", [])
     fake_site.add("POST", "/api/resource/Workspace", {"name": "Lab"})
+    fake_site.add_doctype("Workspace", [{"fieldname": "standard", "fieldtype": "Check"}])
     arguments = {
         "name": "Lab",
         "module": "Lab",

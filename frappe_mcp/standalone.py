@@ -6130,6 +6130,10 @@ def upsert_workspace(
         "links": link_rows,
         "number_cards": number_card_rows,
     }
+    # Frappe v16 exports a Workspace to its module only when `standard` is set (v15 has no
+    # such field and exports every public one).
+    if "standard" in _schema_fields(_meta_bundle("Workspace")["doctype"]):
+        values["standard"] = 1
     files = _record_files(app, module, "Workspace", name, (".json",), False)
     if not confirm:
         preview: dict[str, Any] = {
@@ -6145,8 +6149,9 @@ def upsert_workspace(
             "app_files": files,
             "requires_developer_mode": True,
             "notes": [
-                "Frappe writes a public Workspace to its module only in developer mode, and "
-                "saving one needs the Workspace Manager role. A developer-mode Bench may reload.",
+                "Frappe writes the Workspace to its module only in developer mode (on v16, "
+                "only a standard Workspace, which this tool sets), and saving one needs the "
+                "Workspace Manager role. A developer-mode Bench may reload.",
             ],
             "requires_confirmation": True,
         }

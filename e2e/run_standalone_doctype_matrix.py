@@ -68,7 +68,7 @@ async def create_doctype(session, name: str, fields: list[dict], **flags):
     created = await call(session, "create_doctype", {**payload, "confirm": True})
     if not created.get("created") or not created.get("native_files_complete"):
         raise AssertionError(f"Incomplete DocType creation for {name}")
-    print(f"created DocType variant: {name.rsplit(' ', 1)[-1]}", flush=True)
+    print(f"created DocType variant: {name.rsplit(' ', 1)[-1]}", file=sys.stderr, flush=True)
     return created
 
 
@@ -169,7 +169,7 @@ async def cleanup_doctype(session, name: str) -> bool:
             if result.get("deleted"):
                 return True
         except Exception as error:
-            print(f"cleanup attempt {attempt + 1} failed for {name}: {type(error).__name__}: {str(error)[:240]}", flush=True)
+            print(f"cleanup attempt {attempt + 1} failed for {name}: {type(error).__name__}: {str(error)[:240]}", file=sys.stderr, flush=True)
             await asyncio.sleep(2 + attempt)
     try:
         rows = await call(
@@ -526,7 +526,7 @@ async def run() -> dict:
                     })
                     custom_results.append((fname, fieldtype, bool(created_cf.get("name"))))
                     if len(custom_results) % 10 == 0:
-                        print(f"created Custom Field types: {len(custom_results)}", flush=True)
+                        print(f"created Custom Field types: {len(custom_results)}", file=sys.stderr, flush=True)
                 # Append the boundary first, then place Fold before that boundary.
                 section_name = "mcp_cf_section_marker"
                 section_payload = field(
