@@ -13,11 +13,12 @@ Frappe MCP is a standalone stdio server for Frappe developers. This page lists w
 7. **Configuration records**: Workflows, Email and System Notifications, Report Builder reports, and public Workspaces, with code fields refused.
 8. **Reports**: list reports, read their filters, and run Query and Script Reports with paging.
 9. **Agent ergonomics**: readable Frappe errors with hints, MCP instructions and annotations, and toolsets with a read-only mode.
-10. **Validation**: unit tests against a fake site built from Frappe's source, an in-memory MCP contract test, and opt-in live runners, including the end-to-end developer flow.
+10. **Validation**: unit tests against a fake site built from Frappe's source, an in-memory MCP contract test, and opt-in live runners, including the end-to-end developer flow. Every runner has passed on Frappe 15.126 and 16.55 development sites with ERPNext, and the read tools were checked as a Sales User ([matrix](docs/compatibility-and-validation.md#matrix)).
 
 ## Next
 
-- **Fill the compatibility matrix**: run the e2e runners, including the developer flow, on disposable v15 and v16 development sites, plus a limited-user smoke run, and record the evidence.
+- **First PyPI release** of 0.3.0 through the manual release workflow.
+- **Close the remaining validation gaps**: `set_role_permissions` on a live site, `bench migrate` re-importing an exported Custom Field, and record writes as a user without System Manager ([list](docs/compatibility-and-validation.md#not-yet-checked-on-a-site)).
 
 ## Backlog
 

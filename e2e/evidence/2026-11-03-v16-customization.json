@@ -1,0 +1,13 @@
+{
+  "custom_field_preview_and_create": true,
+  "property_setter_preview_and_confirm": true,
+  "schema_reflects_custom_field": true,
+  "schema_reflects_property_setter": true,
+  "export_preview_and_confirm": true,
+  "native_custom_file_export": true,
+  "rollback_preview_and_confirm": true,
+  "temporary_property_setter_deleted": true,
+  "temporary_custom_field_deleted": true,
+  "field_absent_from_schema": true,
+  "exported_file_count": 1
+}

@@ -1,0 +1,11 @@
+{
+  "create_preview": true,
+  "create_confirmed": true,
+  "update_preview": true,
+  "stale_update_rejected": true,
+  "update_confirmed": true,
+  "readback_verified": true,
+  "delete_preview": true,
+  "delete_confirmed": true,
+  "record_absent_after_cleanup": true
+}

@@ -32,7 +32,7 @@ The generic resource layer can operate on DocTypes from any installed app, subje
 
 ### Version support
 
-Frappe v15 documents API v2 as available from v15. API v1 remains `/api/`, with `/api/v1/` aliases from v15. Endpoints and metadata fields can vary by release. The recorded real-site runs are Frappe 15.96.0 + ERPNext 15.96.1 with server 0.2.0; they are a sample, not a support guarantee. An earlier v16 run used the legacy Frappe-hosted implementation and is not evidence for the standalone server. The [compatibility matrix](compatibility-and-validation.md#matrix) tracks every supported major line (at minimum v15 and v16); fill it from runs on disposable sites with Frappe + ERPNext.
+Frappe v15 documents API v2 as available from v15. API v1 remains `/api/`, with `/api/v1/` aliases from v15. Endpoints and metadata fields can vary by release. The recorded real-site runs of server 0.3.0 are Frappe 15.126.0 + ERPNext 15.124.4 and Frappe 16.55.1 + ERPNext 16.53.0; they are a sample, not a support guarantee. Older runs (Frappe 15.96 with server 0.2.0) are kept as history. An earlier v16 run used the legacy Frappe-hosted implementation and is not evidence for the standalone server. The [compatibility matrix](compatibility-and-validation.md#matrix) tracks every supported major line (at minimum v15 and v16); fill it from runs on disposable sites with Frappe + ERPNext.
 
 ## Frappe's capability model
 
@@ -93,23 +93,23 @@ Generic CRUD can read and create draft records where permissions and required fi
 
 | Capability | MCP tools | Implemented | Site-verified (version, role) |
 |---|---|---|---|
-| Site information | `get_site_info` | Yes; developer mode is not reported, because no whitelisted method returns it | not yet |
-| App/module discovery | `list_installed_apps` | Yes, from Module Def | [v15, 0.2.0, Administrator](compatibility-and-validation.md#matrix) |
-| DocType discovery and schema | `list_doctypes`, `get_doctype_schema` | Yes; metadata from `getdoctype`, so any logged-in user can read it | [v15, 0.2.0, Administrator](compatibility-and-validation.md#matrix); the limited-user check is open |
-| Record list/read/create/update/delete | `list_documents`, `get_document`, `create_document`, `update_document`, `delete_document` | Yes, with paging, OR filters, and `modified`-bound writes | [v15, 0.2.0, Administrator](compatibility-and-validation.md#matrix), on ToDo and temporary DocTypes |
-| Counts and search | `count_documents`, `search_records` | Yes | not yet |
-| Submit and cancel (testing) | `submit_document`, `cancel_document` | Yes; refused on DocTypes with an active Workflow | not yet |
-| Reports | `list_reports`, `get_report_filters`, `run_report` | Yes; `run_report` returns no rows for Report Builder reports | `run_report` only: [v15, 0.2.0, Administrator](compatibility-and-validation.md#matrix) |
-| Standard DocType creation | `create_doctype(is_custom=false)` | Yes; Frappe writes the files in developer mode | [v15, 0.2.0, Administrator](compatibility-and-validation.md#matrix): regular, child, Single, Tree, submittable, Virtual, all 43 field types |
-| Site-custom DocType creation | `create_doctype(is_custom=true)` | Yes; no files, no developer mode | [v15, 0.2.0, Administrator](compatibility-and-validation.md#matrix) |
-| DocType edits and deletion | `update_doctype`, `delete_doctype` | Yes; refuses `frappe`/`erpnext`, renames, and data-losing fieldtype changes | not yet |
-| Site and app sync | `diff_doctype`, `list_app_drift`, `promote_custom_doctype` | Yes; comparison is read-only | not yet |
-| Custom Fields | `create_custom_field` | Yes | [v15, 0.2.0, Administrator](compatibility-and-validation.md#matrix): all 43 field types |
-| Property Setters | `set_field_property` | Yes, for 15 allowlisted Customize Form properties | [v15, 0.2.0, Administrator](compatibility-and-validation.md#matrix): all 15 |
-| Role permissions | `set_role_permissions` | Yes, through Permission Manager | [v15, 0.2.0, Administrator](compatibility-and-validation.md#matrix): one role |
-| Portable customizations | `export_customizations`, `rollback_export` | Yes; native `custom/` files, Client Script and Workflow fixtures, backups, rollback | [v15, 0.2.0, Administrator](compatibility-and-validation.md#matrix), for the older fixture format; the native `custom/` format not yet |
-| Workflows and Notifications | `get_workflow`, `upsert_workflow`, `list_notifications`, `upsert_notification` | Yes; Python conditions refused, Jinja limited to `{{ doc.<field> }}` placeholders, Email and System Notification only | not yet |
-| Report Builder reports and Workspaces | `upsert_report`, `get_workspace`, `upsert_workspace` | Yes; no Query/Script Reports, URL shortcuts, custom HTML blocks, or private Workspaces | not yet |
+| Site information | `get_site_info` | Yes; developer mode is not reported, because no whitelisted method returns it | [v15.126 and v16.55, 0.3.0, Administrator](compatibility-and-validation.md#matrix); also Sales User |
+| App/module discovery | `list_installed_apps` | Yes, from Module Def | [v15.126 and v16.55, 0.3.0, Administrator](compatibility-and-validation.md#matrix); also Sales User |
+| DocType discovery and schema | `list_doctypes`, `get_doctype_schema` | Yes; metadata from `getdoctype`, so any logged-in user can read it | [v15.126 and v16.55, 0.3.0, Administrator](compatibility-and-validation.md#matrix); as Sales User, `get_doctype_schema` works and `list_doctypes` is denied |
+| Record list/read/create/update/delete | `list_documents`, `get_document`, `create_document`, `update_document`, `delete_document` | Yes, with paging, OR filters, and `modified`-bound writes | [v15.126 and v16.55, 0.3.0, Administrator](compatibility-and-validation.md#matrix), on ToDo and temporary DocTypes; `list_documents` also as Sales User |
+| Counts and search | `count_documents`, `search_records` | Yes | [v15.126 and v16.55, 0.3.0, Administrator](compatibility-and-validation.md#matrix); also Sales User |
+| Submit and cancel (testing) | `submit_document`, `cancel_document` | Yes; refused on DocTypes with an active Workflow | [v15.126 and v16.55, 0.3.0, Administrator](compatibility-and-validation.md#matrix) |
+| Reports | `list_reports`, `get_report_filters`, `run_report` | Yes; `run_report` returns no rows for Report Builder reports | [v15.126 and v16.55, 0.3.0, Administrator](compatibility-and-validation.md#matrix); also Sales User |
+| Standard DocType creation | `create_doctype(is_custom=false)` | Yes; Frappe writes the files in developer mode | [v15.126 and v16.55, 0.3.0, Administrator](compatibility-and-validation.md#matrix): regular, child, Single, Tree, submittable, Virtual, all 43 field types |
+| Site-custom DocType creation | `create_doctype(is_custom=true)` | Yes; no files, no developer mode | [v15.126 and v16.55, 0.3.0, Administrator](compatibility-and-validation.md#matrix) |
+| DocType edits and deletion | `update_doctype`, `delete_doctype` | Yes; refuses `frappe`/`erpnext`, renames, and data-losing fieldtype changes | [v15.126 and v16.55, 0.3.0, Administrator](compatibility-and-validation.md#matrix) |
+| Site and app sync | `diff_doctype`, `list_app_drift`, `promote_custom_doctype` | Yes; comparison is read-only | [v15.126 and v16.55, 0.3.0, Administrator](compatibility-and-validation.md#matrix): `in_sync` after create, edit, and promotion |
+| Custom Fields | `create_custom_field` | Yes | [v15.126 and v16.55, 0.3.0, Administrator](compatibility-and-validation.md#matrix): all 43 field types |
+| Property Setters | `set_field_property` | Yes, for 15 allowlisted Customize Form properties | [v15.126 and v16.55, 0.3.0, Administrator](compatibility-and-validation.md#matrix): every allowlisted property |
+| Role permissions | `set_role_permissions` | Yes, through Permission Manager | not yet on 0.3.0 ([v15, 0.2.0, Administrator](compatibility-and-validation.md#matrix): one role) |
+| Portable customizations | `export_customizations`, `rollback_export` | Yes; native `custom/` files, Client Script and Workflow fixtures, backups, rollback | [v15.126 and v16.55, 0.3.0, Administrator](compatibility-and-validation.md#matrix), native `custom/` format |
+| Workflows and Notifications | `get_workflow`, `upsert_workflow`, `list_notifications`, `upsert_notification` | Yes; Python conditions refused, Jinja limited to `{{ doc.<field> }}` placeholders, Email and System Notification only | [v15.126 and v16.55, 0.3.0, Administrator](compatibility-and-validation.md#matrix); as Sales User, `get_workflow` and `list_notifications` are denied |
+| Report Builder reports and Workspaces | `upsert_report`, `get_workspace`, `upsert_workspace` | Yes; no Query/Script Reports, URL shortcuts, custom HTML blocks, or private Workspaces | [v15.126 and v16.55, 0.3.0, Administrator](compatibility-and-validation.md#matrix); `get_workspace` also as Sales User |
 | Amend, rename, workflow actions on documents | none | Missing ([backlog](work-plan/backlog/lifecycle-workflow.md)) | n/a |
 | Comments, shares, assignments, tags, versions, files | none | Missing ([backlog](work-plan/backlog/collaboration-files.md)) | n/a |
 | Print format, PDF, email | none | Missing | n/a |
@@ -119,7 +119,7 @@ Generic CRUD can read and create draft records where permissions and required fi
 | App-specific methods, mapped documents | none | Missing ([backlog](work-plan/backlog/method-allowlist.md)) | n/a |
 | ERPNext end-to-end flows | generic records and reports | Not proven | not yet |
 
-The 0.2.0 runs used one populated v15 development site. They are not evidence for v16, a clean site, every DocType configuration, other roles, visual parity with Desk, or ERPNext business processes.
+The 0.3.0 runs used two fresh development sites (v15 and v16) with ERPNext, as Administrator and as a Sales User. They are not evidence for production sites, visual parity with Desk, or ERPNext business processes.
 
 ## What visual equivalence requires for DocType creation
 

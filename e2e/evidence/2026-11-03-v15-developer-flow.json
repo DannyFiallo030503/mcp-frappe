@@ -1,0 +1,83 @@
+{
+  "runner": "developer_flow",
+  "run_date": "2026-11-03",
+  "mcp_version": "0.3.0",
+  "mcp": {
+    "commit": "4e1a106",
+    "dirty": false
+  },
+  "transport": "MCP stdio to the standalone server, then Frappe HTTP API",
+  "site": "loopback .localhost development site; URL and credentials omitted",
+  "versions": {
+    "erpnext": "15.124.4",
+    "frappe": "15.126.0",
+    "mcp_test_app": "0.0.1"
+  },
+  "frappe_major_version": 15,
+  "identity": "Administrator",
+  "developer_mode": "on (Frappe wrote standard DocType files)",
+  "areas": {
+    "doctype_create_and_diff": "pass",
+    "doctype_update_and_diff": "pass",
+    "custom_field_export_rollback": "pass",
+    "custom_doctype_promote": "pass",
+    "document_submit_cancel": "pass",
+    "workflow": "pass",
+    "notification": "pass",
+    "report_builder_report": "pass",
+    "workspace": "pass"
+  },
+  "details": {
+    "native_files_complete": true,
+    "diff_after_create": [
+      "in_sync",
+      "in_sync"
+    ],
+    "update_reconciled_after_reload": false,
+    "app_json_after_update": {
+      "added": true,
+      "removed": true,
+      "moved": true,
+      "changed": true
+    },
+    "diff_after_update": "in_sync",
+    "custom_file_holds_field": true,
+    "export_rolled_back": true,
+    "promote": {
+      "verdict_before": "site_custom",
+      "native_files_complete": true,
+      "verdict_after": "in_sync"
+    },
+    "lifecycle_docstatus": [
+      1,
+      2
+    ],
+    "workflow_masters_created": 3,
+    "report_sample_ran": true,
+    "workspace_file_written": true
+  },
+  "cleanup": {
+    "steps": {
+      "workspace": true,
+      "report": true,
+      "notification": true,
+      "workflow": true,
+      "workflow_master": true,
+      "workflow_master_5": true,
+      "workflow_master_6": true,
+      "document": true,
+      "custom_doctype": true,
+      "custom_field": true,
+      "parent_doctype": true,
+      "child_doctype": true
+    },
+    "all_removed": true,
+    "leftover_paths_removed": 1,
+    "module_files_restored": true,
+    "app_git_changes_unchanged": true,
+    "drift_counts_unchanged": true,
+    "test_doctypes_left_in_drift": 0
+  },
+  "passed": true,
+  "secrets_or_record_values_recorded": false
+}

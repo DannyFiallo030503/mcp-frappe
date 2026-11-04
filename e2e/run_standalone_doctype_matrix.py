@@ -526,7 +526,10 @@ async def run() -> dict:
                     })
                     custom_results.append((fname, fieldtype, bool(created_cf.get("name"))))
                     if len(custom_results) % 10 == 0:
-                        print(f"created Custom Field types: {len(custom_results)}", file=sys.stderr, flush=True)
+                        print(
+                            f"created Custom Field types: {len(custom_results)}",
+                            file=sys.stderr, flush=True,
+                        )
                 # Append the boundary first, then place Fold before that boundary.
                 section_name = "mcp_cf_section_marker"
                 section_payload = field(
