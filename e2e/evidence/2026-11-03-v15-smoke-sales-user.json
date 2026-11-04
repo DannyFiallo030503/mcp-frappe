@@ -1,0 +1,22 @@
+{
+  "mode": "limited user, one call per read tool",
+  "tool_count": 34,
+  "frappe_major_version": 15,
+  "identity": "non-Administrator user (roles in the evidence file name)",
+  "read_tools": {
+    "get_site_info": "pass",
+    "list_installed_apps": "pass",
+    "list_doctypes": "denied (403 PermissionError)",
+    "get_doctype_schema": "pass",
+    "list_documents": "pass",
+    "count_documents": "pass",
+    "search_records": "pass",
+    "list_reports": "pass",
+    "get_report_filters": "pass",
+    "run_report": "pass",
+    "get_workflow": "denied (403 PermissionError)",
+    "list_notifications": "denied (403 PermissionError)",
+    "get_workspace": "pass"
+  },
+  "read_only": true
+}

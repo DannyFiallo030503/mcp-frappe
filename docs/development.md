@@ -49,7 +49,9 @@ Each runner prints aggregate JSON only (counts, booleans, versions; never record
 uv run python e2e/run_standalone_smoke.py
 ```
 
-It reads site info, app and DocType metadata, the ERPNext `Customer` schema, a single DocType record, and one report row. With `FRAPPE_APPS_PATH`, `FRAPPE_TEST_APP`, and `FRAPPE_TEST_MODULE` set, it also previews (never confirms) DocType creation, a Custom Field, a Property Setter, and an export in the test app.
+It reads site info, app and DocType metadata, the ERPNext `Customer` schema, a single DocType record, and one report row, then calls each read tool once and records `pass`, `denied`, or `fail` per tool under `read_tools`. With `FRAPPE_APPS_PATH`, `FRAPPE_TEST_APP`, and `FRAPPE_TEST_MODULE` set, it also previews (never confirms) DocType creation, a Custom Field, a Property Setter, and an export in the test app.
+
+For a user without System Manager, set `FRAPPE_SMOKE_LIMITED_USER=YES` and leave `FRAPPE_TEST_APP` unset: the runner then makes only the per-tool read calls, so a denied tool doesn't stop the run. Use a temporary user with one role (for example Sales User) and delete it afterwards.
 
 ## Temporary document acceptance
 

@@ -15,7 +15,7 @@ All evidence so far comes from one v15 site. Before developers rely on the serve
 
 ### Live validation: only with the user's explicit approval, on disposable sites
 
-- [ ] **Get the sites.** Ask the user which disposable sites to use. A local v16 Bench may already exist (for example a `frappe_docker` development setup); a v15 site is also needed. Both should be in developer mode, with Frappe, ERPNext (so the customize tools have standard DocTypes to work on), and a disposable test app under `FRAPPE_APPS_PATH`. Never point the runners at a site the user hasn't named as disposable.
+- [x] **Get the sites.** Ask the user which disposable sites to use. A local v16 Bench may already exist (for example a `frappe_docker` development setup); a v15 site is also needed. Both should be in developer mode, with Frappe, ERPNext (so the customize tools have standard DocTypes to work on), and a disposable test app under `FRAPPE_APPS_PATH`. Never point the runners at a site the user hasn't named as disposable.
 - [x] **Update the runners.** Bring `e2e/run_standalone_smoke.py` and the mutation, customization, and DocType-matrix runners up to the current tool contract, if earlier stages didn't already.
 - [x] **Add `e2e/run_standalone_developer_flow.py`.** This is opt-in (`FRAPPE_ALLOW_DEVELOPER_FLOW_TEST=YES`), refuses non-loopback targets, and needs `FRAPPE_APPS_PATH` with a disposable test app. The flow:
   1. Create a standard DocType and a child table in the test app; check `diff_doctype` reports `in_sync`.
@@ -27,8 +27,8 @@ All evidence so far comes from one v15 site. Before developers rely on the serve
   7. Remove everything, restore the test app's files, and check `list_app_drift` is clean.
 
   Print aggregate results only.
-- [ ] **Limited-user smoke run (optional).** If the user wants it, create a temporary user with only `Sales User`, run the read-only smoke runner as that user, then delete the user. Record which read tools work.
-- [ ] **Record the results** as redacted evidence JSON under `e2e/`, with the MCP commit, versions, developer mode, and pass/fail per area.
+- [x] **Limited-user smoke run (optional).** If the user wants it, create a temporary user with only `Sales User`, run the read-only smoke runner as that user, then delete the user. Record which read tools work.
+- [x] **Record the results** as redacted evidence JSON under `e2e/`, with the MCP commit, versions, developer mode, and pass/fail per area.
 
 ### Docs
 
@@ -61,24 +61,18 @@ New tools. Anything in the backlog.
 
 ## Handoff
 
-- Status: partial. Everything that doesn't need a live site is done; the live runs are left (the user chose to build now and run later, since no disposable site was available in this session).
-- Branch / commits: `stage-13-compat-and-docs`, based on `main` at `89ce7da` (stages 00-12 merged).
-- Sites used (versions only, no hostnames or credentials): none. The matrix's v15 cells cite the 2026-10-16/19 runs (Frappe 15.96.0, ERPNext 15.96.1, server 0.2.0, Administrator), now in `e2e/history/`.
-- What changed:
-  - New `e2e/run_standalone_developer_flow.py` (`FRAPPE_ALLOW_DEVELOPER_FLOW_TEST=YES`, loopback `.localhost` only, needs `FRAPPE_APPS_PATH`, `FRAPPE_TEST_APP`, `FRAPPE_TEST_MODULE`; optional `FRAPPE_TEST_CUSTOMIZE_DOCTYPE`, default `ToDo`). It runs the stage's seven steps as nine areas, each `pass` / `fail: <exception class>` / `skipped` (the steps after a failure are skipped). Lifecycle runs before the Workflow, because submit and cancel refuse DocTypes with an active Workflow. The parent DocType has its own `workflow_state` field, so the Workflow adds no Custom Field. States and the action get unique names, so the "create masters" path runs and cleanup deletes exactly what the preview listed in `creates`. Cleanup is a LIFO stack run in `finally`. It then removes leftover folders named with the run's suffix, and new folders holding only `__init__.py`, from the test module only. It compares the module's file list, the app's `git status --porcelain` count, and `list_app_drift` counts with their state before the run. Output: MCP version and commit, site app versions, Frappe major, identity (`Administrator` or `other user`), developer mode as shown by Frappe writing the standard files, areas, details (verdicts, checks), and cleanup. Exit code 1 on any failure.
-  - Existing runners: `FRAPPE_TEST_APP` / `FRAPPE_TEST_MODULE` replace the hardcoded `erp_app` / `CubaZone` (the writing runners refuse to run without them, or with `frappe`/`erpnext`; the smoke runner skips its app-preview part). The customization runner now deletes its Property Setter on the success path too; before, it was deleted only in the failure cleanup and left behind otherwise. It reports `temporary_property_setter_deleted`. Docstrings list the required variables. No new ruff errors (27 pre-existing E501; the one I001 is gone).
-  - `e2e/history/`: the six old reports and evidence files, moved with `git mv`; links fixed (including `REAL_HTTP_REPORT.md` to `legacy/e2e/run_real_http.py`).
-  - Docs: `compatibility-and-validation.md` rewritten around the matrix (area rows, v15 and v16 columns), a runner-to-row table, how to save evidence (`e2e/evidence/<date>-v<major>-<runner>.json`), the 0.2.0 known issues with what changed since, and the source-checked behaviors a live run must confirm. README rewritten (106 lines): nine example prompts, then install, configure, toolsets, safety, docs. Its links are absolute GitHub URLs because it is the PyPI description. Capability study: the coverage table now has "Implemented" and "Site-verified (version, role)" columns. `llms.txt` and `ROADMAP.md` were rewritten: finished work is under Implemented, and the backlog is copied from this folder. Also `development.md` (runner setup, DocType matrix and developer flow sections), `architecture.md` (`e2e/` row), `tool-reference.md` (moved link), `installation-and-configuration.md` (README anchor), `legacy/README.md`, and `CLAUDE.md`.
-  - `tests/test_docs_links.py`: every relative link in `README.md`, `llms.txt`, and every non-legacy `*.md` must resolve, including `#heading` anchors (GitHub's slug rules), and links into this repo's `github.com/.../blob/main/` tree are mapped to local files. README links must be absolute. It skips itself when `docs/` is missing (the sdist ships `tests/` without `docs/`). It runs in CI with the other tests.
-- Matrix summary: v15 has 0.2.0-era evidence (Administrator) for discovery and schema, record reads and writes, `run_report`, DocType creation, Custom Fields and Property Setters, role permissions, and the old fixture-format export. Everything else on v15, all of v16, and the limited-user column (left out until that run happens) are "not tested".
+- Status: done. The docs and runner work landed in PR #21 (first session, live runs deferred); the live runs, the fixes they led to, and the evidence are on `stage-13-live-runs` (second session, 2026-11-03).
+- Sites used (versions only, no hostnames or credentials): two fresh local Benches built for this stage, each with one `.localhost` site in developer mode, ERPNext, and a disposable `mcp_test_app` (module `MCP Test App`, one fixture DocType, clean Git checkout). v15: Frappe 15.126.0, ERPNext 15.124.4, Python 3.12. v16: Frappe 16.55.1, ERPNext 16.53.0, Python 3.14. MariaDB 11.4 in Docker. The two Benches ran side by side on separate web and Redis ports.
+- Results: all five runners passed on both sites as Administrator, the developer flow included (all nine areas, clean cleanup, module files and drift counts unchanged). `mcp-frappe check` printed `Ready.` on both. The limited-user run (a temporary Sales User, deleted afterwards) passed 10 of the 13 read tools on both versions; `list_doctypes`, `get_workflow`, and `list_notifications` are refused by Frappe's permissions. Evidence is in `e2e/evidence/2026-11-03-v{15,16}-*.json`, checked for hostnames, paths, and credentials.
+- What changed in the second session:
+  - **Bug fix:** Frappe v16 exports a Workspace to its module only when its new `standard` flag is set (v15 exports every public one). `upsert_workspace` now sends `standard: 1` when the Workspace DocType has that field (`_meta_bundle("Workspace")`), and the preview note says so. Two unit tests; the `ws_site` fixture and the MCP contract test register Workspace metadata.
+  - Developer flow: fails when the Workspace file is not written (before, it only recorded it).
+  - DocType matrix runner: progress lines go to stderr, so stdout is pure JSON. The v16 matrix evidence was produced before that change; its 12 progress lines were removed by hand, the JSON is untouched.
+  - Smoke runner: `probe_read_tools()` calls each read tool once and records `pass` / `denied (<status> <exception>)` / `fail`. It runs as part of the Administrator smoke run (`read_tools`), and alone with `FRAPPE_SMOKE_LIMITED_USER=YES`.
+  - Docs: the compatibility matrix filled in (v15, v16, and a Sales User column), the open source-review questions marked confirmed, a "Found by the live runs" section, and a "Not yet checked on a site" list. The capability study's Site-verified column, the tool reference (who can use which read tool; Workspace export on v15 vs v16), the AI agent guide (limited users), the development guide (limited-user mode), CHANGELOG (Fixed and Validated), and ROADMAP (Next) were updated.
 - Deviations from this plan:
-  - No live runs, no new evidence, no limited-user run: the user deferred them. The developer flow was checked only for lint, imports, and its opt-in and loopback guards. It has not run against Frappe, so expect fixes on the first live run (likely places: the JSON key names it reads from the app files, workflow master cleanup order, and Workspace file paths).
-  - The limited-user column is left out of the matrix instead of filled with "not tested"; the page says so.
-  - The link check is committed as a unit test (it is useful in CI) rather than as a throwaway script.
-- Remaining to finish the stage (needs disposable v15 and v16 developer-mode sites with ERPNext and a test app):
-  1. Run, in order, the smoke, mutation, customization, DocType-matrix, and developer-flow runners on each site; fix what the developer flow trips on.
-  2. Save each output under `e2e/evidence/`, read it for hostnames, credentials, and values, and update the matrix cells and the capability study's "Site-verified" column.
-  3. Optional: the limited-user (`Sales User`) smoke run, then add its column.
-  4. Re-run `mcp-frappe check` on both sites (stage 12's note).
-  5. Mark this stage `done`.
-- Suggested next backlog items: async HTTP first (the developer flow's many reloads make the blocking waits obvious), then document lifecycle and workflow actions, then MCP resources and prompts.
+  - The developer flow needed no fixes beyond the Workspace check; the handoff's guesses (JSON key names, workflow master cleanup order, Workspace paths) were all right.
+  - No Bench reload interrupted a request in these runs, so `reconciled_after_server_reload` stayed false and that path is still covered by unit tests only.
+  - `set_role_permissions` is not called by any runner, so its cells say "not tested" for 0.3.0.
+- Left for later (in the compatibility page's "Not yet checked on a site"): `set_role_permissions` live, `bench migrate` re-importing an exported Custom Field, Workflow `doc_status`/`allow_self_approval` read-back normalization, record writes as a non-System-Manager user.
+- Suggested next: the first PyPI release of 0.3.0 (stage 12's checklist), then async HTTP, document lifecycle and workflow actions, and MCP resources and prompts from the backlog.

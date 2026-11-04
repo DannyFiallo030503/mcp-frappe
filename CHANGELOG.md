@@ -89,6 +89,15 @@ and setting up configuration records. It covers work-plan stages 00–12.
 - `create_custom_field` and `set_field_property` no longer require a local app checkout.
 - Exports recurse into child tables of the merged schema, and rollback removes the
   directories the export created.
+- `upsert_workspace` saves the Workspace as `standard` on Frappe v16, which writes a Workspace
+  to its module's files only when that flag is set. Before, on v16 the Workspace was saved on
+  the site but never reached the app.
+
+### Validated
+
+- Every e2e runner, including the end-to-end developer flow, passed on fresh Frappe 15.126 and
+  16.55 development sites with ERPNext, as Administrator, and the read tools were checked as a
+  Sales User. See the compatibility matrix in `docs/compatibility-and-validation.md`.
 
 ## [0.2.0] - 2026-10-19
 

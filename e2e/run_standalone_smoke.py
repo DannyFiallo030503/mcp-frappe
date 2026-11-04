@@ -7,6 +7,9 @@ aggregate metadata and does not save credentials or record contents.
 It expects ERPNext (the Customer schema and the "Item Balance (Simple)" report). With
 FRAPPE_APPS_PATH, FRAPPE_TEST_APP, and FRAPPE_TEST_MODULE set, it also previews (never
 confirms) DocType creation, a Custom Field, a Property Setter, and an export in that app.
+
+With FRAPPE_SMOKE_LIMITED_USER=YES, for a user without System Manager, it instead calls each
+read tool once and records ``pass``, ``denied (<status> <exception>)``, or ``fail``.
 """
 
 from __future__ import annotations
@@ -14,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -40,8 +44,65 @@ def result_value(result):
     return None
 
 
+def outcome(error: Exception) -> str:
+    """Summarize a tool error as its HTTP status and Frappe exception class, no message text."""
+    match = re.search(r"Frappe HTTP (\d+) (\w+)", str(error))
+    if match:
+        status, exc_type = match.groups()
+        kind = "denied" if status in {"401", "403"} else "fail"
+        return f"{kind} ({status} {exc_type})"
+    return f"fail ({type(error).__name__})"
+
+
+async def probe_read_tools(session) -> dict:
+    """Call each read tool on its own and record pass/denied/fail, for a limited user."""
+    probes = [
+        ("get_site_info", {}),
+        ("list_installed_apps", {}),
+        ("list_doctypes", {"app": "erpnext", "limit": 5}),
+        ("get_doctype_schema", {"doctype": "Customer"}),
+        ("list_documents", {"doctype": "Customer", "fields": ["name"], "limit": 1}),
+        ("count_documents", {"doctype": "Customer"}),
+        ("search_records", {"doctype": "Customer", "text": "a", "limit": 1}),
+        ("list_reports", {"limit": 5}),
+        ("get_report_filters", {"report_name": "Item Balance (Simple)"}),
+        ("run_report", {"report_name": "Item Balance (Simple)", "limit": 1}),
+        ("get_workflow", {"doctype": "Customer"}),
+        ("list_notifications", {"limit": 5}),
+        ("get_workspace", {"name": "Selling"}),
+    ]
+    results = {}
+    for tool, arguments in probes:
+        try:
+            result_value(await session.call_tool(tool, arguments))
+            results[tool] = "pass"
+        except Exception as error:
+            results[tool] = outcome(error)
+    return results
+
+
 async def run() -> dict:
     root = Path(__file__).resolve().parents[1]
+    if os.environ.get("FRAPPE_SMOKE_LIMITED_USER") == "YES":
+        params = StdioServerParameters(
+            command=sys.executable,
+            args=["-m", "frappe_mcp.standalone"],
+            env=os.environ.copy(),
+            cwd=str(root),
+        )
+        async with stdio_client(params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                tools = await session.list_tools()
+                site_info = result_value(await session.call_tool("get_site_info", {}))
+                return {
+                    "mode": "limited user, one call per read tool",
+                    "tool_count": len(tools.tools),
+                    "frappe_major_version": site_info.get("frappe_major_version"),
+                    "identity": "non-Administrator user (roles in the evidence file name)",
+                    "read_tools": await probe_read_tools(session),
+                    "read_only": True,
+                }
     params = StdioServerParameters(
         command=sys.executable,
         args=["-m", "frappe_mcp.standalone"],
@@ -83,6 +144,7 @@ async def run() -> dict:
                 "report_tool_returned_rows": report.get("returned_rows"),
                 "report_tool_truncated": report.get("truncated"),
                 "read_only": True,
+                "read_tools": await probe_read_tools(session),
             }
             if os.environ.get("FRAPPE_APPS_PATH") and APP and MODULE:
                 app_doctypes = result_value(

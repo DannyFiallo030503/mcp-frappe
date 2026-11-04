@@ -393,6 +393,11 @@ TARGETS = {
 
 @pytest.fixture
 def ws_site(site):
+    # Frappe v16's Workspace has a `standard` flag that decides whether it is exported.
+    site.add_doctype(
+        "Workspace",
+        [{"fieldname": name, "fieldtype": "Check"} for name in ("public", "standard")],
+    )
     for doctype, records in TARGETS.items():
         site.add(
             "GET",
@@ -491,6 +496,24 @@ def test_workspace_content_places_exactly_the_given_items_in_order(ws_site) -> N
     assert by_label["Console"]["link_type"] == "Page"
     assert data["number_cards"] == [{"number_card_name": "Open Samples Count",
                                      "label": "Open Samples Count"}]
+
+
+def test_workspace_is_saved_as_standard_when_frappe_has_the_flag(ws_site) -> None:
+    # Frappe v16 exports a Workspace to its module only when `standard` is set.
+    preview = _workspace()
+    _workspace(confirm=True)
+
+    assert preview["record"]["standard"] == 1
+    assert _saved(ws_site)["standard"] == 1
+
+
+def test_workspace_omits_standard_where_frappe_has_no_such_field(ws_site) -> None:
+    # Frappe v15 has no `standard` field; `public` alone makes it export the Workspace.
+    ws_site.add_doctype("Workspace", [{"fieldname": "public", "fieldtype": "Check"}])
+
+    _workspace(confirm=True)
+
+    assert "standard" not in _saved(ws_site)
 
 
 def test_workspace_content_is_deterministic(ws_site) -> None:
