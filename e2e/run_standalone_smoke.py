@@ -144,6 +144,7 @@ async def run() -> dict:
                 "report_tool_returned_rows": report.get("returned_rows"),
                 "report_tool_truncated": report.get("truncated"),
                 "read_only": True,
+                "read_tools": await probe_read_tools(session),
             }
             if os.environ.get("FRAPPE_APPS_PATH") and APP and MODULE:
                 app_doctypes = result_value(
