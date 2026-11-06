@@ -1771,14 +1771,18 @@ def export_form_customizations(
     doctype: str,
     sync_on_migrate: bool = True,
     with_permissions: bool = False,
-    confirm: bool = False,
-    expected_preview: str | None = None,
+    confirm: Confirm = False,
+    expected_preview: ExpectedPreview = None,
 ) -> dict[str, Any]:
     """Preview, then call Frappe's native Customize Form export method.
 
     Frappe generates the files on the site host. The preview fingerprints the
     current source records and lists expected paths; Frappe does not expose a
     dry-run form of this method, so the MCP does not fabricate a file diff.
+
+    Args:
+        confirm: Set true only after reviewing the preview; false returns the preview.
+        expected_preview: The preview_id returned by the current preview, required to confirm.
     """
     _assert_writable_app(app)
     app_path, module_path = _assert_app_module(app, module)
