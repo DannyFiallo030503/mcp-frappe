@@ -73,8 +73,7 @@ framework operation or fabricate its output.
 
 ## Live validation on Aspire
 
-The MCP connected to the local `cubazone.localhost` site using its local
-`Administrator` / `admin` defaults. An MCP stdio client listed all 15 tools,
+The MCP connected to the local `cubazone.localhost` site. An MCP stdio client listed all 15 tools,
 read installed apps, and fetched the Customer schema. A direct read of
 `frappe.auth.get_logged_user` confirmed the authenticated identity was
 Administrator. The Customer schema came from Frappe's metadata endpoint and
