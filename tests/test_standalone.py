@@ -41,6 +41,7 @@ def test_server_registers_expected_tools() -> None:
         "create_custom_field",
         "set_field_property",
         "export_customizations",
+        "export_form_customizations",
         "rollback_export",
     }
 
@@ -112,9 +113,7 @@ def test_doctype_creation_does_not_blindly_replay_when_metadata_is_absent(
     assert generated.exists()
 
 
-def test_delete_reconciles_a_worker_reload_after_document_is_gone(
-    fake_site, monkeypatch
-) -> None:
+def test_delete_reconciles_a_worker_reload_after_document_is_gone(fake_site, monkeypatch) -> None:
     fake_site.add("GET", "/api/resource/Example/EX-1", {"name": "EX-1", "modified": "current"})
     fake_site.add(
         "DELETE", "/api/resource/Example/EX-1", standalone.httpx.ConnectError("worker restarted")
@@ -334,3 +333,71 @@ def test_set_role_permissions_previews_then_calls_native_permission_manager(monk
     assert len(writes) == 4
     assert writes[1][2]["json"]["ptype"] == "read"
     assert writes[3][2]["json"]["value"] == 0
+
+
+def test_export_form_customizations_calls_native_frappe_export(tmp_path: Path, monkeypatch) -> None:
+    app_path = tmp_path / "apps" / "erp_app"
+    module_path = app_path / "erp_app" / "cubazone"
+    module_path.mkdir(parents=True)
+    monkeypatch.setattr(standalone, "_assert_app_module", lambda *_: (app_path, module_path))
+    monkeypatch.setattr(
+        standalone,
+        "_meta_bundle",
+        lambda _: {
+            "doctype": {"module": "Setup", "fields": [], "links": []},
+            "children": {},
+            "workflow": None,
+        },
+    )
+
+    def request(method, path, **kwargs):
+        if method == "POST":
+            assert path == "/api/method/frappe.modules.utils.export_customizations"
+            assert kwargs["data"] == {
+                "module": "CubaZone",
+                "doctype": "Brand",
+                "sync_on_migrate": 1,
+                "with_permissions": 0,
+            }
+            return str(module_path / "custom" / "brand.json")
+        if path == "/api/method/frappe.auth.get_logged_user":
+            return "Administrator"
+        if path == "/api/method/frappe.core.doctype.user.user.get_roles":
+            return ["System Manager"]
+        assert method == "GET"
+        if path.endswith("/Custom%20Field"):
+            return [
+                {
+                    "name": "Brand-disabled",
+                    "modified": "2026-10-22 10:00:00",
+                }
+            ]
+        if path.endswith(("/Property%20Setter", "/DocType%20Link")):
+            return []
+        raise AssertionError(f"Unexpected resource: {path}")
+
+    monkeypatch.setattr(standalone, "_request", request)
+
+    preview = standalone.export_form_customizations(
+        app="erp_app", module="CubaZone", doctype="Brand"
+    )
+
+    destination = module_path / "custom" / "brand.json"
+    assert preview["requires_confirmation"] is True
+    assert preview["sync_on_migrate"] is True
+    assert preview["files"][0]["path"] == str(destination)
+    assert preview["content_diff_available"] is False
+    assert not destination.exists()
+
+    result = standalone.export_form_customizations(
+        app="erp_app",
+        module="CubaZone",
+        doctype="Brand",
+        confirm=True,
+        expected_preview=preview["preview_id"],
+    )
+
+    assert result["exported"] is True
+    assert result["sync_on_migrate"] is True
+    assert result["native_result"] == str(destination)
+    assert result["shared_app_tree_detected"] is True
