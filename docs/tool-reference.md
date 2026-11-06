@@ -12,7 +12,7 @@ Tools are grouped into four toolsets. All four are on by default; `FRAPPE_MCP_TO
 |---|---|
 | `read` | `get_site_info`, `list_installed_apps`, `list_doctypes`, `get_doctype_schema`, `list_documents`, `count_documents`, `search_records`, `get_document`, `list_reports`, `get_report_filters`, `run_report`, `diff_doctype`, `list_app_drift`, `get_workflow`, `list_notifications`, `get_workspace` |
 | `data` | `create_document`, `update_document`, `delete_document`, `submit_document`, `cancel_document` |
-| `customize` | `create_custom_field`, `set_field_property`, `set_role_permissions`, `export_customizations`, `rollback_export` |
+| `customize` | `create_custom_field`, `set_field_property`, `set_role_permissions`, `export_form_customizations`, `export_customizations`, `rollback_export` |
 | `developer` | `create_doctype`, `update_doctype`, `delete_doctype`, `promote_custom_doctype`, `upsert_workflow`, `upsert_notification`, `upsert_report`, `upsert_workspace` |
 
 `FRAPPE_MCP_READ_ONLY=YES` is shorthand for `FRAPPE_MCP_TOOLSETS=read`: use it to look at a site that must not change. The server refuses to start on an unknown toolset name, on a `FRAPPE_MCP_READ_ONLY` value other than `YES` or `NO`, and on `FRAPPE_MCP_READ_ONLY=YES` combined with a toolset other than `read`.
@@ -175,6 +175,7 @@ All conditions are combined with AND. In the four-element form, `doctype` must b
 | `set_role_permissions` | Add or update role permissions through Frappe's native Permission Manager | `doctype`, `role`, `permissions`, `permlevel`; preview, then confirm |
 | `create_custom_field` | Add a Custom Field | `doctype`, `field`, optional `app`/`module`; preview, then confirm |
 | `set_field_property` | Create or update the Property Setter for an allowlisted form property | `doctype`, `property`, `value`, optional `fieldname`/`property_type`/`app`/`module`; preview, then confirm (with `expected_modified` when the setter exists) |
+| `export_form_customizations` | Preview then call Frappe's native Customize Form exporter for one DocType and its child tables | `app`, destination `module`, `doctype`, optional `sync_on_migrate`/`with_permissions`; preview, then confirm with the current `preview_id` |
 | `export_customizations` | Export site customizations to Frappe's native `custom/` files (and Client Scripts and, with `with_workflows`, Workflows to app fixtures) so `bench migrate` applies them | `app`, `module`, `doctypes`, optional `with_permissions`/`apply_module_filter`/`sync_on_migrate`/`with_workflows`; confirm with the current `preview_id` |
 | `rollback_export` | Restore or remove files from one prior export | Preview, then confirm with the current rollback `preview_id` |
 

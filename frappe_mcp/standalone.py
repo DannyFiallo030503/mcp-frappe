@@ -45,7 +45,8 @@ FRAPPE_APPS_PATH (file writes need one).
 anything; use its fieldnames.
 - Your own app's DocTypes: create_doctype, update_doctype, delete_doctype, \
 promote_custom_doctype. frappe/erpnext DocTypes: create_custom_field, set_field_property, \
-set_role_permissions, then export_customizations into your app. Workflows, Notifications, \
+set_role_permissions, export_form_customizations for native Customize Form files, and \
+export_customizations for fixtures. Workflows, Notifications, \
 Report Builder reports, Workspaces: the upsert_* tools.
 - Run diff_doctype before and after editing a standard DocType; list_app_drift shows what \
 differs between the site and the app files.
@@ -508,12 +509,33 @@ _FIXTURE_DROPPED_KEYS = frozenset({"modified_by", "creation", "owner", "idx", "l
 _PROTECTED_APPS = {"frappe", "erpnext"}
 # Keys that differ between a DocType record and its exported JSON for reasons other than drift.
 _DOCTYPE_SYSTEM_KEYS = frozenset(
-    {"name", "doctype", "owner", "creation", "modified", "modified_by", "docstatus", "idx",
-     "migration_hash", "field_order"}
+    {
+        "name",
+        "doctype",
+        "owner",
+        "creation",
+        "modified",
+        "modified_by",
+        "docstatus",
+        "idx",
+        "migration_hash",
+        "field_order",
+    }
 )
 _CHILD_SYSTEM_KEYS = frozenset(
-    {"name", "doctype", "owner", "creation", "modified", "modified_by", "docstatus", "idx",
-     "parent", "parenttype", "parentfield"}
+    {
+        "name",
+        "doctype",
+        "owner",
+        "creation",
+        "modified",
+        "modified_by",
+        "docstatus",
+        "idx",
+        "parent",
+        "parenttype",
+        "parentfield",
+    }
 )
 _APP_FILE_MAX_BYTES = 5_000_000
 _DRIFT_MAX_ITEMS = 100
@@ -894,9 +916,7 @@ def _assert_filters(bundle: dict[str, Any], filters: dict[str, Any] | list[Any] 
     if isinstance(filters, dict):
         for field, value in filters.items():
             _assert_readable_fields(schema, [field])
-            if isinstance(value, dict) or (
-                isinstance(value, list | tuple) and len(value) != 2
-            ):
+            if isinstance(value, dict) or (isinstance(value, list | tuple) and len(value) != 2):
                 raise ValueError(f"Filter for {field} must be a value or [operator, value]")
             if isinstance(value, list | tuple):
                 _assert_operator(value[0])
@@ -1102,9 +1122,7 @@ def _doctype_exists(name: str) -> bool:
     return bool(rows)
 
 
-def _wait_for_doctype(
-    name: str, generated_files: list[Path], timeout: float = 60.0
-) -> bool:
+def _wait_for_doctype(name: str, generated_files: list[Path], timeout: float = 60.0) -> bool:
     """Wait for Frappe's reloader and the in-flight request to settle before reconciling."""
     deadline = time.monotonic() + timeout
     online_since: float | None = None
@@ -1372,9 +1390,7 @@ def _atomic_write(path: Path, content: str, mode: int | None = None) -> None:
         Path(temp_name).unlink(missing_ok=True)
 
 
-def _fixture_plan(
-    app_path: Path, entries: dict[str, dict[str, list[str]]]
-) -> tuple[Path, str]:
+def _fixture_plan(app_path: Path, entries: dict[str, dict[str, list[str]]]) -> tuple[Path, str]:
     """Plan the managed `hooks.py` block that keeps exported records in the app's `fixtures`.
 
     `entries` maps a fixture DocType to `{filter_field: values}`; each becomes an `in` filter,
@@ -1420,11 +1436,7 @@ def _fixture_plan(
         filters = [list(condition) for condition in previous.get("filters", [])] if previous else []
         for key, incoming in entries.get(doctype, {}).items():
             current = next(
-                (
-                    condition
-                    for condition in filters
-                    if len(condition) == 3 and condition[0] == key
-                ),
+                (condition for condition in filters if len(condition) == 3 and condition[0] == key),
                 None,
             )
             if current and current[1] == "in":
@@ -1642,6 +1654,88 @@ def _created_dirs(app_path: Path, path: Path) -> list[str]:
     return [str(directory.relative_to(app_path)) for directory in reversed(missing)]
 
 
+def _customization_export_snapshot(
+    module_path: Path,
+    doctype: str,
+    *,
+    with_permissions: bool,
+    seen: set[str] | None = None,
+) -> tuple[list[tuple[str, Path]], list[dict[str, Any]]]:
+    """Fingerprint Frappe's export inputs without serializing or writing them."""
+    seen = seen or set()
+    if doctype in seen:
+        return [], []
+    if len(seen) >= 50:
+        raise ValueError("Customize Form export exceeds 50 DocTypes")
+    seen.add(doctype)
+    schema = _meta_bundle(doctype)["doctype"]
+    targets = [(doctype, module_path / "custom" / f"{_scrub(doctype)}.json")]
+    snapshot: list[dict[str, Any]] = [{"doctype": doctype, "modified": schema.get("modified")}]
+
+    def record_state(resource_doctype: str, filters: dict[str, Any]) -> list[dict[str, Any]]:
+        result = _request(
+            "GET",
+            _resource(resource_doctype),
+            params={
+                "fields": '["name","modified"]',
+                "filters": _filters(filters),
+                "limit_page_length": 1000,
+                "order_by": "name asc",
+            },
+        )
+        if not isinstance(result, list):
+            raise RuntimeError(f"Unexpected {resource_doctype} response")
+        if len(result) >= 1000:
+            raise ValueError(f"Too many {resource_doctype} records to export safely")
+        return [{"name": row.get("name"), "modified": row.get("modified")} for row in result]
+
+    resources = [
+        ("Custom Field", {"dt": doctype}),
+        ("Property Setter", {"doc_type": doctype}),
+    ]
+    if with_permissions:
+        resources.append(("Custom DocPerm", {"parent": doctype}))
+    for resource_doctype, filters in resources:
+        snapshot.append(
+            {
+                "resource": resource_doctype,
+                "records": record_state(resource_doctype, filters),
+            }
+        )
+
+    links = schema.get("links", [])
+    if not isinstance(links, list) or len(links) > 1000:
+        raise ValueError("Too many or malformed DocType Link metadata records to preview")
+    snapshot.append({"resource": "DocType Link", "records": links})
+
+    for field in schema.get("fields", []):
+        child_doctype = field.get("options")
+        if field.get("fieldtype") in {"Table", "Table MultiSelect"} and isinstance(
+            child_doctype, str
+        ):
+            child_targets, child_snapshot = _customization_export_snapshot(
+                module_path,
+                child_doctype,
+                with_permissions=with_permissions,
+                seen=seen,
+            )
+            targets.extend(child_targets)
+            snapshot.extend(child_snapshot)
+    return targets, snapshot
+
+
+def _assert_system_manager() -> None:
+    """Match Customize Form's System Manager access before calling its exporter."""
+    user = _request("GET", "/api/method/frappe.auth.get_logged_user")
+    roles = _request(
+        "GET",
+        "/api/method/frappe.core.doctype.user.user.get_roles",
+        params={"uid": user},
+    )
+    if not isinstance(roles, list) or "System Manager" not in roles:
+        raise PermissionError("Customize Form export requires the System Manager role")
+
+
 def _safe_app_file(app_path: Path, path: Path) -> Path:
     resolved = path.resolve(strict=False)
     if not resolved.is_relative_to(app_path.resolve()) or resolved == app_path.resolve():
@@ -1667,6 +1761,151 @@ def _file_preview(path: Path, content: str) -> dict[str, Any]:
         "new_sha256": hashlib.sha256(content.encode()).hexdigest(),
         "diff": diff[:12000],
         "diff_truncated": len(diff) > 12000,
+    }
+
+
+@_tool("customize", "Export form customizations")
+def export_form_customizations(
+    app: str,
+    module: str,
+    doctype: str,
+    sync_on_migrate: bool = True,
+    with_permissions: bool = False,
+    confirm: bool = False,
+    expected_preview: str | None = None,
+) -> dict[str, Any]:
+    """Preview, then call Frappe's native Customize Form export method.
+
+    Frappe generates the files on the site host. The preview fingerprints the
+    current source records and lists expected paths; Frappe does not expose a
+    dry-run form of this method, so the MCP does not fabricate a file diff.
+    """
+    _assert_writable_app(app)
+    app_path, module_path = _assert_app_module(app, module)
+    if not _SAFE_NAME.fullmatch(doctype):
+        raise ValueError("Invalid DocType name")
+
+    targets, source_snapshot = _customization_export_snapshot(
+        module_path,
+        doctype,
+        with_permissions=with_permissions,
+    )
+    if len(targets) > 50:
+        raise ValueError("Customize Form export exceeds 50 files")
+    input_state = {
+        "app": app,
+        "module": module,
+        "doctype": doctype,
+        "sync_on_migrate": sync_on_migrate,
+        "with_permissions": with_permissions,
+        "source": source_snapshot,
+    }
+    file_previews = []
+    previous_contents: dict[Path, str | None] = {}
+    for target_doctype, path in targets:
+        path = _safe_app_file(app_path, path)
+        current = path.read_text(encoding="utf-8") if path.is_file() else None
+        previous_contents[path] = current
+        file_previews.append(
+            {
+                "doctype": target_doctype,
+                "path": str(path),
+                "exists": current is not None,
+                "current_sha256": (
+                    hashlib.sha256(current.encode()).hexdigest() if current else None
+                ),
+            }
+        )
+    input_state["destination"] = [
+        {key: item[key] for key in ("doctype", "path", "current_sha256")} for item in file_previews
+    ]
+    preview_id = hashlib.sha256(
+        json.dumps(input_state, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    if not confirm:
+        return {
+            "preview": True,
+            "action": "export_form_customizations",
+            "app": app,
+            "module": module,
+            "doctype": doctype,
+            "sync_on_migrate": sync_on_migrate,
+            "with_permissions": with_permissions,
+            "files": file_previews,
+            "content_diff_available": False,
+            "preview_id": preview_id,
+            "requires_confirmation": True,
+        }
+    if expected_preview != preview_id:
+        raise ValueError("Customize Form preview is missing or stale")
+    _assert_system_manager()
+
+    native_result = _request(
+        "POST",
+        "/api/method/frappe.modules.utils.export_customizations",
+        data={
+            "module": module,
+            "doctype": doctype,
+            "sync_on_migrate": int(sync_on_migrate),
+            "with_permissions": int(with_permissions),
+        },
+    )
+
+    manifest: list[dict[str, Any]] = []
+    backup_root = _safe_app_file(app_path, app_path / ".mcp-frappe-backups")
+    for path, previous in previous_contents.items():
+        if not path.is_file():
+            continue
+        content = path.read_text(encoding="utf-8")
+        if content == previous:
+            continue
+        backup_name = None
+        if previous is not None:
+            backup_name = f"{uuid.uuid4().hex}.bak"
+            _atomic_write(backup_root / backup_name, previous, mode=0o600)
+        manifest.append(
+            {
+                "path": str(path.relative_to(app_path.resolve())),
+                "backup": backup_name,
+                "exported_sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+            }
+        )
+    rollback_id = None
+    if manifest:
+        backup_root.mkdir(parents=True, exist_ok=True)
+        rollback_id = f"export-{preview_id[:32]}.json"
+        _atomic_write(
+            backup_root / rollback_id,
+            json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+            mode=0o600,
+        )
+    local_files = [
+        str(path)
+        for path, previous in previous_contents.items()
+        if path.is_file() and path.read_text(encoding="utf-8") != previous
+    ]
+    native_path = native_result if isinstance(native_result, str) else None
+    native_path_matches_local = bool(
+        native_path
+        and Path(native_path).resolve(strict=False)
+        in {path.resolve(strict=False) for path in previous_contents}
+    )
+    has_exportable_records = any(
+        item.get("resource") in {"Custom Field", "Property Setter", "Custom DocPerm"}
+        and item.get("records")
+        for item in source_snapshot
+    )
+    return {
+        "exported": bool(native_result or local_files or has_exportable_records),
+        "app": app,
+        "module": module,
+        "doctype": doctype,
+        "sync_on_migrate": sync_on_migrate,
+        "files": local_files or ([native_path] if native_path else []),
+        "native_result": native_result,
+        "shared_app_tree_detected": bool(local_files or native_path_matches_local),
+        "changed_local_files": local_files,
+        "rollback_id": rollback_id,
     }
 
 
@@ -1829,9 +2068,7 @@ def _compact_fields(meta: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 @_tool("read", "Get DocType schema")
-def get_doctype_schema(
-    doctype: str, detail: Detail = "compact"
-) -> dict[str, Any]:
+def get_doctype_schema(doctype: str, detail: Detail = "compact") -> dict[str, Any]:
     """Read a DocType's schema as Frappe's form sees it, with Custom Fields and Property Setters.
 
     Any logged-in user can read it. `compact` (the default) returns the DocType flags (`name`,
@@ -1920,9 +2157,7 @@ def _get_count(doctype: str, filters: dict[str, Any] | list[list[Any]] | None) -
 
 
 @_tool("read", "Count documents")
-def count_documents(
-    doctype: str, filters: Filters = None
-) -> dict[str, Any]:
+def count_documents(doctype: str, filters: Filters = None) -> dict[str, Any]:
     """Count the records the user may read, with the same `filters` as `list_documents`."""
     _assert_filters(_meta_bundle(doctype), filters)
     count = _get_count(doctype, filters)
@@ -2544,12 +2779,15 @@ def create_doctype(
         "created": True,
         "doctype": name,
         "app": app,
-        "files": {key: str(path) for key, path in {
-            "json": destination,
-            "python": python_file,
-            "javascript": javascript_file,
-            "test": test_file,
-        }.items()},
+        "files": {
+            key: str(path)
+            for key, path in {
+                "json": destination,
+                "python": python_file,
+                "javascript": javascript_file,
+                "test": test_file,
+            }.items()
+        },
         "file_status": file_status,
         "native_files_complete": all(value is not False for value in file_status.values()),
         "reconciled_after_server_reload": reconciled,
@@ -2670,9 +2908,7 @@ def _insert_position(rows: list[dict[str, Any]], insert_after: Any, where: str) 
     return _field_index(rows, insert_after, f"{where}: insert_after") + 1
 
 
-def _plan_doctype_update(
-    doc: dict[str, Any], operations: Any, taken: set[str]
-) -> dict[str, Any]:
+def _plan_doctype_update(doc: dict[str, Any], operations: Any, taken: set[str]) -> dict[str, Any]:
     """Apply `operations` in order to a copy of a DocType record's fields and settings.
 
     `taken` holds fieldnames the DocType already has outside its own record (Custom Fields).
@@ -2745,18 +2981,14 @@ def _plan_doctype_update(
             values = operation["set"]
             if not isinstance(values, dict) or not values:
                 raise ValueError(f"{where}.set must be a non-empty object")
-            unsupported = sorted(
-                set(values) - (_DOCTYPE_PROPERTIES - _DOCTYPE_TABLE_PROPERTIES)
-            )
+            unsupported = sorted(set(values) - (_DOCTYPE_PROPERTIES - _DOCTYPE_TABLE_PROPERTIES))
             if unsupported:
                 raise ValueError(
                     f"{where}: unsupported DocType properties: {', '.join(unsupported)}"
                 )
             for key, value in values.items():
                 if value is not None and not isinstance(value, str | int | float):
-                    raise ValueError(
-                        f"{where}: {key} must be a string, number, boolean, or null"
-                    )
+                    raise ValueError(f"{where}: {key} must be a string, number, boolean, or null")
                 properties[key] = int(value) if isinstance(value, bool) else value
     return {"rows": rows, "properties": properties, "moved": moved, "touched": touched}
 
@@ -2787,9 +3019,7 @@ def _doctype_diff(doc: dict[str, Any], plan: dict[str, Any]) -> dict[str, Any]:
             "fieldtype": row.get("fieldtype"),
             "label": row.get("label"),
             **(
-                {"options": row.get("options")}
-                if row.get("fieldtype") in _TABLE_FIELDTYPES
-                else {}
+                {"options": row.get("options")} if row.get("fieldtype") in _TABLE_FIELDTYPES else {}
             ),
         }
         for name, row in before.items()
@@ -2798,9 +3028,7 @@ def _doctype_diff(doc: dict[str, Any], plan: dict[str, Any]) -> dict[str, Any]:
     moved = [
         {"fieldname": name, "insert_after": previous(new_rows, name)}
         for name in dict.fromkeys(plan["moved"])
-        if name in before
-        and name in after
-        and previous(new_rows, name) != previous(old_rows, name)
+        if name in before and name in after and previous(new_rows, name) != previous(old_rows, name)
     ]
     changed: dict[str, dict[str, Any]] = {}
     for name, row in after.items():
@@ -2855,8 +3083,11 @@ def _check_link_targets(
     after = {row.get("fieldname"): row for row in rows}
     for name in before.keys() | after.keys():
         old, new = before.get(name), after.get(name)
-        if old and new and (old.get("fieldtype"), old.get("options")) == (
-            new.get("fieldtype"), new.get("options")
+        if (
+            old
+            and new
+            and (old.get("fieldtype"), old.get("options"))
+            == (new.get("fieldtype"), new.get("options"))
         ):
             continue
         children.update(
@@ -2968,9 +3199,7 @@ def _review_doctype_update(doc: dict[str, Any], diff: dict[str, Any]) -> list[st
     return warnings
 
 
-def _doctype_matches(
-    current: dict[str, Any], plan: dict[str, Any], expected_modified: str
-) -> bool:
+def _doctype_matches(current: dict[str, Any], plan: dict[str, Any], expected_modified: str) -> bool:
     """Tell whether a re-read DocType holds the planned change, for reload reconciliation."""
     if str(current.get("modified")) == expected_modified:
         return False
@@ -3120,13 +3349,20 @@ def _doctype_links(doctype: str) -> list[dict[str, Any]]:
         },
     )
     links = [
-        {"doctype": row.get("parent"), "fieldname": row.get("fieldname"),
-         "fieldtype": row.get("fieldtype")}
+        {
+            "doctype": row.get("parent"),
+            "fieldname": row.get("fieldname"),
+            "fieldtype": row.get("fieldtype"),
+        }
         for row in standard
         if row.get("parent") != doctype
     ] + [
-        {"doctype": row.get("dt"), "fieldname": row.get("fieldname"),
-         "fieldtype": row.get("fieldtype"), "custom_field": True}
+        {
+            "doctype": row.get("dt"),
+            "fieldname": row.get("fieldname"),
+            "fieldtype": row.get("fieldtype"),
+            "custom_field": True,
+        }
         for row in custom
         if row.get("dt") != doctype
     ]
@@ -3253,12 +3489,18 @@ def _normalize_doctype(doc: dict[str, Any]) -> dict[str, Any]:
     for position, row in enumerate(tables.pop("fields", [])):
         fields[row.get("fieldname") or f"{row.get('fieldtype', 'field')}#{position}"] = row
     order = doc.get("field_order")
-    listed = list(dict.fromkeys(name for name in order if name in fields)) if isinstance(
-        order, list
-    ) else []
+    listed = (
+        list(dict.fromkeys(name for name in order if name in fields))
+        if isinstance(order, list)
+        else []
+    )
     field_order = listed + [name for name in fields if name not in listed]
-    return {"properties": properties, "fields": fields, "field_order": field_order,
-            "tables": tables}
+    return {
+        "properties": properties,
+        "fields": fields,
+        "field_order": field_order,
+        "tables": tables,
+    }
 
 
 def _value_changes(site: dict[str, Any], app: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -3971,20 +4213,28 @@ def set_role_permissions(
     base_url = "/api/method/frappe.core.page.permission_manager.permission_manager"
     try:
         if not permission_rows:
-            _request("POST", f"{base_url}.add", json={
-                "parent": doctype,
-                "role": role,
-                "permlevel": permlevel,
-            })
+            _request(
+                "POST",
+                f"{base_url}.add",
+                json={
+                    "parent": doctype,
+                    "role": role,
+                    "permlevel": permlevel,
+                },
+            )
         for flag, value in permissions.items():
-            _request("POST", f"{base_url}.update", json={
-                "doctype": doctype,
-                "role": role,
-                "permlevel": permlevel,
-                "ptype": flag,
-                "value": int(value),
-                "if_owner": 0,
-            })
+            _request(
+                "POST",
+                f"{base_url}.update",
+                json={
+                    "doctype": doctype,
+                    "role": role,
+                    "permlevel": permlevel,
+                    "ptype": flag,
+                    "value": int(value),
+                    "if_owner": 0,
+                },
+            )
     finally:
         _forget_meta(doctype)
     return {
@@ -4766,13 +5016,8 @@ def _workflow_states(states: Any, schema: dict[str, Any]) -> list[dict[str, Any]
     return rows
 
 
-def _workflow_transitions(
-    transitions: Any, states: list[dict[str, Any]]
-) -> list[dict[str, Any]]:
-    if (
-        not isinstance(transitions, list)
-        or not 1 <= len(transitions) <= _WORKFLOW_MAX_TRANSITIONS
-    ):
+def _workflow_transitions(transitions: Any, states: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not isinstance(transitions, list) or not 1 <= len(transitions) <= _WORKFLOW_MAX_TRANSITIONS:
         raise ValueError(f"transitions must list 1 to {_WORKFLOW_MAX_TRANSITIONS} transitions")
     doc_status = {row["state"]: row["doc_status"] for row in states}
     rows: list[dict[str, Any]] = []
@@ -4982,8 +5227,7 @@ def upsert_workflow(
     unreachable, dead_ends = _workflow_paths(state_rows, transition_rows)
     if unreachable:
         raise ValueError(
-            f"No transition path from {state_rows[0]['state']!r} reaches: "
-            f"{', '.join(unreachable)}"
+            f"No transition path from {state_rows[0]['state']!r} reaches: {', '.join(unreachable)}"
         )
     _assert_roles(
         [row["allow_edit"] for row in state_rows] + [row["allowed"] for row in transition_rows]
@@ -4993,8 +5237,10 @@ def upsert_workflow(
         raise ValueError(
             f"Workflow {name} belongs to {current.get('document_type')}; choose another name"
         )
-    if confirm and current and (
-        not expected_modified or str(current.get("modified")) != expected_modified
+    if (
+        confirm
+        and current
+        and (not expected_modified or str(current.get("modified")) != expected_modified)
     ):
         raise ValueError(_STALE_DOCUMENT)
     missing_states = _missing_records("Workflow State", [row["state"] for row in state_rows])
@@ -5233,9 +5479,7 @@ def _standard_module(module: Any, what: str) -> str:
 def upsert_notification(
     name: str,
     document_type: str,
-    event: Literal[
-        "New", "Save", "Submit", "Cancel", "Value Change", "Days Before", "Days After"
-    ],
+    event: Literal["New", "Save", "Submit", "Cancel", "Value Change", "Days Before", "Days After"],
     channel: Literal["Email", "System Notification"],
     recipients: list[dict[str, str]],
     subject: str,
@@ -5315,8 +5559,10 @@ def upsert_notification(
             "fieldtype"
         ) not in ("Date", "Datetime"):
             raise ValueError(f"date_changed must name a Date or Datetime field of {document_type}")
-        if isinstance(days_in_advance, bool) or not isinstance(days_in_advance, int) or (
-            days_in_advance < 1
+        if (
+            isinstance(days_in_advance, bool)
+            or not isinstance(days_in_advance, int)
+            or (days_in_advance < 1)
         ):
             raise ValueError("days_in_advance must be a positive whole number of days")
     elif date_changed is not None or days_in_advance is not None:
@@ -5340,8 +5586,10 @@ def upsert_notification(
     elif module is not None:
         raise ValueError("module applies to standard Notifications only; set is_standard")
     current = _config_record("Notification", name)
-    if confirm and current and (
-        not expected_modified or str(current.get("modified")) != expected_modified
+    if (
+        confirm
+        and current
+        and (not expected_modified or str(current.get("modified")) != expected_modified)
     ):
         raise ValueError(_STALE_DOCUMENT)
     values: dict[str, Any] = {
@@ -5618,8 +5866,9 @@ def upsert_report(
                 "the group field and the aggregate"
             )
         if sort is not None:
-            raise ValueError("order_by cannot be combined with group_by; Frappe sorts by the "
-                             "aggregate")
+            raise ValueError(
+                "order_by cannot be combined with group_by; Frappe sorts by the aggregate"
+            )
         fields.append([_AGGREGATE_COLUMN, ref_doctype])
         sort = f"{_AGGREGATE_COLUMN} desc"
     app = None
@@ -5640,8 +5889,10 @@ def upsert_report(
                 f"{name} is a standard report; Frappe refuses to make it site-only. "
                 "Pass is_standard with its module, or use another name"
             )
-    if confirm and current and (
-        not expected_modified or str(current.get("modified")) != expected_modified
+    if (
+        confirm
+        and current
+        and (not expected_modified or str(current.get("modified")) != expected_modified)
     ):
         raise ValueError(_STALE_DOCUMENT)
     try:
@@ -5759,9 +6010,9 @@ def _workspace_blocks(content: Any) -> list[dict[str, Any]]:
         blocks = json.loads(content or "[]")
     except (TypeError, ValueError):
         return []
-    return [block for block in blocks if isinstance(block, dict)] if isinstance(
-        blocks, list
-    ) else []
+    return (
+        [block for block in blocks if isinstance(block, dict)] if isinstance(blocks, list) else []
+    )
 
 
 def _workspace_layout(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -5819,16 +6070,17 @@ def get_workspace(name: str) -> dict[str, Any]:
             {
                 "label": card["label"],
                 "links": [
-                    {"label": row.get("label"), "type": row.get("link_type"),
-                     "link_to": row.get("link_to")}
+                    {
+                        "label": row.get("label"),
+                        "type": row.get("link_type"),
+                        "link_to": row.get("link_to"),
+                    }
                     for row in card["links"]
                 ],
             }
             for card in _workspace_cards(doc.get("links") or [])
         ],
-        "number_cards": [
-            row.get("number_card_name") for row in doc.get("number_cards") or []
-        ],
+        "number_cards": [row.get("number_card_name") for row in doc.get("number_cards") or []],
         "layout": _workspace_layout(blocks),
         "unmanaged_blocks": sorted(
             {block.get("type") for block in blocks}.intersection(_WORKSPACE_UNMANAGED_BLOCKS)
@@ -5849,8 +6101,9 @@ def _workspace_item(item: Any, where: str, keys: tuple[str, ...]) -> dict[str, A
         )
     label = item.get("label")
     if not isinstance(label, str) or not label.strip() or len(label) > _WORKSPACE_LABEL_MAX:
-        raise ValueError(f"{where}: label must be non-empty text of at most "
-                         f"{_WORKSPACE_LABEL_MAX} characters")
+        raise ValueError(
+            f"{where}: label must be non-empty text of at most {_WORKSPACE_LABEL_MAX} characters"
+        )
     if "links" in keys:
         return item
     if item.get("type") not in _WORKSPACE_TARGET_TYPES:
@@ -5919,9 +6172,7 @@ def _block_id(kind: str, label: str) -> str:
     return hashlib.sha1(f"{kind}\0{label}".encode(), usedforsecurity=False).hexdigest()[:10]
 
 
-def _workspace_content(
-    number_cards: list[str], shortcuts: list[str], cards: list[str]
-) -> str:
+def _workspace_content(number_cards: list[str], shortcuts: list[str], cards: list[str]) -> str:
     """Lay out number cards, then shortcuts, then link cards, as Desk's editor blocks."""
     blocks: list[dict[str, Any]] = []
     for kind, labels, col in (
@@ -5932,9 +6183,7 @@ def _workspace_content(
         if not labels:
             continue
         if blocks:
-            blocks.append(
-                {"id": _block_id("spacer", kind), "type": "spacer", "data": {"col": 12}}
-            )
+            blocks.append({"id": _block_id("spacer", kind), "type": "spacer", "data": {"col": 12}})
         blocks.extend(
             {
                 "id": _block_id(kind, label),
@@ -5954,9 +6203,7 @@ def _order_changes(before: list[str], after: list[str]) -> dict[str, list[str]]:
         "added": [label for label in after if label not in before],
         "removed": [label for label in before if label not in after],
         "moved": [
-            label
-            for index, label in enumerate(kept_after)
-            if kept_before.index(label) != index
+            label for index, label in enumerate(kept_after) if kept_before.index(label) != index
         ],
     }
 
@@ -5993,8 +6240,11 @@ def upsert_workspace(
         raise ValueError("Invalid Workspace name")
     link_cards = link_cards or []
     number_cards = number_cards or []
-    for what, items in (("shortcuts", shortcuts), ("link_cards", link_cards),
-                        ("number_cards", number_cards)):
+    for what, items in (
+        ("shortcuts", shortcuts),
+        ("link_cards", link_cards),
+        ("number_cards", number_cards),
+    ):
         if not isinstance(items, list) or len(items) > _WORKSPACE_MAX_ITEMS:
             raise ValueError(f"{what} must be a list of at most {_WORKSPACE_MAX_ITEMS} entries")
     if not (shortcuts or link_cards or number_cards):
@@ -6032,8 +6282,9 @@ def upsert_workspace(
             )
         card_links.append(
             [
-                _workspace_item(link, f"link_cards[{index}].links[{position}]",
-                                _WORKSPACE_LINK_KEYS)
+                _workspace_item(
+                    link, f"link_cards[{index}].links[{position}]", _WORKSPACE_LINK_KEYS
+                )
                 for position, link in enumerate(links)
             ]
         )
@@ -6074,8 +6325,10 @@ def upsert_workspace(
             warnings.append(
                 f"Removes the {' and '.join(text)} blocks from the layout; their text is lost"
             )
-    if confirm and current and (
-        not expected_modified or str(current.get("modified")) != expected_modified
+    if (
+        confirm
+        and current
+        and (not expected_modified or str(current.get("modified")) != expected_modified)
     ):
         raise ValueError(_STALE_DOCUMENT)
 
@@ -6109,8 +6362,7 @@ def upsert_workspace(
                     "link_type": link["type"],
                     "link_to": link["link_to"],
                     "is_query_report": int(
-                        link["type"] == "Report"
-                        and target.get("report_type") != "Report Builder"
+                        link["type"] == "Report" and target.get("report_type") != "Report Builder"
                     ),
                 }
             )

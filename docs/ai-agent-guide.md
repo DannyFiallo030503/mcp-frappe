@@ -183,7 +183,7 @@ A module is usable once it has a saved report or two and a Workspace in the side
 2. For a standard DocType or an export, verify that the app/module exists below the configured `FRAPPE_APPS_PATH`. Custom Fields and Property Setters don't need a local checkout; pass `module` (and `app`) only if you will export them later.
 3. Preview `create_doctype`, `create_custom_field`, or `set_field_property`.
 4. Confirm only after reviewing names, field types, options, and destination.
-5. To export, call `export_customizations`, review every path, diff, and `preview_id`, then confirm with that ID. If it returns `nothing_to_export`, there is nothing to confirm. Tell the user that `bench migrate` applies the exported files.
+5. To export Customize Form data for one DocType, call `export_form_customizations`, review the source snapshot and destination paths, then confirm with its `preview_id`. This calls Frappe's native exporter and requires the connected user to have the System Manager role. For a combined export of several DocTypes, Client Scripts, or Workflows, use `export_customizations` and review every path and diff before confirming. Tell the user that `bench migrate` applies the exported files.
 6. If the export needs reversal, preview `rollback_export` and confirm with its latest `preview_id`.
 7. Inspect the app's Git diff and use the project's normal deployment process. The MCP does not migrate or deploy.
 
