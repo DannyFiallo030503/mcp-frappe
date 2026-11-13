@@ -97,6 +97,7 @@ Use an Administrator key only on a development site. See the [security model](ht
 - [Tool reference](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/docs/tool-reference.md): every tool, its arguments, and its limits
 - [AI agent guide](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/docs/ai-agent-guide.md): the workflows an agent should follow
 - [Compatibility and validation](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/docs/compatibility-and-validation.md): what has been run on v15 and v16 sites
+- [Field feedback](docs/field-feedback/README.md): sanitized task usage, missing capabilities, and bugs reported from real MCP use
 - [Architecture](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/docs/architecture.md), [security](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/docs/security.md), [development](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/docs/development.md)
 - [Frappe capability study](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/docs/frappe-capability-study.md): what Frappe offers and what the server covers
 - [Changelog](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/CHANGELOG.md), [roadmap](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/ROADMAP.md), [contributing](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/CONTRIBUTING.md), [security policy](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/SECURITY.md), [LLM index](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/llms.txt)
