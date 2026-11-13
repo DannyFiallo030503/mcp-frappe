@@ -4,7 +4,7 @@ Frappe MCP is a standalone stdio server for Frappe developers. This page lists w
 
 ## Implemented
 
-1. **Host integration and setup**: `uvx mcp-frappe`, the `mcp-frappe check` setup check, API-key or password login with session renewal, multi-site `Host` routing, and a PyPI release workflow.
+1. **Host integration and setup**: `uvx mcp-frappe`, the `mcp-frappe check` setup check, API-key or password login with session renewal, `FRAPPE_SITE` Host routing to select one site on a multi-site Bench per process, and a PyPI release workflow.
 2. **Discovery and reads**: site info, apps and modules, paged DocType lists, compact or full schemas from Frappe's form metadata (Custom Fields and Property Setters merged, cached), paged record lists with sorting and OR filters, counts, Link-style search, and bounded document reads.
 3. **Records**: create, update, and delete with previews and `modified`-bound confirmation; submit and cancel for testing a submittable DocType.
 4. **DocTypes**: create standard and site-custom DocTypes (every variant and field type), edit them with add, change, move, and remove operations, delete DocTypes created by mistake, and promote a site-custom DocType into an app.
@@ -19,6 +19,8 @@ Frappe MCP is a standalone stdio server for Frappe developers. This page lists w
 
 - **First PyPI release** of 0.3.0 through the manual release workflow.
 - **Close the remaining validation gaps**: `set_role_permissions` on a live site, `bench migrate` re-importing an exported Custom Field, and record writes as a user without System Manager ([list](docs/compatibility-and-validation.md#not-yet-checked-on-a-site)).
+- **Make target selection safer**: expose a safe site label in `get_site_info` (FR-2026-001), and assess explicitly named multi-site connections within one MCP server (FR-2026-002); both are tracked in [field feature requests](docs/field-feedback/feature-requests.md).
+- **Remote read-only profile**: ensure remote sites can be inspected without mutation tools and validate the behavior against a remote HTTPS test site (FR-2026-003 in [field feature requests](docs/field-feedback/feature-requests.md)). HTTPS transport and explicit `FRAPPE_MCP_READ_ONLY=YES` already exist; automatic enforcement and live validation are pending.
 
 ## Backlog
 

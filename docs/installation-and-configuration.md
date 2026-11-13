@@ -4,6 +4,18 @@
 
 Frappe MCP is a standalone MCP process launched by the AI host over `stdio`. It connects to the target Frappe site over HTTP. Do not run `bench get-app`, `bench install-app`, `bench migrate`, or restart the target site for this integration.
 
+### One site per MCP process
+
+Each process has one fixed target, selected by its startup environment: `FRAPPE_URL`, optional `FRAPPE_SITE` (the Host header for multi-site Bench routing), and one configured user's credentials. The tools do not accept a site selector, and the process does not switch targets between calls. `FRAPPE_SITE` selects which site that process addresses on a multi-site Bench; it does not make one process a multi-site client.
+
+To work with several sites at once, configure a separate MCP server/process for each site in the host, with a distinct server name and the correct URL, optional `FRAPPE_SITE`, credentials, and—when file exports are needed—the matching Bench's `FRAPPE_APPS_PATH`. Before acting, call `get_site_info` on the explicitly selected connection and verify its user and app/version context. Keep results and writes attributed to that connection. Do not reuse one site's app checkout for another site's exports.
+
+`get_site_info` currently does not return a configured site label or host identity. The host's MCP server name is therefore the operational connection label; it is not independently verified by the server. If two configured connections are easy to confuse, stop and resolve the mapping before any writes. A future optional, non-sensitive configured label could make that check explicit.
+
+### Remote sites
+
+Remote Frappe sites are reachable over HTTPS with API-key/secret or password authentication. For remote inspection, set `FRAPPE_MCP_READ_ONLY=YES`; this exposes only read tools. The server currently allows writable toolsets on remote URLs if this setting is omitted, so do not use a remote connection unless its configured tool list is read-only. Automatic remote read-only enforcement and live remote validation remain planned; see FR-2026-003 in [field feature requests](field-feedback/feature-requests.md).
+
 ## Install
 
 Run the published package with [`uvx`](https://docs.astral.sh/uv/guides/tools/); it installs `mcp-frappe` into a cached, isolated environment on first use:

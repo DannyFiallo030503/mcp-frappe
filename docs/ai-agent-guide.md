@@ -3,6 +3,8 @@
 ## Operating principles
 
 - If no Frappe tools are listed, or the first call fails on settings or login, ask the user to run `mcp-frappe check` (`uvx mcp-frappe check`) in a terminal with the host's environment. It names the failing setting without printing secrets. Do not ask the user to paste a key, secret, or password into the chat.
+- For CubaZone Platform tasks, when Frappe site access is needed, use the connected Frappe MCP tools and follow Platform's local agent instructions. Log one sanitized entry per task in `docs/field-feedback/usage-log.md`, including read-only calls and failures. If a needed operation is missing, add a feature request; if an existing tool malfunctions, add a reproducible bug report. Do not bypass a gap or failure with another route to perform the same site operation.
+- Each server process is bound to one site. On a task spanning sites, select a separately configured, clearly named connection for each target and call `get_site_info` on it before acting. This tool reports user and app versions but not site identity; if the connection alias does not unambiguously identify the requested site, stop and ask for configuration clarification. Log sanitized connection aliases and keep outcomes separate per site.
 - Begin with `get_site_info` (who you are connected as, the Frappe major version, installed apps, and which apps have a local checkout), then `list_doctypes(search=...)` to find the DocType, then `get_doctype_schema`. Do not assume an ERPNext, HRMS, or custom app catalog.
 - Use the target site's naming and field options exactly as returned by Frappe.
 - Request only fields and rows needed. Keep output limits low and narrow filters.
