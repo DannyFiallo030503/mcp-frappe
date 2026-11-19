@@ -16,7 +16,7 @@ Add an entry when a real task requires an operation that the current MCP toolset
 - **Permissions and safety:** the label is informational only and must not enable per-call target switching; credentials, hostname, and private site identifiers remain hidden unless explicitly configured as a safe alias.
 - **Evidence:** current single-target startup configuration and `get_site_info` implementation; no live site call was made.
 - **Acceptance:** with two named MCP instances, each reports its configured safe alias and user/app context, while all tool calls remain pinned to its own site; unit tests prove no cross-instance session/config leakage.
-- **Implementation:** pending
+- **Implementation:** planned in [stage 14](../work-plan/stage-14-field-feedback-fixes.md)
 
 ### FR-2026-002 — Address multiple named sites through one MCP connection
 
@@ -30,7 +30,7 @@ Add an entry when a real task requires an operation that the current MCP toolset
 - **Permissions and safety:** require explicit site selection, isolate credentials/session/cache/filesystem roots per target, preserve Frappe permissions, and bind every preview/confirmation to the same site alias. Do not allow a write preview from one site to be confirmed on another.
 - **Evidence:** current startup settings and singleton HTTP session; no live site call was made.
 - **Acceptance:** two test sites can be read in one host session with results attributed to the correct alias; cross-target preview confirmation is rejected; session, metadata, and filesystem isolation tests pass.
-- **Implementation:** pending
+- **Implementation:** stage 14 proposes closing it as won't do ([stage 14](../work-plan/stage-14-field-feedback-fixes.md))
 
 ### FR-2026-003 — Enforce a read-only profile for remote sites
 
@@ -44,7 +44,7 @@ Add an entry when a real task requires an operation that the current MCP toolset
 - **Permissions and safety:** require HTTPS for remote targets, use credentials from the host's secret store, preserve remote Frappe permissions, and keep the read-only guarantee independent of the user's Frappe role. Do not silently enable writes.
 - **Evidence:** current URL validation, toolset filtering, and `FRAPPE_MCP_READ_ONLY` configuration; no live remote call was made.
 - **Acceptance:** test against a remote HTTPS test site that reads work, mutation tools are absent and cannot be called, and no write occurs; test startup behavior for all remote/read-only combinations.
-- **Implementation:** pending
+- **Implementation:** planned in [stage 14](../work-plan/stage-14-field-feedback-fixes.md), after the user decides the default
 
 ### FR-2026-004 — Safely sync an app DocType that is missing from the site
 
@@ -58,7 +58,7 @@ Add an entry when a real task requires an operation that the current MCP toolset
 - **Permissions and safety:** require app/module ownership and normal Frappe permissions; refuse to overwrite differing files; never run migrations implicitly; make the affected DocType and dependencies explicit.
 - **Evidence:** [sanitized task report](cubazone/product-line-as-item-group.md); app drift showed missing DocTypes and `create_doctype` refused overwrite.
 - **Acceptance:** a missing-on-site DocType with matching checked-in app files can be synchronized through preview/confirm without replacing files, with schema and drift verification; mismatched definitions are refused.
-- **Implementation:** pending
+- **Implementation:** planned in [stage 18](../work-plan/stage-18-bench-runner.md) (`reload-doc` / `migrate`); stage 14 improves the `create_doctype` refusal message meanwhile
 
 ## Template
 

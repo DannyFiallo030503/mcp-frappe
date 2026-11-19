@@ -19,20 +19,25 @@ Frappe MCP is a standalone stdio server for Frappe developers. This page lists w
 
 - **First PyPI release** of 0.3.0 through the manual release workflow.
 - **Close the remaining validation gaps**: `set_role_permissions` on a live site, `bench migrate` re-importing an exported Custom Field, and record writes as a user without System Manager ([list](docs/compatibility-and-validation.md#not-yet-checked-on-a-site)).
-- **Make target selection safer**: expose a safe site label in `get_site_info` (FR-2026-001), and assess explicitly named multi-site connections within one MCP server (FR-2026-002); both are tracked in [field feature requests](docs/field-feedback/feature-requests.md).
-- **Remote read-only profile**: ensure remote sites can be inspected without mutation tools and validate the behavior against a remote HTTPS test site (FR-2026-003 in [field feature requests](docs/field-feedback/feature-requests.md)). HTTPS transport and explicit `FRAPPE_MCP_READ_ONLY=YES` already exist; automatic enforcement and live validation are pending.
+- **Stages 14–21** ([work plan](docs/work-plan/README.md#stages)), which focus on the development loop that the native Frappe MCP doesn't cover ([comparison](docs/work-plan/native-mcp-comparison.md)):
+  - fixes from field use: clear errors when the site can't be reached, record tools kept off schema and code records, a site label (FR-2026-001), and a remote read-only default (FR-2026-003), all in [field feature requests](docs/field-feedback/feature-requests.md);
+  - a smaller tool list, and docs for running next to the native server;
+  - pending patches, recent errors, and the app's whitelisted methods from source;
+  - allowlisted method calls;
+  - opt-in Bench commands (migrate, reload-doc, export-fixtures, tests);
+  - full Customize Form saves and renames;
+  - batch inserts and undo;
+  - a Claude Code plugin and developer-task evaluations.
 
 ## Backlog
 
-Detailed plans for the first three are in [docs/work-plan/backlog](docs/work-plan/backlog/):
+Detailed plans for the first two are in [docs/work-plan/backlog](docs/work-plan/backlog/):
 
 - **[Document lifecycle and workflow actions](docs/work-plan/backlog/lifecycle-workflow.md)**: amend, workflow transitions on documents, update diffs, and mandatory-field previews.
 - **[Collaboration and files](docs/work-plan/backlog/collaboration-files.md)**: document activity, comments, assignments, and attachments.
-- **[Allowlisted method adapters](docs/work-plan/backlog/method-allowlist.md)**: mapped documents and app-specific methods through a per-method allowlist.
 - **Async HTTP**: move to `httpx.AsyncClient` so Bench reload waits stop blocking the MCP event loop.
 - **Streamable HTTP transport** with per-user authentication, for teams sharing one server. Needs its own security design.
 - **Print formats and PDF**: render to text or HTML, and optionally save a PDF to a confined path. Print Format templates are Jinja, so they count as code.
-- **Rename DocTypes and fields** with data migration (`frappe.rename_doc`, `rename_field`).
 - **MCP resources and prompts**: DocType schemas as resources, and prompts such as "add a field to this DocType".
 
 ## Security boundaries
