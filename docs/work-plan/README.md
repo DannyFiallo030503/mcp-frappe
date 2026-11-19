@@ -16,9 +16,11 @@ The target user is a **Frappe developer** who uses Claude Code or Claude Desktop
 - set up configuration records such as Workflows, Notifications, Report Builder reports, and Workspaces;
 - read schema, data, and reports to check the result, and create test data.
 
-Reading business data as an ordinary user still works where Frappe permissions allow it, but it isn't the focus. ERPNext transaction verbs (amend, workflow actions, comments, files, mapped documents) are in the backlog.
+Reading business data as an ordinary user still works where Frappe permissions allow it, but it isn't the focus. ERPNext transaction verbs (amend, workflow actions, comments, files) are in the backlog; mapped documents are in stage 17.
 
 **Plan revision (2026-10-27).** The first version of this plan targeted a non-admin ERPNext business user. It was refocused on developers: stages 06–09 are new, the old read-primitives, ergonomics, distribution, and compatibility stages were renumbered and reoriented, and the old lifecycle, collaboration, and method-allowlist stages moved to [backlog/](backlog/).
+
+**Plan revision (2026-11-19).** Frappe v16 now ships a native MCP server for record data and whitelisted method calls ([comparison](native-mcp-comparison.md)). Stages 14–21 put this server's effort into what the native server can't do: the development loop across the site, the app checkout, and the Bench. They also fix what the first field use found. The method-allowlist plan moved from the backlog to stage 17, and "Rename DocTypes and fields" became part of stage 19. Stages 14, 17, 18, and 19 each start with a decision for the user; don't build past it without an answer.
 
 ## How to run a stage with Claude
 
@@ -67,20 +69,26 @@ If a stage turns out larger than one session, stop at a clean point (tests passi
 | 11 | [Agent ergonomics: errors, instructions, annotations, toolsets, reports](stage-11-agent-ergonomics.md) | 09, 10 | done |
 | 12 | [Distribution and releases](stage-12-distribution.md) | 11 | done |
 | 13 | [Compatibility matrix and docs rewrite](stage-13-compat-and-docs.md) | 01–12 | done |
+| 14 | [Fixes from field use](stage-14-field-feedback-fixes.md) | 13 | todo |
+| 15 | [Adoption: release, tool-list cost, working next to the native MCP](stage-15-adoption-and-context.md) | 14 | todo |
+| 16 | [Developer diagnostics: patches, errors, app methods](stage-16-dev-diagnostics.md) | 15 | todo |
+| 17 | [Allowlisted method calls](stage-17-method-allowlist.md) | 16 | todo |
+| 18 | [Opt-in Bench commands](stage-18-bench-runner.md) | 16 | todo |
+| 19 | [Full Customize Form saves, and renames](stage-19-customize-form-and-rename.md) | 15 (18 optional) | todo |
+| 20 | [Batch inserts and undo for MCP changes](stage-20-batch-and-undo.md) | 15 | todo |
+| 21 | [Claude Code plugin and developer-task evaluations](stage-21-plugin-and-evals.md) | 15; 16–20 for the evaluations | todo |
 
 Status values: `todo`, `in progress`, `partial`, `done`.
 
-Stages 01, 02, and 03 depend only on 00 and can run in any order. Stage 10 depends only on 05, so it can run in parallel with 06–09. Stage 12 can run any time after 11 if you want early releases.
+Stages 01, 02, and 03 depend only on 00 and can run in any order. Stage 10 depends only on 05, so it can run in parallel with 06–09. Stage 12 can run any time after 11 if you want early releases. After stage 16, stages 17 and 18 can run in either order; stages 19 and 20 need only 15. The plugin half of stage 21 needs only 15.
 
 ## Backlog (not scheduled)
 
-Pick these up after stage 13, or when a real user needs them:
+Pick these up after stage 21, or when a real user needs them. Since the 2026-11-19 revision, the first two and print/PDF have low priority: the native Frappe MCP and `frappectl` already cover document methods and files.
 
 - **[Document lifecycle and workflow actions](backlog/lifecycle-workflow.md):** amend, workflow transitions on documents, update diffs, and mandatory-field previews. Minimal submit and cancel are in stage 10.
 - **[Collaboration and files](backlog/collaboration-files.md):** document activity, comments, assignments, and attachments.
-- **[Allowlisted method adapters](backlog/method-allowlist.md):** mapped documents and app-specific methods through a per-method allowlist.
 - **Async HTTP.** Tools are synchronous, so the reload waits in `_wait_for_doctype` and similar helpers (up to about 60 s of `time.sleep`) block the MCP event loop. This hurts the developer flow more than the data flow, because DocType creation, DocType edits (stage 06), and exports all trigger Bench reloads. Move them to `httpx.AsyncClient` with async tools.
-- **Streamable HTTP transport** with per-user authentication, for teams sharing one server. This needs its own security design.
+- **Streamable HTTP transport** with per-user authentication, for teams sharing one server. This needs its own security design. Not planned: the native server already offers HTTP and OAuth, and this server's value is local access to the app checkout.
 - **Print formats and PDF**: render to text or HTML for the model, and optionally save a PDF to a confined path. Print Format templates are Jinja, so rule 2 applies.
-- **Rename DocTypes and fields** with data migration (`frappe.rename_doc`, `rename_field`). Stage 06 refuses fieldname changes.
 - **MCP resources and prompts**: DocType schemas as resources, and prompts such as "add a field to this DocType".

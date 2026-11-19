@@ -1,16 +1,29 @@
-# Backlog: Allowlisted method adapters
+# Stage 17: Allowlisted method calls
 
-> **Unscheduled.** This was stage 10 before the plan was refocused on developers (2026-10-27). Stage numbers below refer to the old plan. When you schedule it, give it a stage number and update the references.
+> **Scheduled 2026-11-19.** This plan was in the backlog (as `backlog/method-allowlist.md`; it was stage 10 before the 2026-10-27 refocus). The design below is the backlog design. The additions for this plan revision are under "Changes for this revision"; where they conflict with the older text, the additions win.
 
-**Depends on (old plan):** see note · **Size:** medium · **Fixes:** structural gap 4 (mapped documents, app-specific actions) in [assessment.md](../assessment.md)
+**Depends on:** 16 · **Size:** medium · **Fixes:** structural gap 4 (mapped documents, app-specific actions) in [assessment.md](assessment.md), and FR-2026-005 in [field feedback](../field-feedback/feature-requests.md)
 
 ## Why
 
 Real ERPNext work follows document chains: Quotation → Sales Order → Delivery Note → Sales Invoice → Payment Entry. Each step calls an app-specific whitelisted method. AGENTS.md forbids **unrestricted** method dispatch. The ROADMAP plans "controlled custom app method adapters with per-method allowlists". This stage builds that: the user lists exactly which methods may be called, and nothing else can be.
 
+Field use found the developer version of the same need. An agent working on a custom app had to check what one of the app's whitelisted methods returned on the live site, and couldn't (`product-lines-null-central-2026-11-10`).
+
+The native Frappe MCP can call **any** whitelisted method with `call_method` ([comparison](native-mcp-comparison.md)). This server keeps the allowlist, and it differs in other ways: methods are found from the app source (stage 16), write calls are previewed, and it works on v15.
+
+## Changes for this revision
+
+- **Ask the user first:** keep the allowlist (recommended: AGENTS.md forbids unrestricted dispatch), or call any method that the app source shows as whitelisted? Record the decision in the Handoff. A change to AGENTS.md needs the user's explicit approval.
+- **Check entries against the source.** When `FRAPPE_APPS_PATH` has the method's app, the config loader checks each entry against `list_app_methods` (stage 16): the method exists, it is whitelisted, the `methods` HTTP verbs fit the entry's `kind`, and the arguments in `params` exist. A mismatch fails at startup with the file and line. Without the checkout, it logs a warning and continues.
+- **Suggest entries, don't write them.** `list_app_methods` rows can be turned into ready-to-paste config entries with a new optional `as_config=True`. The server never writes the config file; the user adds the entries.
+- **Developer read calls.** Calling a `read` entry for a method of a custom app is the main developer case. Bound the response the same way `run_report` does.
+- **Paths:** this file moved from `backlog/`, so links to the assessment are now `assessment.md`.
+
 ## Read first
 
 - `AGENTS.md`, `ROADMAP.md` (future work), `docs/security.md`
+- Stage 16's `list_app_methods`
 - Frappe `frappe/model/mapper.py`:
   - `make_mapped_doc(method, source_name, selected_children, args)` returns an **unsaved** mapped document;
   - it also calls `frappe.is_whitelisted(method)`.

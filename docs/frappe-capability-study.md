@@ -116,7 +116,7 @@ Generic CRUD can read and create draft records where permissions and required fi
 | Users, User Permissions, role membership | none (DocType role permissions only) | Missing | n/a |
 | Dashboards, charts, Number Cards, private Workspaces, Web Forms, translations | none | Missing | n/a |
 | App code, hooks, server and client scripts, patches | managed fixture export only | Missing by design: code stays a reviewed development workflow | n/a |
-| App-specific methods, mapped documents | none | Missing ([backlog](work-plan/backlog/method-allowlist.md)) | n/a |
+| App-specific methods, mapped documents | none | Missing ([stage 17](work-plan/stage-17-method-allowlist.md)) | n/a |
 | ERPNext end-to-end flows | generic records and reports | Not proven | not yet |
 
 The 0.3.0 runs used two fresh development sites (v15 and v16) with ERPNext, as Administrator and as a Sales User. They are not evidence for production sites, visual parity with Desk, or ERPNext business processes.
