@@ -190,6 +190,24 @@ def test_check_shows_the_selected_toolsets(fake_site, clean_env, capsys) -> None
     assert "toolsets" in output and "read (read-only mode)" in output
 
 
+def test_check_reports_the_tool_list_cost_per_toolset(fake_site, clean_env, capsys) -> None:
+    _token_env(clean_env)
+    clean_env.setenv("FRAPPE_MCP_TOOLSETS", "read,developer")
+    clean_env.setenv("FRAPPE_MCP_READ_ONLY", "NO")
+    _site_answers(fake_site)
+
+    code, output = _run_check(capsys)
+
+    cost = standalone._tool_list_cost()
+    (line,) = [line for line in output.splitlines() if "tool list" in line]
+    for toolset, (count, chars) in cost.items():
+        assert f"{toolset} {count} tools ~{chars:,} chars" in line
+    assert "off: data, customize" in line
+    listed = cost["read"][1] + cost["developer"][1]
+    assert f"listed ~{listed:,} chars" in line
+    assert code == 0
+
+
 def test_check_fails_when_the_site_rejects_the_credentials(fake_site, clean_env, capsys) -> None:
     _token_env(clean_env)
     fake_site.add(
@@ -383,3 +401,25 @@ def test_server_process_speaks_only_json_rpc_on_stdout() -> None:
     assert all(message.get("jsonrpc") == "2.0" for message in messages)
     assert messages[0]["id"] == 1 and messages[0]["result"]["serverInfo"]["name"] == "frappe"
     assert "FRAPPE_ALLOW_INSECURE_HTTP" in result.stderr
+
+
+# MCP registry entry
+
+
+def test_registry_entry_matches_the_package() -> None:
+    entry = json.loads((ROOT / "server.json").read_text(encoding="utf-8"))
+    (package,) = entry["packages"]
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    source = (ROOT / "frappe_mcp" / "standalone.py").read_text(encoding="utf-8")
+
+    assert entry["$schema"].startswith("https://static.modelcontextprotocol.io/schemas/")
+    assert entry["version"] == package["version"] == frappe_mcp.__version__
+    assert len(entry["description"]) <= 100
+    assert package["registryType"] == "pypi" and package["identifier"] == "mcp-frappe"
+    assert package["transport"] == {"type": "stdio"}
+    # The registry checks PyPI ownership by this marker in the package description (README).
+    assert f"<!-- mcp-name: {entry['name']} -->" in readme
+    for variable in package["environmentVariables"]:
+        assert f'"{variable["name"]}"' in source, variable["name"]
+        secret = variable["name"] in {"FRAPPE_API_KEY", "FRAPPE_API_SECRET", "FRAPPE_PASSWORD"}
+        assert variable["isSecret"] is secret, variable["name"]

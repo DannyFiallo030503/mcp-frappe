@@ -19,7 +19,7 @@ All notable changes to this project are listed here. The format follows
 
 This release refocuses the server on Frappe developers working against a development site:
 editing DocTypes, customizing standard DocTypes, keeping the site and the app files in sync,
-and setting up configuration records. It covers work-plan stages 00–14.
+and setting up configuration records. It covers work-plan stages 00–15.
 
 ### Breaking
 
@@ -62,6 +62,10 @@ and setting up configuration records. It covers work-plan stages 00–14.
   Format, Webhook, Email Template, Web Form, and the others listed in `docs/security.md`), and
   `create_document`/`update_document` refuse values for `Code` fields in any DocType, child
   rows included, apart from a short allowlist of fields that hold plain data.
+- **Tools have no output schema, so results have no `structuredContent`.** The JSON is in the
+  text content as before: one text block, or one block per item for `list_installed_apps`. A
+  client that read `structuredContent["result"]` should decode the text blocks instead. Tool
+  annotations no longer repeat the `title`; read the tool's own `title`.
 
 ### Added
 
@@ -87,6 +91,11 @@ and setting up configuration records. It covers work-plan stages 00–14.
   `FRAPPE_MCP_TOOLSETS`, `FRAPPE_MCP_READ_ONLY`, and `FRAPPE_SITE_LABEL`, a name for the
   connection that `get_site_info` returns as `site_label` and `check` prints (FR-2026-001). Invalid values stop the server at startup
   with a one-line message.
+- `mcp-frappe check` prints a `tool list` row: the tools and characters each toolset adds to
+  the host's context, and the total for the selected toolsets.
+- `server.json` for the MCP registry, and
+  [using both servers](docs/native-frappe-mcp.md): how to run this server as `frappe-dev` next
+  to Frappe's built-in MCP server.
 
 ### Changed
 
@@ -103,6 +112,13 @@ and setting up configuration records. It covers work-plan stages 00–14.
   after 5 seconds, or `FRAPPE_TIMEOUT` if smaller; reads keep the full timeout.
 - `create_doctype` says to run `bench migrate` when the app already has the DocType's file but
   the site doesn't have the DocType.
+- **The tool list is half the size:** about 31,900 characters instead of 61,000 for the 35
+  tools. Descriptions are shorter (details are in `docs/tool-reference.md`), shared argument
+  descriptions are shorter, and input schemas drop generated titles and the `null` branch of
+  optional arguments. A test keeps the list within 32,000 characters.
+- The server instructions tell the model to use another connected Frappe MCP server for record
+  data and method calls, and this one for DocTypes, customizations, and app files. The docs
+  suggest the server name `frappe-dev`.
 - The README (also the PyPI page) starts with example developer prompts and uses absolute
   links; the compatibility page is a v15/v16 matrix that links each cell to its evidence.
 

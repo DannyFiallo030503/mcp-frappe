@@ -94,6 +94,7 @@ The [manual report](../e2e/history/manual_functional_report.md) found these on v
 - That `bench migrate` re-imports an exported Custom Field from `custom/`.
 - How Frappe normalizes a Workflow's `doc_status` and `allow_self_approval` when they are read back.
 - Record writes, submit, and cancel as a user without System Manager.
+- This server next to Frappe's built-in MCP in one Claude Code session ([setup](native-frappe-mcp.md)): both configured, one record task through the native server and one DocType task through this one. Needs a v16 site with MCP enabled; skipped in stage 15 (unit tests only).
 - The remote read-only default (FR-2026-003) against a remote HTTPS site: only read tools listed, and the record-tool refusals of schema, configuration, and code records (unit-tested only).
 
 ## Boundaries

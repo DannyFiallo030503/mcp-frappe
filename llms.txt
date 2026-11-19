@@ -6,6 +6,7 @@
 
 - [README](README.md): example prompts, install with `uvx mcp-frappe`, configuration, toolsets, and safety.
 - [Installation](docs/installation-and-configuration.md): `uvx mcp-frappe` install, the `mcp-frappe check` setup check, environment, host config, and removal.
+- [Using both servers](docs/native-frappe-mcp.md): this server next to Frappe's built-in MCP: which to use for what, and Claude Code setup with the names `frappe` and `frappe-dev`.
 - [AI agent guide](docs/ai-agent-guide.md): discovery, schema-first reads, preview and confirm, DocType edits, drift checks, exports, and rollback.
 - [Tool reference](docs/tool-reference.md): every tool, its arguments, caps, and unsupported features.
 - [Compatibility and validation](docs/compatibility-and-validation.md): the v15/v16 matrix, evidence, and how to run the live runners.

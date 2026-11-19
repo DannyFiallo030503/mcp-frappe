@@ -9,6 +9,7 @@ import difflib
 import functools
 import hashlib
 import html
+import inspect
 import json
 import logging
 import math
@@ -27,6 +28,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal
 from urllib.parse import quote, urlparse
 
+import anyio
 import httpx
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
@@ -58,6 +60,8 @@ list_reports and their filters with get_report_filters.
 the preview returned (expected_modified or expected_preview). Show the preview to the user \
 first. A stale token means: preview again.
 - A PermissionError is final: tell the user which access is missing; never work around it.
+- If another Frappe MCP server (such as Frappe's built-in one) is connected, use it for record \
+data and method calls, and this one for DocTypes, customizations, and app files.
 """
 
 server = FastMCP("frappe", instructions=_INSTRUCTIONS)
@@ -72,8 +76,9 @@ def _tool(
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Register an MCP tool in a toolset, with annotations hosts use to gate approval."""
     read_only = toolset == "read"
+    # The display name is the tool's `title`; repeating it in the annotations (the pre-2025-06-18
+    # place for it) would only lengthen the tool list.
     annotations = ToolAnnotations(
-        title=title,
         readOnlyHint=read_only,
         destructiveHint=None if read_only else destructive,
         idempotentHint=None if read_only else idempotent,
@@ -93,10 +98,72 @@ def _tool(
             except httpx.TransportError as error:
                 raise RuntimeError(_unreachable_message(error)) from error
 
-        server.tool(title=title, annotations=annotations)(call)
+        # No output schema: Frappe returns open-ended JSON, so the generated one says nothing
+        # and only adds to the tool list every session pays for (results stay text blocks).
+        server.tool(
+            title=title,
+            description=inspect.cleandoc(fn.__doc__ or ""),
+            annotations=annotations,
+            structured_output=False,
+        )(call)
+        _trim_schema(server._tool_manager._tools[fn.__name__].parameters)
         return fn
 
     return register
+
+
+def _trim_schema(schema: Any) -> None:
+    """Remove what adds characters but no meaning to a generated JSON schema, in place.
+
+    Pydantic's `title` keywords repeat the argument names ("Doctype" for `doctype`); keys
+    under `properties` and `$defs` are argument and definition names, so a property called
+    `title` is kept. Also drops `additionalProperties: true` and `items: {}` (the defaults)
+    and the null branch of optional arguments.
+    """
+    if isinstance(schema, list):
+        for item in schema:
+            _trim_schema(item)
+        return
+    if not isinstance(schema, dict):
+        return
+    # `X | None = None` becomes just X: the argument is optional because it isn't required,
+    # and the server still accepts an explicit null.
+    branches = schema.get("anyOf")
+    if isinstance(branches, list) and {"type": "null"} in branches and schema.get(
+        "default", ...
+    ) is None:
+        rest = [branch for branch in branches if branch != {"type": "null"}]
+        del schema["default"]
+        if len(rest) == 1 and isinstance(rest[0], dict):
+            del schema["anyOf"]
+            schema.update({key: value for key, value in rest[0].items() if key not in schema})
+        else:
+            schema["anyOf"] = rest
+    schema.pop("title", None)
+    if schema.get("additionalProperties") is True:
+        del schema["additionalProperties"]
+    if schema.get("items") == {}:
+        del schema["items"]
+    for key, value in schema.items():
+        if key in ("properties", "$defs") and isinstance(value, dict):
+            for child in value.values():
+                _trim_schema(child)
+        elif key not in ("default", "enum", "const", "examples"):
+            _trim_schema(value)
+
+
+def _tool_chars(tool: Any) -> int:
+    """Characters one tool adds to the tool list, as a host receives it."""
+    return len(json.dumps(tool.model_dump(mode="json", exclude_none=True)))
+
+
+def _tool_list_cost() -> dict[str, tuple[int, int]]:
+    """Return {toolset: (tool count, characters)} for every registered toolset."""
+    sizes = {tool.name: _tool_chars(tool) for tool in anyio.run(server.list_tools)}
+    return {
+        toolset: (len(names), sum(sizes.get(name, 0) for name in names))
+        for toolset, names in _TOOLSETS.items()
+    }
 
 
 _session: httpx.Client | None = None
@@ -277,30 +344,29 @@ _ORDER_MAX_TERMS = 3
 _STALE_DOCUMENT = "Document changed since preview; request a fresh preview"
 
 
-# Argument types shared by tools. The descriptions become part of each tool's MCP schema.
+# Argument types shared by tools. The descriptions become part of each tool's MCP schema, which
+# hosts send with every request, so keep them short; details belong in docs/tool-reference.md.
 Filters = Annotated[
     dict[str, Any] | list[list[Any]] | None,
     Field(
         description=(
-            "Conditions on the DocType's fields (from get_doctype_schema) or standard columns. "
-            "An object {fieldname: value} or {fieldname: [operator, value]}, or a list of "
-            "[fieldname, operator, value] or [child_doctype, fieldname, operator, value]. "
-            f"Operators: {', '.join(_FILTER_OPERATORS)}. Example: "
-            '[["status", "=", "Open"], ["modified", ">", "2026-01-01"]]'
+            "{field: value}, {field: [op, value]}, or [[field, op, value], ...]; "
+            "[child_doctype, field, op, value] for a child table's field. "
+            f"Operators: {', '.join(_FILTER_OPERATORS)}. "
+            'Example: [["status", "=", "Open"]]'
         )
     ),
 ]
 OrFilters = Annotated[
     dict[str, Any] | list[list[Any]] | None,
-    Field(description="Same shapes as filters; a record must match at least one of them."),
+    Field(description="Same shapes as filters; a record must match at least one."),
 ]
 Fields = Annotated[
     list[str] | None,
     Field(
         description=(
-            "Fieldnames to return: the DocType's fields from get_doctype_schema, or standard "
-            "columns (name, owner, creation, modified, modified_by, docstatus, idx). Omit for "
-            "the tool's default."
+            "Fieldnames from get_doctype_schema or standard columns (name, owner, creation, "
+            "modified, modified_by, docstatus, idx); omit for the default."
         )
     ),
 ]
@@ -308,55 +374,32 @@ OrderBy = Annotated[
     str | None,
     Field(
         description=(
-            f"'<fieldname> [asc|desc]', up to {_ORDER_MAX_TERMS} joined by commas, for example "
-            "'modified desc'. Only stored fields and standard columns."
+            f"'<field> [asc|desc]', up to {_ORDER_MAX_TERMS} comma-separated, "
+            "e.g. 'modified desc'."
         )
     ),
 ]
 ExpectedModified = Annotated[
     str | None,
-    Field(
-        description=(
-            "The `modified` value this tool's preview returned. Required with confirm=true; "
-            "a mismatch means the record changed since, so preview again."
-        )
-    ),
+    Field(description="With confirm=true: the preview's `modified`. A mismatch: preview again."),
 ]
 ExpectedPreview = Annotated[
     str | None,
     Field(
-        description=(
-            "The `preview_id` this tool's preview returned. Required with confirm=true; "
-            "a mismatch means the files or data changed since, so preview again."
-        )
+        description="With confirm=true: the preview's `preview_id`. A mismatch: preview again."
     ),
 ]
 Confirm = Annotated[
     bool,
-    Field(
-        description=(
-            "false (default) returns a preview and changes nothing; true applies the change. "
-            "Confirm only after the user has seen the preview."
-        )
-    ),
+    Field(description="false: preview only. true: apply, after the user saw the preview."),
 ]
 Detail = Annotated[
     Literal["compact", "full"],
-    Field(
-        description=(
-            "compact (default): the main properties of each field; full: Frappe's complete "
-            "metadata, which is much larger."
-        )
-    ),
+    Field(description="full returns every metadata property and is much larger."),
 ]
 ReportFilters = Annotated[
     dict[str, Any] | None,
-    Field(
-        description=(
-            "Report filter values as {filter_fieldname: value}; get the fieldnames and which "
-            "are mandatory from get_report_filters."
-        )
-    ),
+    Field(description="{filter_fieldname: value}; see get_report_filters."),
 ]
 _DOCTYPE_PROPERTIES = {
     "editable_grid",
@@ -2035,15 +2078,9 @@ def export_form_customizations(
     confirm: Confirm = False,
     expected_preview: ExpectedPreview = None,
 ) -> dict[str, Any]:
-    """Preview, then call Frappe's native Customize Form export method.
+    """Preview, then run Frappe's own Customize Form export for one DocType on the site host.
 
-    Frappe generates the files on the site host. The preview fingerprints the
-    current source records and lists expected paths; Frappe does not expose a
-    dry-run form of this method, so the MCP does not fabricate a file diff.
-
-    Args:
-        confirm: Set true only after reviewing the preview; false returns the preview.
-        expected_preview: The preview_id returned by the current preview, required to confirm.
+    The preview lists the expected paths; Frappe has no dry run, so there is no file diff.
     """
     _assert_writable_app(app)
     app_path, module_path = _assert_app_module(app, module)
@@ -2176,7 +2213,7 @@ def export_form_customizations(
 
 @_tool("read", "List installed apps")
 def list_installed_apps() -> list[dict[str, Any]]:
-    """Discover apps and modules represented by the target site's Module Def records."""
+    """List the site's apps and their modules (from Module Def)."""
     modules = _request(
         "GET",
         _resource("Module Def"),
@@ -2231,14 +2268,11 @@ def _local_apps(apps: list[str]) -> dict[str, Any]:
 
 @_tool("read", "Get site info")
 def get_site_info() -> dict[str, Any]:
-    """Say who is connected and what the site runs: user, app versions, and the local checkout.
+    """Say who is connected and what the site runs.
 
-    Returns `site_label`, the `FRAPPE_SITE_LABEL` this server was started with (null when
-    unset; a name for checking which site this is, never used to pick one); `user`; `apps`
-    as `[{"app", "title", "version"}]` from Frappe's `get_versions`; `frappe_major_version`;
-    and `apps_path`, which says whether `FRAPPE_APPS_PATH` is set and which of the site's
-    apps have a checkout there (no paths are returned). Developer mode is not reported,
-    because Frappe has no API for it; see `notes`.
+    Returns `user`, `apps` with versions, `frappe_major_version`, `site_label`, and `apps_path`
+    (which apps have a checkout under FRAPPE_APPS_PATH; never a path). Developer mode can't be read
+    through the API.
     """
     label = _site_label()
     user = _request("GET", "/api/method/frappe.auth.get_logged_user")
@@ -2274,13 +2308,11 @@ def list_doctypes(
     limit: int = 100,
     offset: int = 0,
 ) -> dict[str, Any]:
-    """List DocTypes on the site, a page at a time, optionally searched and filtered.
+    """List DocTypes a page at a time.
 
-    `search` is a case-insensitive part of the DocType name (letters, digits, spaces, `_`,
-    `.`, `-`; `_` matches any one character). `app` keeps DocTypes in that app's modules.
-    Each row has `name`, `module`, `custom`, `issingle`, `istable`, and `is_submittable`.
-    Returns `{"rows", "offset", "limit", "has_more"}`; pass `offset + limit` as the next
-    `offset` while `has_more` is true.
+    `search` is a case-insensitive part of the name; `app` keeps that app's modules. Rows have name,
+    module, custom, issingle, istable, is_submittable. Returns {rows, offset, limit, has_more}; the
+    next page starts at offset + limit.
     """
     if not 1 <= limit <= 500:
         raise ValueError("limit must be between 1 and 500")
@@ -2338,17 +2370,11 @@ def _compact_fields(meta: dict[str, Any]) -> list[dict[str, Any]]:
 
 @_tool("read", "Get DocType schema")
 def get_doctype_schema(doctype: str, detail: Detail = "compact") -> dict[str, Any]:
-    """Read a DocType's schema as Frappe's form sees it, with Custom Fields and Property Setters.
+    """Read a DocType's schema as its form sees it, Custom Fields and Property Setters included.
 
-    Any logged-in user can read it. `compact` (the default) returns the DocType flags (`name`,
-    `module`, `istable`, `issingle`, `is_submittable`, `is_tree`, `autoname`, `title_field`,
-    `custom`) and its data fields, leaving out layout fields such as Section Break, Column
-    Break, Tab Break, HTML, and Button. Each field has only `fieldname`, `label`, `fieldtype`,
-    `options`, `reqd`, `read_only`, `hidden`, `default`, `unique`, and `permlevel`, and false or
-    empty values are left out. `child_tables` maps each Table field's DocType to its fields in
-    the same form, and `workflow` names the active Workflow, if any. `full` returns every
-    metadata property as `{"doctype": ..., "children": {child_doctype: ...}, "workflow": ...}`;
-    use it only when editing a DocType needs every property.
+    compact: the DocType flags and data fields (no layout fields; false or empty values left out),
+    `child_tables` with their fields, and the active `workflow`. full: every property as {"doctype",
+    "children", "workflow"}; use it only when editing needs it.
     """
     if detail not in ("compact", "full"):
         raise ValueError('detail must be "compact" or "full"')
@@ -2377,18 +2403,9 @@ def list_documents(
     order_by: OrderBy = None,
     or_filters: OrFilters = None,
 ) -> dict[str, Any]:
-    """List permission-filtered records a page at a time through the standard Frappe REST API.
+    """List records the user may read, a page at a time (default order `modified desc`).
 
-    `fields` and `filters` may use the DocType's fields plus the standard columns `name`,
-    `owner`, `creation`, `modified`, `modified_by`, `docstatus`, and `idx`. `filters` is
-    either an object (`{"status": "Open"}`, `{"grand_total": [">", 100]}`) or a list of
-    `[field, operator, value]` / `[child_doctype, field, operator, value]` conditions, where
-    `child_doctype` is the DocType of one of this DocType's Table fields. Operators: =, !=,
-    <, >, <=, >=, like, not like, in, not in, between, is, timespan. A record must match
-    every `filters` condition and, when `or_filters` is given (same shapes), at least one of
-    those. `order_by` is `<fieldname> [asc|desc]`, up to 3 joined by commas (default
-    `modified desc`). Returns `{"rows", "offset", "limit", "has_more"}`; pass
-    `offset + limit` as the next `offset` while `has_more` is true.
+    Returns {rows, offset, limit, has_more}; while has_more, the next page starts at offset + limit.
     """
     if not 1 <= limit <= 100:
         raise ValueError("limit must be between 1 and 100")
@@ -2427,7 +2444,7 @@ def _get_count(doctype: str, filters: dict[str, Any] | list[list[Any]] | None) -
 
 @_tool("read", "Count documents")
 def count_documents(doctype: str, filters: Filters = None) -> dict[str, Any]:
-    """Count the records the user may read, with the same `filters` as `list_documents`."""
+    """Count the records the user may read."""
     _assert_filters(_meta_bundle(doctype), filters)
     count = _get_count(doctype, filters)
     if not isinstance(count, int) or isinstance(count, bool):
@@ -2442,13 +2459,10 @@ def search_records(
     filters: Filters = None,
     limit: int = 10,
 ) -> dict[str, Any]:
-    """Find records the way a Link field's dropdown does, by name and the DocType's search fields.
+    """Find records the way a Link field's dropdown does, with the user's permissions.
 
-    Calls Frappe's `frappe.desk.search.search_link` with the DocType's own search settings
-    (never a custom query method) and the user's permissions. `text` may be empty to list
-    the first matches; `filters` takes the `list_documents` shapes. `limit` is 1-50. Returns
-    `{"doctype", "results": [{"value", "label"?, "description"?}]}`, where `value` is the
-    record name.
+    Matches the name and the DocType's search fields. `text` may be empty; `limit` is 1-50. Returns
+    {doctype, results: [{value, label?, description?}]}, where `value` is the record name.
     """
     if not 1 <= limit <= 50:
         raise ValueError("limit must be between 1 and 50")
@@ -2477,15 +2491,11 @@ def search_records(
 def get_document(
     doctype: str, name: str, fields: Fields = None, child_row_limit: int = 100
 ) -> dict[str, Any]:
-    """Read one document, selecting fields and bounding any returned child-table rows.
+    """Read one document.
 
-    Without `fields`, returns the DocType's data fields that have a value (`null`, `""`, and
-    empty tables are left out; `0` is kept), and child rows keep only their data fields with
-    a value plus `name` and `idx`. `fields` may name the DocType's fields and the standard
-    columns (`owner`, `creation`, `modified`, `modified_by`, `docstatus`, `idx`). `doctype`,
-    `name`, `modified`, and `docstatus` are always returned. Table and Table MultiSelect
-    fields return at most `child_row_limit` rows; cut tables are listed in
-    `_truncated_child_tables`.
+    Without `fields`, returns the data fields that have a value; `doctype`, `name`, `modified`, and
+    `docstatus` always come back. Child tables return at most `child_row_limit` rows; cut ones are
+    listed in `_truncated_child_tables`.
     """
     if not 1 <= child_row_limit <= 200:
         raise ValueError("child_row_limit must be between 1 and 200")
@@ -2546,14 +2556,10 @@ def get_document(
 def create_document(
     doctype: str, values: dict[str, Any], confirm: Confirm = False
 ) -> dict[str, Any]:
-    """Preview or create a record via the native REST resource API.
+    """Preview or create a record.
 
-    `values` may include `name` only when the DocType's autoname is `Prompt` (naming rule
-    "Set by user"); otherwise Frappe names the record itself. For record data only: schema
-    and configuration DocTypes (DocType, Custom Field, Property Setter, Workflow,
-    Notification, Report, Workspace, ...) are refused with the tool to use instead; records
-    that hold code (Server Script, Client Script, Print Format, Webhook, ...) and values for
-    `Code` fields are refused.
+    `values` may set `name` only when the DocType's autoname is Prompt. Record data only: schema,
+    configuration, and code DocTypes, and `Code` fields, are refused with the tool to use instead.
     """
     _assert_record_doctype(doctype, "create")
     bundle = _meta_bundle(doctype)
@@ -2592,11 +2598,7 @@ def update_document(
     expected_modified: ExpectedModified = None,
     confirm: Confirm = False,
 ) -> dict[str, Any]:
-    """Preview or update a record; confirmation requires the preview's modified token.
-
-    For record data only, with the same limits as `create_document`: schema,
-    configuration, and code records, and `Code` fields, are refused.
-    """
+    """Preview or update a record. Same limits as create_document."""
     _assert_record_doctype(doctype, "update")
     bundle = _meta_bundle(doctype)
     _assert_writable_fields(bundle["doctype"], values)
@@ -2637,12 +2639,10 @@ def delete_document(
     expected_modified: ExpectedModified = None,
     confirm: Confirm = False,
 ) -> dict[str, Any]:
-    """Preview or delete a record; confirmation requires the preview's modified token.
+    """Preview or delete a record.
 
-    DocType deletes go to `delete_doctype`, and DocField and DocPerm rows to their DocType's
-    tools; records that hold code (Server Script, Client Script, Print Format, ...) are
-    refused. Custom Fields, Property Setters, Custom DocPerms, Workflows, Notifications,
-    Reports, and Workspaces can be deleted here: no other tool deletes them.
+    DocTypes go to delete_doctype; records holding code are refused. Also the way to delete Custom
+    Fields, Property Setters, Custom DocPerms, Workflows, Notifications, Reports, and Workspaces.
     """
     _assert_record_doctype(doctype, "delete")
     doc = _request("GET", _resource(doctype, name))
@@ -2705,10 +2705,7 @@ def submit_document(
 ) -> dict[str, Any]:
     """Preview or submit a draft (docstatus 0) of a submittable DocType, to test its controller.
 
-    Refuses DocTypes that are not submittable and DocTypes with an active Workflow (the
-    workflow controls submission there). The preview returns `modified`; confirmation must
-    pass it back as `expected_modified`. Submitting runs the controller's `validate`,
-    `before_submit`, and `on_submit`.
+    Refuses DocTypes with an active Workflow. Runs validate, before_submit, and on_submit.
     """
     _, doc = _lifecycle_target(doctype, name, "submit", 0)
     if not confirm:
@@ -2753,12 +2750,10 @@ def cancel_document(
     expected_modified: ExpectedModified = None,
     confirm: Confirm = False,
 ) -> dict[str, Any]:
-    """Preview or cancel a submitted document (docstatus 1) of a submittable DocType.
+    """Preview or cancel a submitted document (docstatus 1).
 
-    Refuses DocTypes with an active Workflow. The preview returns `modified`; confirmation
-    must pass it back as `expected_modified`. Cancelling runs the controller's
-    `before_cancel` and `on_cancel`, and Frappe refuses it while submitted documents link to
-    this one.
+    Refuses DocTypes with an active Workflow. Runs before_cancel and on_cancel; Frappe refuses while
+    submitted documents link to it.
     """
     _, doc = _lifecycle_target(doctype, name, "cancel", 1)
     if not confirm:
@@ -2818,14 +2813,10 @@ def list_reports(
     limit: int = 50,
     offset: int = 0,
 ) -> dict[str, Any]:
-    """List enabled reports a page at a time: `name`, `ref_doctype`, `report_type`, `module`,
-    and `is_standard`.
+    """List enabled reports a page at a time: name, ref_doctype, report_type, module, is_standard.
 
-    `search` is a case-insensitive part of the report name; `ref_doctype` keeps the reports
-    built on one DocType. Reading the Report list needs Desk access (Frappe v16 grants it to
-    every Desk user); a website-only user is refused, so ask the user for the report name.
-    The list does not apply each report's own roles; `run_report` does. Returns
-    `{"rows", "offset", "limit", "has_more"}`.
+    `search` matches part of the name. Needs Desk access; run_report checks each report's roles.
+    Returns {rows, offset, limit, has_more}.
     """
     if not 1 <= limit <= _REPORT_LIST_LIMIT:
         raise ValueError(f"limit must be between 1 and {_REPORT_LIST_LIMIT}")
@@ -2853,13 +2844,10 @@ def list_reports(
 
 @_tool("read", "Get report filters")
 def get_report_filters(report_name: str) -> dict[str, Any]:
-    """Read the filters a report takes, to pass to `run_report`.
+    """Read the filters a report takes, for run_report.
 
-    Returns `filters`, the Report Filter rows Query Reports keep on the record (`fieldname`,
-    `label`, `fieldtype`, `options`, `mandatory`, `default`, `wildcard_filter`), and
-    `script`, the report's JavaScript cut to about 8,000 characters (`script_truncated`).
-    Script Reports declare their filters in that script, in the `filters: [...]` array of
-    `frappe.query_reports[...]`. The report's print format is never returned.
+    Returns `filters` (the Report Filter rows of a Query Report) and `script`, the report's
+    JavaScript cut to about 8,000 characters; Script Reports declare their filters there.
     """
     report_name = _assert_report_name(report_name)
     data = _request(
@@ -2891,12 +2879,10 @@ def run_report(
     offset: int = 0,
     include_chart: bool = False,
 ) -> dict[str, Any]:
-    """Run an enabled report using Frappe's permission-checked query-report API.
+    """Run an enabled report with Frappe's permission checks.
 
-    Find report names with `list_reports` and their filters with `get_report_filters`.
-    Frappe computes the whole result; `result` holds rows `offset` to `offset + limit` of it,
-    and `total_rows` counts them all (`has_more` says whether rows remain). `chart` is left
-    out unless `include_chart` is true.
+    `result` holds rows `offset` to `offset + limit`; `total_rows` counts them all and `has_more`
+    says whether rows remain. `chart` only with include_chart.
     """
     if not 1 <= limit <= _REPORT_MAX_ROWS:
         raise ValueError(f"limit must be between 1 and {_REPORT_MAX_ROWS}")
@@ -2938,8 +2924,8 @@ def create_doctype(
         list[dict[str, Any]],
         Field(
             description=(
-                "DocField definitions in form order, each with fieldname and fieldtype plus "
-                "optional DocField properties such as label, options, reqd, and in_list_view."
+                "DocFields in form order: fieldname, fieldtype, and optional properties "
+                "(label, options, reqd, in_list_view, ...)."
             )
         ),
     ],
@@ -2952,13 +2938,12 @@ def create_doctype(
     permissions: list[dict[str, Any]] | None = None,
     confirm: Confirm = False,
 ) -> dict[str, Any]:
-    """Preview or create a standard or site-custom DocType through Frappe.
+    """Preview or create a DocType.
 
-    ``fields`` accepts the native DocField properties and field types. ``properties``
-    carries supported DocType-level settings such as autoname, tracking, sorting,
-    and search configuration. Standard DocTypes require a local app/module checkout
-    and Developer Mode so Frappe can write JSON, Python, JavaScript, and test files.
-    Site-custom DocTypes are stored in site metadata and do not generate app files.
+    A standard DocType needs developer mode and the app's checkout under FRAPPE_APPS_PATH, where
+    Frappe writes its JSON, controller, JavaScript, and test files; `is_custom` keeps it on the site
+    only. `properties` takes DocType settings (autoname, track_changes, sort_field, search_fields,
+    ...); `permissions` takes DocPerm rows.
     """
     if is_custom:
         _assert_remote_module(app, module)
@@ -3517,28 +3502,17 @@ def update_doctype(
     expected_modified: ExpectedModified = None,
     confirm: Confirm = False,
 ) -> dict[str, Any]:
-    """Preview or apply a list of changes to an existing DocType's fields and settings.
+    """Preview or apply ordered `operations` to a DocType of your own app or a site-custom one.
 
-    For DocTypes of your own apps and site-custom DocTypes; for Frappe and ERPNext DocTypes use
-    `create_custom_field` and `set_field_property`. Operations run in order on the current
-    DocType, and the result is saved in one request, so unchanged fields keep their rows:
-
-    - `{"op": "add_field", "field": {"fieldname": ..., "fieldtype": ..., ...},
-      "insert_after": "fieldname"}`; without `insert_after` the field goes last, and
-      `null` puts it first.
-    - `{"op": "update_field", "fieldname": ..., "set": {"label": ..., "reqd": 1, ...}}`;
-      a fieldname cannot be changed.
-    - `{"op": "remove_field", "fieldname": ...}`
-    - `{"op": "move_field", "fieldname": ..., "insert_after": "fieldname" or null}`
-    - `{"op": "set_properties", "set": {"track_changes": 1, ...}}` for DocType settings.
-
-    Fields accept the DocField properties (`label`, `fieldtype`, `options`, `reqd`, `hidden`,
-    `read_only`, `default`, `description`, `depends_on`, `in_list_view`, ...). Link and Table
-    `options` must name an existing DocType; a Table's must be a child table. Changing a
-    fieldtype is refused when it can lose data. The preview returns `changes` (added,
-    removed, moved, changed, properties), `warnings` with affected record counts, and
-    `modified`; confirm with the same operations and `expected_modified`. Saving a standard
-    DocType needs developer mode, and Frappe then rewrites its JSON in the app.
+    For Frappe and ERPNext DocTypes use create_custom_field and set_field_property. Saved in one
+    request:
+    - {"op": "add_field", "field": {...}, "insert_after": fieldname} (omitted: last; null: first)
+    - {"op": "update_field", "fieldname": ..., "set": {...}} (the fieldname can't change)
+    - {"op": "remove_field", "fieldname": ...}
+    - {"op": "move_field", "fieldname": ..., "insert_after": fieldname or null}
+    - {"op": "set_properties", "set": {...}} for DocType settings
+    Lossy fieldtype changes are refused. The preview returns `changes`, `warnings` with record
+    counts, and `modified`; confirm with the same operations. Standard DocTypes need developer mode.
     """
     doc, app = _editable_doctype(doctype)
     if confirm and (not expected_modified or str(doc.get("modified")) != expected_modified):
@@ -3669,14 +3643,11 @@ def _doctype_links(doctype: str) -> list[dict[str, Any]]:
 def delete_doctype(
     doctype: str, expected_modified: ExpectedModified = None, confirm: Confirm = False
 ) -> dict[str, Any]:
-    """Preview or delete a DocType created by mistake during development.
+    """Preview or delete a DocType created by mistake.
 
-    Refuses Frappe and ERPNext DocTypes, and any DocType another DocType uses through a Link,
-    Table, or Table MultiSelect field (the error lists them). The preview says what Frappe
-    removes and keeps: it deletes the DocType record and, for a standard DocType in developer
-    mode, its folder in the app; it keeps the database table with its records, and the Custom
-    Fields and Property Setters defined on the DocType. Confirm with `expected_modified` from
-    the preview. Only Administrator can delete a standard DocType.
+    Refuses Frappe and ERPNext DocTypes and DocTypes others use through Link or Table fields. Frappe
+    deletes the record and, for a standard DocType in developer mode, its app folder; the table, its
+    records, and its customizations stay. Standard DocTypes: Administrator only.
     """
     doc, app = _editable_doctype(doctype)
     links = _doctype_links(doctype)
@@ -4062,20 +4033,13 @@ _DRIFT_SUMMARIES = {
 
 @_tool("read", "Diff DocType against app files")
 def diff_doctype(doctype: str, app: str | None = None) -> dict[str, Any]:
-    """Compare a DocType on the site with its files in a local app checkout (read-only).
+    """Compare a DocType on the site with its files in the app checkout (read-only).
 
-    Reads `<app>/<app>/<module>/doctype/<doctype>/<doctype>.json` and every
-    `<module>/custom/<doctype>.json` of the app under `FRAPPE_APPS_PATH`; nothing is written.
-    `app` defaults to the app that owns the DocType's module; pass another app to check only
-    its customizations of the DocType.
-
-    `verdict` is one of `in_sync`, `site_ahead` (the site changed after the file; export it,
-    e.g. by saving the DocType in developer mode), `app_ahead` (the file is newer; run
-    `bench migrate`), `diverged` (both changed), `missing_in_app`, or `site_custom` (no files by
-    design; see `promote_custom_doctype`). `doctype_file.changes` lists added, removed, moved,
-    and changed fields, properties, and child tables, going from the site (`from`) to the app
-    (`to`); `migrate_imports_file` says whether `bench migrate` would re-import the file.
-    `customizations` compares Custom Fields and Property Setters with the custom files.
+    `app` defaults to the app owning the DocType's module; another app checks only its
+    customizations. `verdict`: in_sync, site_ahead (export it), app_ahead (run bench migrate),
+    diverged, missing_in_app, or site_custom (see promote_custom_doctype). `doctype_file.changes`
+    goes from the site (`from`) to the app (`to`); `customizations` compares Custom Fields and
+    Property Setters.
     """
     if not isinstance(doctype, str) or not _SAFE_NAME.fullmatch(doctype):
         raise ValueError("Invalid DocType name")
@@ -4181,13 +4145,10 @@ def _drift_item(module: str, slug: str, entry: dict[str, Any]) -> dict[str, Any]
 def list_app_drift(
     app: str, module: str | None = None, limit: int = 50, offset: int = 0
 ) -> dict[str, Any]:
-    """List which DocTypes of an app differ between the site and the local checkout (read-only).
+    """List which DocTypes of an app differ between the site and the checkout (read-only).
 
-    Pairs every DocType folder under `<app>/<app>/<module>/doctype/` (in `FRAPPE_APPS_PATH`)
-    with the site's DocTypes in the same modules, and gives each one a verdict: `in_sync`,
-    `site_ahead`, `app_ahead`, `diverged` (as in `diff_doctype`), `missing_on_site` (run
-    `bench migrate`), `missing_in_app`, or `site_custom`. Use `diff_doctype` for the details of
-    one DocType. Results are sorted by module and folder; page with `offset` and `next_offset`.
+    Verdicts as in diff_doctype, plus missing_on_site (run bench migrate). Page with `offset` and
+    the returned `next_offset`.
     """
     if not isinstance(limit, int) or not 1 <= limit <= _DRIFT_PAGE_LIMIT:
         raise ValueError(f"limit must be between 1 and {_DRIFT_PAGE_LIMIT}")
@@ -4299,13 +4260,8 @@ def promote_custom_doctype(
 ) -> dict[str, Any]:
     """Preview or turn a site-custom DocType into a standard DocType of an app module.
 
-    Use it to ship a DocType prototyped on the site (`custom=1`) with your app. Frappe does the
-    export: saving the DocType with `custom=0` and the new `module` in developer mode makes it
-    write `<module>/doctype/<doctype>/` (JSON, controller, JavaScript, and test files) into the
-    app. Refuses Frappe and ERPNext, modules of other apps, custom modules, an existing
-    DocType folder, and a DocType with a default print format. The preview lists the files
-    and warnings (custom DocTypes it links to, customizations that stay on the site); confirm
-    with the preview's `modified` as `expected_modified`. Records are kept as they are.
+    Frappe saves it with custom=0 in developer mode and writes `<module>/doctype/<doctype>/` into
+    the app; records stay. Refuses frappe/erpnext, other apps' modules, and an existing folder.
     """
     if not isinstance(doctype, str) or not _SAFE_NAME.fullmatch(doctype):
         raise ValueError("Invalid DocType name")
@@ -4453,7 +4409,7 @@ def set_role_permissions(
     permlevel: int = 0,
     confirm: Confirm = False,
 ) -> dict[str, Any]:
-    """Preview or set DocType role permissions through Frappe's native manager."""
+    """Preview or set a role's permission flags on a DocType through Frappe's native manager."""
     if not _SAFE_NAME.fullmatch(doctype) or not _SAFE_NAME.fullmatch(role):
         raise ValueError("A valid DocType and role are required")
     if doctype in _PERMISSION_MANAGER_EXCLUDED_DOCTYPES:
@@ -4550,13 +4506,11 @@ def create_custom_field(
     module: str | None = None,
     confirm: Confirm = False,
 ) -> dict[str, Any]:
-    """Preview or create a Custom Field on a DocType through the standard Frappe REST API.
+    """Preview or create a Custom Field on any DocType; no app checkout needed.
 
-    `field` holds the Custom Field values (`fieldname`, `fieldtype`, `label`, `insert_after`,
-    ...) and may not set `doctype`, `dt`, or `module`. `module` is optional and only tags the
-    field for a later export; when given it must exist on the site, and when `app` is also
-    given it must belong to that app. No local app checkout is needed. To edit or remove a
-    Custom Field later, use `update_document` or `delete_document` on `Custom Field`.
+    `field` holds fieldname, fieldtype, label, insert_after, ... (not doctype, dt, or module).
+    `module` optionally tags it for export and must belong to `app` when both are given. Change it
+    later with set_field_property; delete it with delete_document.
     """
     if not _SAFE_NAME.fullmatch(doctype):
         raise ValueError("A valid DocType is required")
@@ -4617,16 +4571,10 @@ def set_field_property(
 ) -> dict[str, Any]:
     """Preview or save a Customize Form value as a Property Setter.
 
-    Sets `property` on `fieldname`, or on the DocType itself when `fieldname` is omitted.
-    `property_type` is inferred from the property (Check, Data, or Text, as Customize Form
-    uses); a value passed in must match. Check values must be 0/1 or booleans. `module` is
-    optional, as for `create_custom_field`.
-
-    If a Property Setter for this property already exists, the preview has `mode: "update"`,
-    the current value, and its `modified`; confirmation must pass that as `expected_modified`
-    and updates the setter in place. Otherwise the preview has `mode: "create"`. A new
-    DocType-level setter makes Frappe delete the field-level setters for the same property;
-    the preview lists them in `replaces_field_setters`.
+    Sets `property` on `fieldname`, or on the DocType when it is omitted. `property_type` is
+    inferred (Check, Data, or Text); Check values are 0/1 or booleans. An existing setter gives a
+    preview with `mode: "update"` and `modified`, which confirming needs as `expected_modified`. A
+    new DocType-level setter replaces the field-level ones listed in `replaces_field_setters`.
     """
     if property not in _PROPERTY_TYPES:
         raise ValueError(
@@ -4746,34 +4694,13 @@ def export_customizations(
     confirm: Confirm = False,
     expected_preview: ExpectedPreview = None,
 ) -> dict[str, Any]:
-    """Preview or export site customizations into an app's files so `bench migrate` applies them.
+    """Preview or export site customizations into an app's files, so `bench migrate` applies them.
 
-    Writes Frappe's native module customization file, the same one Customize Form's "Export
-    Customizations" writes: `<app>/<app>/<module>/custom/<doctype>.json` with the DocType's
-    Custom Fields, Property Setters, DocType Links, and (with `with_permissions`) Custom
-    DocPerms. Child-table DocTypes the DocType uses get their own file. A DocType with nothing
-    to export gets no file. Client Scripts for these DocTypes and `module` go to the app-level
-    `<app>/<app>/fixtures/client_script.json`, and a managed block in `hooks.py` keeps them in
-    the app's `fixtures`; `hooks.py` is untouched when there are none. With `with_workflows`,
-    the Workflows of `doctypes` and the Workflow State and Workflow Action Master records they
-    use go to `fixtures/workflow.json`, `workflow_state.json`, and `workflow_action_master.json`,
-    listed by name in the same managed block.
-
-    DocType JSON is never written: in developer mode Frappe writes standard DocType files itself.
-
-    Args:
-        app: App to write into (not frappe or erpnext); must be below FRAPPE_APPS_PATH.
-        module: Module of `app` whose `custom/` folder receives the files.
-        doctypes: 1-50 DocTypes whose customizations to export; any DocType, standard or not.
-        with_permissions: Also export Custom DocPerm rows. On migrate they replace the site's
-            Custom DocPerms for that DocType.
-        apply_module_filter: Export only Custom Fields and Property Setters whose module is
-            `module`, as Frappe's "Apply Module Export Filter" does.
-        sync_on_migrate: Have `bench migrate` import the file; Frappe's own default is off.
-        with_workflows: Also export the Workflows of `doctypes` as fixtures. `bench migrate`
-            imports fixtures on every run and overwrites the site's copies.
-        confirm: False returns a preview with diffs; True writes the files.
-        expected_preview: The preview's `preview_id`, required when confirm is True.
+    Writes `<module>/custom/<doctype>.json` for 1-50 `doctypes` and their child tables, as Customize
+    Form's export does; `with_permissions` adds Custom DocPerms, which replace the site's on
+    migrate. `apply_module_filter` keeps only customizations of `module`. Client Scripts, and
+    Workflows with `with_workflows`, become fixtures listed in a managed hooks.py block; migrate
+    overwrites them.
     """
     _assert_writable_app(app)
     app_path, module_path = _assert_app_module(app, module)
@@ -4890,11 +4817,10 @@ def rollback_export(
     expected_preview: ExpectedPreview = None,
     confirm: Confirm = False,
 ) -> dict[str, Any]:
-    """Preview or restore files from an export manifest without overwriting later edits.
+    """Preview or undo the export with `rollback_id` (from the export's result).
 
-    Restores overwritten files from their backups, deletes files the export created, and
-    removes directories it created once they are empty. Refuses with `conflict` when an
-    exported file changed after the export.
+    Restores overwritten files from backups and deletes created files and empty directories. Refuses
+    with `conflict` when an exported file changed since.
     """
     app_path, _ = _assert_app_module(app, module)
     if not re.fullmatch(r"export-[a-f0-9]{32}\.json", rollback_id):
@@ -5225,11 +5151,10 @@ def _workflow_view(doc: dict[str, Any]) -> dict[str, Any]:
 
 @_tool("read", "Get workflow")
 def get_workflow(doctype: str) -> dict[str, Any]:
-    """Return a DocType's active Workflow: states, transitions, and its state field.
+    """Return a DocType's active Workflow (states, transitions, state field), or `workflow: null`.
 
-    `workflow` is null when the DocType has no active Workflow; `inactive` names its other
-    Workflows. A transition guarded by a Python condition set outside this server shows
-    `has_condition`; this server never writes conditions.
+    `inactive` names its other Workflows; `has_condition` marks a transition with a Python condition
+    set elsewhere.
     """
     _meta_bundle(doctype)
     rows = _request(
@@ -5478,30 +5403,16 @@ def upsert_workflow(
     expected_modified: ExpectedModified = None,
     confirm: Confirm = False,
 ) -> dict[str, Any]:
-    """Preview or create/replace an approval Workflow for a DocType.
+    """Preview or create/replace (by `name`) an approval Workflow for `doctype`.
 
-    Args:
-        doctype: The DocType the Workflow controls (not a child table or Single).
-        name: Workflow name; an existing Workflow with this name is replaced.
-        states: In order; the first is where new documents start. Each is
-            `{"state": "Pending Approval", "doc_status": 0, "allow_edit": "Role",
-            "update_field": "fieldname", "update_value": "value"}` (the last two optional).
-            `doc_status` is 0 draft, 1 submitted, 2 cancelled; 1 and 2 need a submittable
-            DocType. `allow_edit` is the Role that may edit a document in that state.
-        transitions: Each is `{"state": ..., "action": "Approve", "next_state": ...,
-            "allowed": "Role", "allow_self_approval": true}`; both states must be listed.
-            Python `condition`s are refused.
-        is_active: Make this the DocType's active Workflow; Frappe deactivates the others.
-        send_email_alert: Email the users who can act on the next state.
-        workflow_state_field: Field holding the state; Frappe adds a hidden Custom Field
-            (a Link to Workflow State) when the DocType has none.
-        expected_modified: The preview's `modified`, required to confirm a replacement.
-        confirm: False returns a preview; True saves.
+    `doctype` can't be a child table or Single.
 
-    The preview lists the Workflow State and Workflow Action Master records it will create,
-    the state field, the Workflows it deactivates, warnings (unreachable states are refused,
-    draft states with no way out are warned about), and on replacement a states and
-    transitions diff. Roles must exist.
+    - states, in order (new documents start in the first): {"state", "doc_status": 0|1|2,
+      "allow_edit": Role, "update_field"?, "update_value"?}; 1 and 2 need a submittable DocType.
+    - transitions: {"state", "action", "next_state", "allowed": Role, "allow_self_approval"?}; both
+      states must be listed. Python conditions are refused.
+    is_active deactivates the other Workflows; a missing `workflow_state_field` is added as a hidden
+    Custom Field. Roles must exist.
     """
     if not isinstance(name, str) or not _SAFE_NAME.fullmatch(name):
         raise ValueError("Invalid Workflow name")
@@ -5656,7 +5567,7 @@ def upsert_workflow(
 
 @_tool("read", "List notifications")
 def list_notifications(document_type: str | None = None, limit: int = 50) -> dict[str, Any]:
-    """List Notification rules: name, DocType, event, channel, enabled, and standard module."""
+    """List Notification rules: name, DocType, event, channel, enabled, and module."""
     if not 1 <= limit <= _CONFIG_LIST_LIMIT:
         raise ValueError(f"limit must be between 1 and {_CONFIG_LIST_LIMIT}")
     filters: dict[str, Any] = {}
@@ -5790,38 +5701,16 @@ def upsert_notification(
     expected_modified: ExpectedModified = None,
     confirm: Confirm = False,
 ) -> dict[str, Any]:
-    """Preview or create/replace a Notification rule (email or in-app alert) for a DocType.
+    """Preview or create/replace (by `name`) a Notification for `document_type`.
 
-    Args:
-        name: Notification name; an existing one with this name is replaced.
-        document_type: The DocType whose documents trigger it.
-        event: New, Save, Submit, Cancel (Submit and Cancel need a submittable DocType),
-            Value Change (with `value_changed`), Days Before / Days After (with
-            `date_changed` and `days_in_advance`).
-        channel: Email or System Notification (the bell in Desk).
-        recipients: 1-20 entries, each with any of `receiver_by_document_field` (owner, a
-            Data field with options Email, or a Link to User), `receiver_by_role` (a Role),
-            and for Email `cc` / `bcc` (plain addresses, comma separated).
-        subject: The email subject or alert title, at most 140 characters.
-        message: The email body or alert text (Markdown or HTML).
-        value_changed: For Value Change, the field whose change triggers it.
-        date_changed: For Days Before/After, a Date or Datetime field.
-        days_in_advance: For Days Before/After, a positive number of days.
-        filters: Send only when the document matches, e.g. `{"status": "Approved"}` or
-            `[["grand_total", ">", 1000]]`; fields of `document_type` only. Python
-            conditions are refused.
-        enabled: Turn the rule on.
-        is_standard: Ship it with an app: Frappe writes it to the module's `notification/`
-            folder in developer mode. Needs `module`, of an app other than frappe/erpnext.
-        module: The Module Def of a standard Notification.
-        expected_modified: The preview's `modified`, required to confirm a replacement.
-        confirm: False returns a preview; True saves.
-
-    `subject` and `message` are plain text with `{{ doc.<fieldname> }}` placeholders, where
-    the field must exist on the DocType. A placeholder may end with filters from: upper,
-    lower, title, capitalize, trim, striptags, escape, int, str, flt(precision),
-    round(precision, "common"|"ceil"|"floor"), truncate(length), default("text"). Any other
-    Jinja ({% %}, calls, other variables) is refused.
+    - event: Value Change needs `value_changed`; Days Before/After need `date_changed` (a date
+      field) and `days_in_advance`.
+    - recipients: 1-20 of {receiver_by_document_field (owner, an Email field, or a Link to User),
+      receiver_by_role, cc, bcc}.
+    - subject (max 140 characters) and message: text with `{{ doc.<fieldname> }}` placeholders and
+      simple filters (upper, round(2), truncate(40), default("-"), ...); other Jinja is refused.
+    Python conditions are refused. is_standard needs `module` (not frappe/erpnext); Frappe writes
+    the file in developer mode.
     """
     if not isinstance(name, str) or not _SAFE_NAME.fullmatch(name):
         raise ValueError("Invalid Notification name")
@@ -6112,29 +6001,15 @@ def upsert_report(
     expected_modified: ExpectedModified = None,
     confirm: Confirm = False,
 ) -> dict[str, Any]:
-    """Preview or create/replace a saved Report Builder report on a DocType.
+    """Preview or create/replace (by `name`) a Report Builder report on `ref_doctype`.
 
-    Args:
-        name: Report name; an existing Report Builder report with this name is replaced.
-        ref_doctype: The DocType the report lists (not a child table or Single).
-        columns: 1-50 columns, in order: fieldnames of `ref_doctype` or standard columns
-            (name, owner, creation, modified, modified_by, docstatus, idx), or
-            `<child DocType>.<fieldname>` for a field of one of its child tables.
-        filters: Saved filters, same shapes and operators as `list_documents`.
-        order_by: `<fieldname> [asc|desc]`, up to 3 joined by commas; fields of `ref_doctype`.
-        group_by: `{"field": <fieldname>, "aggregate_function": "count"|"sum"|"avg",
-            "aggregate_on": <numeric fieldname, for sum/avg>}`. With it, `columns` must be
-            exactly `[field]` and `order_by` is not allowed (Frappe sorts by the aggregate).
-        add_totals_row: Add Frappe's totals row.
-        is_standard: Ship it with an app: Frappe writes it to the module's `report/` folder
-            in developer mode (Administrator only). Needs `module`, of an app other than
-            frappe/erpnext.
-        module: The Module Def of a standard report.
-        expected_modified: The preview's `modified`, required to confirm a replacement.
-        confirm: False returns a preview; True saves and returns a few sample rows.
+    `ref_doctype` can't be a child table or Single.
 
-    Query Reports and Script Reports run SQL or Python, so this tool never creates or edits
-    them.
+    - columns: 1-50 fieldnames or standard columns, or `<child DocType>.<fieldname>`.
+    - group_by: {"field", "aggregate_function": count|sum|avg, "aggregate_on"}; then `columns` must
+      be [field], with no `order_by`.
+    is_standard needs `module` (not frappe/erpnext) and Administrator. Confirming returns sample
+    rows. Query and Script Reports are never written.
     """
     if not isinstance(name, str) or not _SAFE_NAME.fullmatch(name):
         raise ValueError("Invalid Report name")
@@ -6337,11 +6212,10 @@ def _workspace_cards(links: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 @_tool("read", "Get workspace")
 def get_workspace(name: str) -> dict[str, Any]:
-    """Return a Workspace: module, visibility, shortcuts, link cards, number cards, and layout.
+    """Return a Workspace: module, visibility, shortcuts, link cards, and number cards.
 
-    `layout` lists the blocks in the order Desk shows them (spacers left out);
-    `unmanaged_blocks` names block types (charts, quick lists, custom HTML blocks,
-    onboarding) that `upsert_workspace` cannot rebuild.
+    `layout` lists the blocks in Desk order; `unmanaged_blocks` lists blocks upsert_workspace can't
+    rebuild.
     """
     if not isinstance(name, str) or not _SAFE_NAME.fullmatch(name):
         raise ValueError("Invalid Workspace name")
@@ -6514,23 +6388,16 @@ def upsert_workspace(
     expected_modified: ExpectedModified = None,
     confirm: Confirm = False,
 ) -> dict[str, Any]:
-    """Preview or create/replace a public, standard Workspace that ships with an app module.
+    """Preview or create/replace a public, standard Workspace that ships with `module`.
 
-    Args:
-        name: Workspace name, also its label and title (the sidebar entry).
-        module: Its Module Def, of an app other than frappe/erpnext. Frappe writes the
-            Workspace to `<module>/workspace/<name>/` in developer mode.
-        shortcuts: 0-50 tiles, in order: `{"label", "type": "DocType"|"Report"|"Page",
-            "link_to", "color"?, "doc_view"?}`. `link_to` must exist; `doc_view` (List,
-            Report Builder, Dashboard, Tree, New, Calendar, Image) applies to DocTypes only.
-        link_cards: 0-50 cards, in order: `{"label", "links": [{"label", "type", "link_to"}]}`
-            with 1-50 links each, same types and checks as shortcuts.
-        number_cards: Names of existing Number Card records, in order.
-        expected_modified: The preview's `modified`, required to confirm a replacement.
-        confirm: False returns a preview; True saves.
-
-    The tool builds the Workspace layout itself: number cards, then shortcuts, then link
-    cards. URL shortcuts, custom HTML blocks, charts, and private Workspaces are refused.
+    `module` can't be of frappe or erpnext. `name` is the sidebar label; Frappe writes it to
+    `<module>/workspace/` in developer mode.
+    - shortcuts (0-50): {"label", "type": DocType|Report|Page, "link_to", "color"?, "doc_view"?};
+      doc_view (List, Report Builder, Tree, ...) is for DocTypes.
+    - link_cards (0-50): {"label", "links": [{"label", "type", "link_to"}]}, 1-50 links each.
+    - number_cards: names of existing Number Cards.
+    Laid out as number cards, shortcuts, link cards. Targets must exist; URL shortcuts and custom
+    HTML are refused.
     """
     if not isinstance(name, str) or not _SAFE_NAME.fullmatch(name):
         raise ValueError("Invalid Workspace name")
@@ -6902,6 +6769,18 @@ def _apps_path_check(site_apps: list[str]) -> tuple[bool, str]:
     return bool(found) and not read_only, "; ".join(parts)
 
 
+def _tool_list_summary(selected: set[str]) -> str:
+    """Describe what each toolset adds to the host's context, for `check`."""
+    cost = _tool_list_cost()
+    parts = [f"{name} {count} tools ~{chars:,} chars" for name, (count, chars) in cost.items()]
+    listed = sum(chars for name, (_, chars) in cost.items() if name in selected)
+    summary = f"{', '.join(parts)}; listed ~{listed:,} chars"
+    off = [name for name in cost if name not in selected]
+    if off:
+        summary += f"; off: {', '.join(off)}"
+    return summary
+
+
 def _setup_check() -> list[tuple[str, str, str]]:
     """Run the `check` command's steps; each row is (status, step, detail)."""
     rows: list[tuple[str, str, str]] = []
@@ -6961,6 +6840,7 @@ def _setup_check() -> list[tuple[str, str, str]]:
     elif reason is not None:
         selected += " (read-only mode)"
     rows.append(("ok", "toolsets", selected))
+    rows.append(("info", "tool list", _tool_list_summary(toolsets)))
     if reason is None and _remote_target():
         rows.append(("warn", "toolsets", _remote_mode_notice() or ""))
     usable, detail = _apps_path_check([app["app"] for app in info["apps"]])

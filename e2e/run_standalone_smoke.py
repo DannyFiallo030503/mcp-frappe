@@ -114,7 +114,10 @@ async def run() -> dict:
             initialized = await session.initialize()
             tools = await session.list_tools()
             site_info = result_value(await session.call_tool("get_site_info", {}))
-            apps = result_value(await session.call_tool("list_installed_apps", {}))
+            # A list result arrives as one text block per item (tools have no output schema).
+            listed = await session.call_tool("list_installed_apps", {})
+            result_value(listed)
+            apps = [json.loads(block.text) for block in listed.content]
             doctypes = result_value(
                 await session.call_tool("list_doctypes", {"app": "erpnext", "limit": 5})
             )["rows"]
