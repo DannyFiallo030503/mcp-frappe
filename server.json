@@ -1,0 +1,87 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.DannyFiallo030503/mcp-frappe",
+  "title": "Frappe MCP for developers",
+  "description": "Create and edit Frappe DocTypes, customize forms, and sync a dev site with your app's files.",
+  "repository": {
+    "url": "https://github.com/DannyFiallo030503/mcp-frappe",
+    "source": "github"
+  },
+  "version": "0.3.0",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "identifier": "mcp-frappe",
+      "version": "0.3.0",
+      "runtimeHint": "uvx",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "FRAPPE_URL",
+          "description": "Base URL of the Frappe site, e.g. http://127.0.0.1:8000",
+          "isRequired": true,
+          "isSecret": false,
+          "format": "string"
+        },
+        {
+          "name": "FRAPPE_SITE",
+          "description": "Site name sent as the Host header on a multi-site Bench",
+          "isRequired": false,
+          "isSecret": false,
+          "format": "string"
+        },
+        {
+          "name": "FRAPPE_API_KEY",
+          "description": "API key of the Frappe user (or use FRAPPE_USERNAME and FRAPPE_PASSWORD)",
+          "isRequired": false,
+          "isSecret": true,
+          "format": "string"
+        },
+        {
+          "name": "FRAPPE_API_SECRET",
+          "description": "API secret of the Frappe user",
+          "isRequired": false,
+          "isSecret": true,
+          "format": "string"
+        },
+        {
+          "name": "FRAPPE_USERNAME",
+          "description": "Login user for password auth; defaults to Administrator",
+          "isRequired": false,
+          "isSecret": false,
+          "format": "string"
+        },
+        {
+          "name": "FRAPPE_PASSWORD",
+          "description": "Password for password auth",
+          "isRequired": false,
+          "isSecret": true,
+          "format": "string"
+        },
+        {
+          "name": "FRAPPE_APPS_PATH",
+          "description": "The Bench apps folder, for standard DocTypes and file exports",
+          "isRequired": false,
+          "isSecret": false,
+          "format": "filepath"
+        },
+        {
+          "name": "FRAPPE_MCP_TOOLSETS",
+          "description": "Comma-separated toolsets: read, data, customize, developer (default: all)",
+          "isRequired": false,
+          "isSecret": false,
+          "format": "string"
+        },
+        {
+          "name": "FRAPPE_MCP_READ_ONLY",
+          "description": "YES lists only the read tools; NO allows writes to a remote site",
+          "isRequired": false,
+          "isSecret": false,
+          "format": "string"
+        }
+      ]
+    }
+  ]
+}

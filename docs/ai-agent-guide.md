@@ -15,6 +15,7 @@
 - For DocTypes and fixtures, preview the app/module destination and hashes. After export, inspect the local diff and let the developer handle Git review and migrations.
 - Never place credentials in tool arguments, source code, logs, screenshots, or evidence.
 - Read tool errors to the end. They give Frappe's message as plain text and, for common exception types, a `Hint:` line: a `MandatoryError` lists the missing field labels, a `TimestampMismatchError` asks for a fresh preview, and a `PermissionError` is final.
+- If Frappe's built-in MCP server is also connected (it has tools such as `call_method` and `search_doctypes`), use it for record data and method calls, and this server for DocTypes, customizations, app files, and configuration records. Both have tools named `list_documents`, `get_document`, and so on; pick by server, not by tool name. See [using both servers](native-frappe-mcp.md).
 - The tools you see depend on the server's toolsets. With `FRAPPE_MCP_READ_ONLY=YES`, and by default for a remote (not loopback or `.localhost`) site, only the read tools are listed; if a change needs a tool that isn't there, tell the user rather than looking for another route. Writes to a remote site need the user to set `FRAPPE_MCP_READ_ONLY=NO`.
 
 ## Read a record type

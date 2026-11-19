@@ -1,5 +1,7 @@
 # Frappe MCP
 
+<!-- mcp-name: io.github.DannyFiallo030503/mcp-frappe -->
+
 A Model Context Protocol server for **Frappe developers**. Point Claude Code or Claude Desktop at a development site and let it create and change DocTypes, customize ERPNext forms, keep the site and your app's files in sync, and set up workflows, reports, and Workspaces. Every change is previewed before it happens.
 
 It runs as a local stdio process and talks to the site only through Frappe's REST API. You don't install it as a Frappe app, add it to a Bench, or migrate anything. Frappe's own permissions and validation apply to every call, and there is no SQL, Python eval, or arbitrary method call.
@@ -37,12 +39,12 @@ export FRAPPE_APPS_PATH=/absolute/path/to/frappe-bench/apps   # for standard Doc
 uvx mcp-frappe check
 ```
 
-`check` logs in and prints the user, app versions, toolsets, and whether `FRAPPE_APPS_PATH` holds the site's apps. It never prints a secret. HTTPS is required except for loopback and `.localhost` hosts.
+`check` logs in and prints the user, app versions, toolsets, how many characters each toolset adds to the host's context, and whether `FRAPPE_APPS_PATH` holds the site's apps. It never prints a secret. HTTPS is required except for loopback and `.localhost` hosts.
 
-Then add the server to your host. **Claude Code:**
+Then add the server to your host. The examples name it `frappe-dev`, so it doesn't clash with Frappe's built-in MCP server, whose guide suggests `frappe`. **Claude Code:**
 
 ```bash
-claude mcp add frappe \
+claude mcp add frappe-dev \
   -e FRAPPE_URL=http://127.0.0.1:8000 -e FRAPPE_SITE=site1.localhost \
   -e FRAPPE_API_KEY="$FRAPPE_API_KEY" -e FRAPPE_API_SECRET="$FRAPPE_API_SECRET" \
   -e FRAPPE_APPS_PATH=/absolute/path/to/frappe-bench/apps \
@@ -54,7 +56,7 @@ claude mcp add frappe \
 ```json
 {
   "mcpServers": {
-    "frappe": {
+    "frappe-dev": {
       "command": "uvx",
       "args": ["mcp-frappe"],
       "env": {
@@ -71,6 +73,10 @@ claude mcp add frappe \
 Other hosts: a stdio server with command `uvx` and arguments `["mcp-frappe"]`. Password login, shared `.mcp.json` files, containers, and every setting are covered in [installation and configuration](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/docs/installation-and-configuration.md).
 
 Standard DocTypes, DocType edits, and file exports need **developer mode** on the site and `FRAPPE_APPS_PATH` pointing at the site's Bench `apps` folder. Site-custom DocTypes, Custom Fields, and records need neither.
+
+## Next to Frappe's built-in MCP
+
+Frappe v16 ships its own MCP server for record data and whitelisted method calls. This server covers the development side: DocTypes, customizations, app files, and configuration records, with a preview before every write. To run both, keep the native server as `frappe`, add this one as `frappe-dev`, and set `FRAPPE_MCP_TOOLSETS=read,customize,developer` here so the record tools aren't listed twice. See [using both servers](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/docs/native-frappe-mcp.md).
 
 ## Toolsets
 
@@ -96,6 +102,7 @@ Use an Administrator key only on a development site. See the [security model](ht
 
 - [Tool reference](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/docs/tool-reference.md): every tool, its arguments, and its limits
 - [AI agent guide](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/docs/ai-agent-guide.md): the workflows an agent should follow
+- [Using both servers](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/docs/native-frappe-mcp.md): this server next to Frappe's built-in MCP
 - [Compatibility and validation](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/docs/compatibility-and-validation.md): what has been run on v15 and v16 sites
 - [Field feedback](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/docs/field-feedback/README.md): sanitized task usage, missing capabilities, and bugs reported from real MCP use
 - [Architecture](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/docs/architecture.md), [security](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/docs/security.md), [development](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/docs/development.md)

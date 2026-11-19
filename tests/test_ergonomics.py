@@ -169,7 +169,7 @@ def test_initialize_result_carries_the_server_instructions(monkeypatch) -> None:
     assert instructions == standalone._INSTRUCTIONS
     assert len(instructions) < 1500
     for phrase in ("get_site_info", "list_doctypes(search=", "diff_doctype", "confirm=true",
-                   "PermissionError"):
+                   "PermissionError", "another Frappe MCP server"):
         assert phrase in instructions
 
 
@@ -183,7 +183,7 @@ def test_every_tool_has_annotations_and_a_toolset() -> None:
     for tool in tools:
         annotations = tool.annotations
         assert annotations is not None, tool.name
-        assert annotations.title and tool.title == annotations.title, tool.name
+        assert tool.title and annotations.title is None, tool.name
         assert annotations.readOnlyHint is (grouped[tool.name] == "read"), tool.name
         assert annotations.openWorldHint is False, tool.name
         if not annotations.readOnlyHint:

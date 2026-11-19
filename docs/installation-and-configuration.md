@@ -43,7 +43,7 @@ There, run `uv run mcp-frappe` or `uv run python -m frappe_mcp.standalone`.
 | Command | What it does |
 |---|---|
 | `mcp-frappe` | Serves MCP over stdio. This is what an MCP host launches. Nothing but the protocol is written to stdout; logs and startup errors go to stderr. |
-| `mcp-frappe check` | Reads the settings below, logs in, and prints the user, the app versions, the selected toolsets, and whether `FRAPPE_APPS_PATH` is usable. It also prints `FRAPPE_SITE_LABEL` when set, and says when a remote target is read-only or has writes enabled. Exits 0 when ready, 1 otherwise. It never prints an API key, secret, or password, and it prints `FRAPPE_URL` without any credentials in it. |
+| `mcp-frappe check` | Reads the settings below, logs in, and prints the user, the app versions, the selected toolsets, the size of each toolset's tool list (tools and characters, which the host sends to the model in every session), and whether `FRAPPE_APPS_PATH` is usable. It also prints `FRAPPE_SITE_LABEL` when set, and says when a remote target is read-only or has writes enabled. Exits 0 when ready, 1 otherwise. It never prints an API key, secret, or password, and it prints `FRAPPE_URL` without any credentials in it. |
 | `mcp-frappe --version` | Prints the version. |
 
 Run `check` with the same environment the host will use before adding the server to a host. It catches bad settings (an unknown toolset, an invalid `FRAPPE_TIMEOUT` or `FRAPPE_SITE_LABEL`), unreachable sites, rejected credentials, a Guest session, and an `apps` checkout that is missing or read-only. It reports developer mode as unknown, because Frappe has no API for it.
@@ -72,12 +72,12 @@ Both auth modes require HTTPS unless `FRAPPE_URL` points at a loopback host (`lo
 
 ## MCP host configuration
 
-The host launches `uvx mcp-frappe` with the settings in its environment. The [README](../README.md#configure) has ready snippets for Claude Code (`claude mcp add frappe -e FRAPPE_URL=... -- uvx mcp-frappe`) and Claude Desktop. A generic local server declaration:
+The host launches `uvx mcp-frappe` with the settings in its environment. The [README](../README.md#configure) has ready snippets for Claude Code (`claude mcp add frappe-dev -e FRAPPE_URL=... -- uvx mcp-frappe`) and Claude Desktop. The suggested server name is `frappe-dev`, because Frappe's built-in MCP server suggests `frappe`; to run both, see [using both servers](native-frappe-mcp.md). A generic local server declaration:
 
 ```json
 {
   "mcpServers": {
-    "frappe": {
+    "frappe-dev": {
       "command": "uvx",
       "args": ["mcp-frappe"],
       "env": {
@@ -105,4 +105,4 @@ Run `mcp-frappe check` (above) with the host's environment first. Then, in the M
 
 ## Removal
 
-Remove the `frappe` server entry from the MCP host configuration (`claude mcp remove frappe` in Claude Code). `uv cache clean mcp-frappe` drops the cached `uvx` environment; delete the checkout if you used one. No app uninstall, site migration, or Bench change is required.
+Remove the `frappe-dev` server entry (or whatever you named it) from the MCP host configuration (`claude mcp remove frappe-dev` in Claude Code). `uv cache clean mcp-frappe` drops the cached `uvx` environment; delete the checkout if you used one. No app uninstall, site migration, or Bench change is required.

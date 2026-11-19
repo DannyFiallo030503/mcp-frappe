@@ -70,7 +70,7 @@ If a stage turns out larger than one session, stop at a clean point (tests passi
 | 12 | [Distribution and releases](stage-12-distribution.md) | 11 | done |
 | 13 | [Compatibility matrix and docs rewrite](stage-13-compat-and-docs.md) | 01–12 | done |
 | 14 | [Fixes from field use](stage-14-field-feedback-fixes.md) | 13 | done |
-| 15 | [Adoption: release, tool-list cost, working next to the native MCP](stage-15-adoption-and-context.md) | 14 | todo |
+| 15 | [Adoption: release, tool-list cost, working next to the native MCP](stage-15-adoption-and-context.md) | 14 | done |
 | 16 | [Developer diagnostics: patches, errors, app methods](stage-16-dev-diagnostics.md) | 15 | todo |
 | 17 | [Allowlisted method calls](stage-17-method-allowlist.md) | 16 | todo |
 | 18 | [Opt-in Bench commands](stage-18-bench-runner.md) | 16 | todo |

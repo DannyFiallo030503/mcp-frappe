@@ -267,3 +267,111 @@ def test_an_unreachable_site_reaches_the_client_as_a_clear_error(fake_site, monk
     text = result.content[0].text
     assert "http://127.0.0.1:8000" in text and "connection refused" in text
     assert "mcp-frappe check" in text
+
+
+# Tool-list budget: hosts send the whole list to the model in every session.
+
+TOOL_LIST_BUDGET = 32_000
+
+
+def _listed_tools():
+    async def list_tools():
+        async with create_connected_server_and_client_session(
+            standalone.server._mcp_server
+        ) as client:
+            return (await client.list_tools()).tools
+
+    return anyio.run(list_tools)
+
+
+def _chars(tool) -> int:
+    return len(json.dumps(tool.model_dump(mode="json", exclude_none=True)))
+
+
+def test_the_tool_list_fits_its_character_budget() -> None:
+    tools = _listed_tools()
+
+    total = sum(_chars(tool) for tool in tools)
+
+    assert total <= TOOL_LIST_BUDGET, f"tool list is {total} characters"
+
+
+def test_check_reports_the_same_cost_per_toolset_as_a_client_sees() -> None:
+    sizes = {tool.name: _chars(tool) for tool in _listed_tools()}
+
+    cost = standalone._tool_list_cost()
+
+    assert list(cost) == list(standalone._TOOLSETS)
+    for toolset, names in standalone._TOOLSETS.items():
+        assert cost[toolset] == (len(names), sum(sizes[name] for name in names)), toolset
+
+
+def _schema_titles(schema, path="$"):
+    """Yield every `title` keyword in a JSON schema, skipping property names."""
+    if isinstance(schema, dict):
+        if "title" in schema:
+            yield path
+        for key, value in schema.items():
+            if key in ("properties", "$defs"):
+                for name, child in value.items():
+                    yield from _schema_titles(child, f"{path}.{key}.{name}")
+            elif key != "title":
+                yield from _schema_titles(value, f"{path}.{key}")
+    elif isinstance(schema, list):
+        for index, child in enumerate(schema):
+            yield from _schema_titles(child, f"{path}[{index}]")
+
+
+def test_tool_schemas_carry_no_generated_titles_or_output_schema() -> None:
+    for tool in _listed_tools():
+        assert list(_schema_titles(tool.inputSchema)) == [], tool.name
+        assert tool.outputSchema is None, tool.name
+
+
+def test_a_list_result_still_reaches_the_client_as_one_block_per_item(fake_site) -> None:
+    fake_site.add("GET", "/api/resource/Module%20Def", [{"name": "Core", "app_name": "frappe"}])
+
+    async def call_tool():
+        async with create_connected_server_and_client_session(
+            standalone.server._mcp_server
+        ) as client:
+            return await client.call_tool("list_installed_apps", {})
+
+    result = anyio.run(call_tool)
+
+    assert result.structuredContent is None
+    assert [json.loads(block.text) for block in result.content] == [
+        {"app": "frappe", "modules": ["Core"]}
+    ]
+
+
+def test_optional_arguments_are_listed_without_a_null_branch() -> None:
+    (tool,) = [tool for tool in _listed_tools() if tool.name == "list_documents"]
+    properties = tool.inputSchema["properties"]
+
+    assert properties["order_by"]["type"] == "string" and "default" not in properties["order_by"]
+    assert [branch.get("type") for branch in properties["filters"]["anyOf"]] == [
+        "object", "array"
+    ]
+    assert "order_by" not in tool.inputSchema["required"]
+    serialized = json.dumps([tool.inputSchema for tool in _listed_tools()])
+    assert '{"type": "null"}' not in serialized
+    assert '"additionalProperties": true' not in serialized
+
+
+def test_an_explicit_null_for_an_optional_argument_is_still_accepted(fake_site) -> None:
+    fake_site.add_doctype("Lab Test", [{"fieldname": "title"}])
+    fake_site.add("GET", "/api/resource/Lab%20Test", [{"name": "LT-1"}])
+
+    async def call_tool():
+        async with create_connected_server_and_client_session(
+            standalone.server._mcp_server
+        ) as client:
+            return await client.call_tool(
+                "list_documents", {"doctype": "Lab Test", "order_by": None, "filters": None}
+            )
+
+    result = anyio.run(call_tool)
+
+    assert not result.isError, result.content
+    assert json.loads(result.content[0].text)["rows"] == [{"name": "LT-1"}]
