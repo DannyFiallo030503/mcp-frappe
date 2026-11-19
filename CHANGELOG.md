@@ -19,7 +19,7 @@ All notable changes to this project are listed here. The format follows
 
 This release refocuses the server on Frappe developers working against a development site:
 editing DocTypes, customizing standard DocTypes, keeping the site and the app files in sync,
-and setting up configuration records. It covers work-plan stages 00–12.
+and setting up configuration records. It covers work-plan stages 00–14.
 
 ### Breaking
 
@@ -46,6 +46,22 @@ and setting up configuration records. It covers work-plan stages 00–12.
   `FRAPPE_ALLOW_INSECURE_HTTP=YES` is set.
 - `run_report` returns `total_rows`, `offset`, `limit`, and `has_more`, and leaves the chart
   out unless `include_chart=True`.
+- **Remote targets start read-only.** When `FRAPPE_URL`'s host isn't loopback or `.localhost`
+  and `FRAPPE_MCP_READ_ONLY` is unset, only the `read` toolset is listed. To keep writing to a
+  remote site, set `FRAPPE_MCP_READ_ONLY=NO`. A remote target that names a writable toolset
+  in `FRAPPE_MCP_TOOLSETS` without it no longer starts.
+- **The record tools keep to record data.** `create_document` and `update_document` refuse
+  schema and configuration DocTypes and name the tool to use instead: `DocType`, `DocField`,
+  `DocPerm`, `Custom Field`, `Property Setter`, `Custom DocPerm`, `Customize Form`,
+  `Workflow`, `Notification`, `Report`, `Workspace`. Edit a Custom Field with
+  `set_field_property` instead of `update_document`. `delete_document` sends DocType deletes
+  to `delete_doctype` and DocField/DocPerm rows to their DocType's tools, and still deletes
+  Custom Fields, Property Setters, Custom DocPerms, Workflows, Notifications, Reports, and
+  Workspaces.
+- All three record tools refuse records that hold code (Server Script, Client Script, Print
+  Format, Webhook, Email Template, Web Form, and the others listed in `docs/security.md`), and
+  `create_document`/`update_document` refuse values for `Code` fields in any DocType, child
+  rows included, apart from a short allowlist of fields that hold plain data.
 
 ### Added
 
@@ -68,7 +84,8 @@ and setting up configuration records. It covers work-plan stages 00–12.
   annotations (read-only, destructive, idempotent), and toolsets chosen with
   `FRAPPE_MCP_TOOLSETS` or `FRAPPE_MCP_READ_ONLY=YES`.
 - **Settings:** `FRAPPE_META_TTL` (metadata cache), `FRAPPE_ALLOW_INSECURE_HTTP`,
-  `FRAPPE_MCP_TOOLSETS`, `FRAPPE_MCP_READ_ONLY`. Invalid values stop the server at startup
+  `FRAPPE_MCP_TOOLSETS`, `FRAPPE_MCP_READ_ONLY`, and `FRAPPE_SITE_LABEL`, a name for the
+  connection that `get_site_info` returns as `site_label` and `check` prints (FR-2026-001). Invalid values stop the server at startup
   with a one-line message.
 
 ### Changed
@@ -80,6 +97,12 @@ and setting up configuration records. It covers work-plan stages 00–12.
   never retried.
 - Write paths that can make a developer-mode Bench reload its web worker check the site's
   state after a dropped connection instead of reporting a failure.
+- When the site can't be reached, a tool error names the site (`scheme://host[:port]`), the
+  failure (connection refused, timed out, host name not resolved), and says to run
+  `mcp-frappe check`, instead of a bare `[Errno 111] Connection refused`. Connecting gives up
+  after 5 seconds, or `FRAPPE_TIMEOUT` if smaller; reads keep the full timeout.
+- `create_doctype` says to run `bench migrate` when the app already has the DocType's file but
+  the site doesn't have the DocType.
 - The README (also the PyPI page) starts with example developer prompts and uses absolute
   links; the compatibility page is a v15/v16 matrix that links each cell to its evidence.
 

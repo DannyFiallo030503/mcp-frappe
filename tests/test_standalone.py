@@ -401,3 +401,47 @@ def test_export_form_customizations_calls_native_frappe_export(tmp_path: Path, m
     assert result["sync_on_migrate"] is True
     assert result["native_result"] == str(destination)
     assert result["shared_app_tree_detected"] is True
+
+
+def _standard_create_site(monkeypatch, tmp_path: Path) -> Path:
+    module_path = tmp_path / "example_app" / "example_app" / "example_module"
+    module_path.mkdir(parents=True)
+    monkeypatch.setattr(
+        standalone, "_assert_app_module", lambda app, module: (tmp_path / app, module_path)
+    )
+    monkeypatch.setattr(standalone, "_doctype_exists", lambda *_: False)
+    return module_path
+
+
+def test_create_doctype_points_to_bench_migrate_when_the_app_has_the_files(
+    monkeypatch, tmp_path: Path
+) -> None:
+    module_path = _standard_create_site(monkeypatch, tmp_path)
+    folder = module_path / "doctype" / "example_thing"
+    folder.mkdir(parents=True)
+    (folder / "example_thing.json").write_text("{}")
+
+    with pytest.raises(ValueError, match="run `bench migrate`") as raised:
+        standalone.create_doctype(
+            app="example_app",
+            module="Example Module",
+            name="Example Thing",
+            fields=[{"fieldname": "title", "fieldtype": "Data"}],
+        )
+
+    assert "missing_on_site" in str(raised.value)
+
+
+def test_create_doctype_still_refuses_other_existing_files(monkeypatch, tmp_path: Path) -> None:
+    module_path = _standard_create_site(monkeypatch, tmp_path)
+    folder = module_path / "doctype" / "example_thing"
+    folder.mkdir(parents=True)
+    (folder / "example_thing.py").write_text("")
+
+    with pytest.raises(ValueError, match="Refusing to overwrite an existing DocType file"):
+        standalone.create_doctype(
+            app="example_app",
+            module="Example Module",
+            name="Example Thing",
+            fields=[{"fieldname": "title", "fieldtype": "Data"}],
+        )

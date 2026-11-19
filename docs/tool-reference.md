@@ -6,7 +6,7 @@ Before a host lists any tool, `mcp-frappe check` (a command, not a tool) tests t
 
 ## Toolsets, read-only mode, and annotations
 
-Tools are grouped into four toolsets. All four are on by default; `FRAPPE_MCP_TOOLSETS` (comma-separated) narrows the list, and the server removes the other tools at startup, so the host never sees them.
+Tools are grouped into four toolsets. All four are on by default for a loopback or `.localhost` target; a remote target gets only `read` unless `FRAPPE_MCP_READ_ONLY=NO` (see below). `FRAPPE_MCP_TOOLSETS` (comma-separated) narrows the list, and the server removes the other tools at startup, so the host never sees them.
 
 | Toolset | Tools |
 |---|---|
@@ -15,7 +15,7 @@ Tools are grouped into four toolsets. All four are on by default; `FRAPPE_MCP_TO
 | `customize` | `create_custom_field`, `set_field_property`, `set_role_permissions`, `export_form_customizations`, `export_customizations`, `rollback_export` |
 | `developer` | `create_doctype`, `update_doctype`, `delete_doctype`, `promote_custom_doctype`, `upsert_workflow`, `upsert_notification`, `upsert_report`, `upsert_workspace` |
 
-`FRAPPE_MCP_READ_ONLY=YES` is shorthand for `FRAPPE_MCP_TOOLSETS=read`: use it to look at a site that must not change. The server refuses to start on an unknown toolset name, on a `FRAPPE_MCP_READ_ONLY` value other than `YES` or `NO`, and on `FRAPPE_MCP_READ_ONLY=YES` combined with a toolset other than `read`.
+`FRAPPE_MCP_READ_ONLY=YES` is shorthand for `FRAPPE_MCP_TOOLSETS=read`: use it to look at a site that must not change. When `FRAPPE_MCP_READ_ONLY` is unset, a remote target (a `FRAPPE_URL` host that isn't loopback or `.localhost`) is read-only too; `FRAPPE_MCP_READ_ONLY=NO` enables writes on it, and the startup log and `mcp-frappe check` report either case. The server refuses to start on an unknown toolset name, on a `FRAPPE_MCP_READ_ONLY` value other than `YES` or `NO`, and when it is read-only (by `YES` or as a remote target) and `FRAPPE_MCP_TOOLSETS` names a toolset other than `read`.
 
 Every tool carries MCP annotations and a `title`. Tools in `read` have `readOnlyHint: true`; the others have `readOnlyHint: false` and say whether they are destructive and idempotent. `destructiveHint: true` is set on `delete_document`, `cancel_document`, `delete_doctype`, `update_doctype` (it can remove fields and change field types), `set_role_permissions`, and `rollback_export`. `idempotentHint: true` is set where repeating the call with the same arguments leaves the same end state: `update_document`, `delete_document`, `delete_doctype`, `set_field_property`, `set_role_permissions`, and the four `upsert_*` tools. `openWorldHint` is `false` everywhere: the tools reach only the configured site and `FRAPPE_APPS_PATH`. Hosts use these hints to run read tools without asking and to ask a person before a write; see [security](security.md#human-approval).
 
@@ -30,7 +30,15 @@ Frappe HTTP 417 MandatoryError: Error: Value missing for Lab Sample: Title
 Hint: Missing: Title. Required fields are empty; map the labels to fieldnames with get_doctype_schema and add them to the values.
 ```
 
-The text is `Frappe HTTP <status> <exception class>: <message>`. The message comes from Frappe's `_server_messages` (a JSON list of JSON objects): each `message` is decoded and its HTML tags are removed. When there are none, the last line of the exception is used without its module path. Frappe's traceback (`exc`) is never included. `PermissionError`, `DoesNotExistError`, `MandatoryError` (with the missing labels Frappe names), `LinkValidationError`, `DuplicateEntryError`, `TimestampMismatchError`, and `ValidationError` add a `Hint:` line saying what to do next; a `PermissionError` means asking the user, not retrying another way. The whole text is cut to 2,000 characters, keeping the hint.
+When the site can't be reached, the error names the site and what to check instead:
+
+```text
+Cannot reach the Frappe site at http://127.0.0.1:8000: connection refused. Is the site running? Run `mcp-frappe check` to test the connection.
+```
+
+The failure is one of `connection refused`, `no connection within N s` (connecting gives up after 5 seconds, or `FRAPPE_TIMEOUT` if smaller), `no answer within N s` (`FRAPPE_TIMEOUT`), `the host name could not be resolved`, or `the connection was closed before Frappe answered`. The site is shown as `scheme://host[:port]`, without credentials, path, or query.
+
+For a Frappe error, the text is `Frappe HTTP <status> <exception class>: <message>`. The message comes from Frappe's `_server_messages` (a JSON list of JSON objects): each `message` is decoded and its HTML tags are removed. When there are none, the last line of the exception is used without its module path. Frappe's traceback (`exc`) is never included. `PermissionError`, `DoesNotExistError`, `MandatoryError` (with the missing labels Frappe names), `LinkValidationError`, `DuplicateEntryError`, `TimestampMismatchError`, and `ValidationError` add a `Hint:` line saying what to do next; a `PermissionError` means asking the user, not retrying another way. The whole text is cut to 2,000 characters, keeping the hint.
 
 ## Discovery and records
 
@@ -88,6 +96,7 @@ The tool asks Frappe for `limit + 1` rows and returns `limit`; the extra row onl
 
 ```json
 {
+  "site_label": "erp-dev",
   "user": "developer@example.localhost",
   "apps": [{"app": "frappe", "title": "Frappe Framework", "version": "16.33.1"}],
   "frappe_major_version": 16,
@@ -96,7 +105,7 @@ The tool asks Frappe for `limit + 1` rows and returns `limit`; the extra row onl
 }
 ```
 
-`user` comes from `frappe.auth.get_logged_user` and `apps` from `frappe.utils.change_log.get_versions`, cut to `title` and `version` (branch and commit details are dropped). `apps_path` is `{"configured": false}` without `FRAPPE_APPS_PATH`, `{"configured": true, "exists": false}` when the folder is missing, and otherwise lists the site's apps with and without a checkout there, using the same containment checks as the file tools. No local path is returned.
+`site_label` is `FRAPPE_SITE_LABEL`, or `null` when it is unset: a name for checking which connection this is, never used to pick a site. `user` comes from `frappe.auth.get_logged_user` and `apps` from `frappe.utils.change_log.get_versions`, cut to `title` and `version` (branch and commit details are dropped). `apps_path` is `{"configured": false}` without `FRAPPE_APPS_PATH`, `{"configured": true, "exists": false}` when the folder is missing, and otherwise lists the site's apps with and without a checkout there, using the same containment checks as the file tools. No local path is returned.
 
 Developer mode is not reported. Frappe v16 puts it only in the boot data embedded in the Desk page, and no whitelisted method returns it. Tools that need it (`update_doctype`, standard `create_doctype`, standard reports and Workspaces) explain Frappe's error when it is off.
 
@@ -108,7 +117,7 @@ The record tools (`list_documents`, `get_document`, `create_document`, `update_d
 
 A live run as a user with only the Sales User role (Frappe 15.126 and 16.55, [evidence](compatibility-and-validation.md#matrix)) confirmed this: `get_site_info`, `list_installed_apps`, `get_doctype_schema`, `list_documents`, `count_documents`, `search_records`, `list_reports`, `get_report_filters`, `run_report`, and `get_workspace` work. Three developer reads are refused by Frappe with `PermissionError`, because they read records only System Manager (or the matching manager role) can list: `list_doctypes` (`DocType`), `get_workflow` (`Workflow`), and `list_notifications` (`Notification`). Use a developer account for those.
 
-Metadata is cached in the MCP process for `FRAPPE_META_TTL` seconds (default 300; `0` turns the cache off). `create_doctype`, `update_doctype`, `delete_doctype`, `create_custom_field`, `set_field_property`, and `set_role_permissions` drop the affected DocType, and any DocType that uses it as a child table, from the cache. Creating, updating, or deleting a `DocType`, `DocField`, `DocPerm`, `Custom Field`, `Property Setter`, or `Custom DocPerm` record through the record tools clears the whole cache. A change made outside the MCP (in Desk, say) shows up once its cache entry expires.
+Metadata is cached in the MCP process for `FRAPPE_META_TTL` seconds (default 300; `0` turns the cache off). `create_doctype`, `update_doctype`, `delete_doctype`, `create_custom_field`, `set_field_property`, and `set_role_permissions` drop the affected DocType, and any DocType that uses it as a child table, from the cache. Deleting a `Custom Field`, `Property Setter`, or `Custom DocPerm` record with `delete_document` clears the whole cache; the record tools write no other schema records (see [record-tool limits](#record-tool-limits)). A change made outside the MCP (in Desk, say) shows up once its cache entry expires.
 
 ### Schema detail
 
@@ -163,8 +172,8 @@ All conditions are combined with AND. In the four-element form, `doctype` must b
 
 | Tool | Purpose | Confirmation |
 |---|---|---|
-| `create_document` | Create using native DocType validation | First call with `confirm: false`; inspect, then confirm |
-| `update_document` | Update a record using the native resource API | Confirm with `expected_modified` from the preview |
+| `create_document` | Create a record using native DocType validation; record data only (see [record-tool limits](#record-tool-limits)) | First call with `confirm: false`; inspect, then confirm |
+| `update_document` | Update a record using the native resource API; record data only | Confirm with `expected_modified` from the preview |
 | `delete_document` | Delete a record | Confirm with `expected_modified` from the preview |
 | `submit_document` | Submit a draft (docstatus 0) of a submittable DocType, to test its controller | Confirm with `expected_modified` from the preview |
 | `cancel_document` | Cancel a submitted document (docstatus 1) | Confirm with `expected_modified` from the preview |
@@ -183,6 +192,24 @@ Frappe still decides whether the user may perform the operation. A preview is no
 
 `create_document` and `update_document` accept only the DocType's own fields: standard columns (`name`, `owner`, `docstatus`, `modified`, child-table `parent` columns, ...) and read-only fields are rejected. The one exception is `name` on `create_document` when the DocType's `autoname` is `Prompt` (naming rule "Set by user"); it is sent to Frappe as `__newname`, the way Desk does.
 
+### Record-tool limits
+
+The record tools are for record data. Their checks come before any request to the site:
+
+| DocType | `create_document` / `update_document` | `delete_document` |
+|---|---|---|
+| `DocType` | refused: use `create_doctype` / `update_doctype` (or `create_custom_field` and `set_field_property` for Frappe and ERPNext DocTypes) | refused: use `delete_doctype` |
+| `DocField` | refused: use `update_doctype`, or `create_custom_field` and `set_field_property` | refused, same tools |
+| `DocPerm` | refused: use `set_role_permissions` | refused, same tool |
+| `Custom Field` | refused: use `create_custom_field` / `set_field_property` | allowed |
+| `Property Setter` | refused: use `set_field_property` | allowed |
+| `Custom DocPerm` | refused: use `set_role_permissions` | allowed |
+| `Customize Form` | refused: use `create_custom_field`, `set_field_property`, or `set_role_permissions` | refused, same tools |
+| `Workflow`, `Notification`, `Report`, `Workspace` | refused: use `upsert_workflow`, `upsert_notification`, `upsert_report`, `upsert_workspace` | allowed |
+| Records that hold code: Address Template, Assignment Rule, Automation Flow, Client Script, Custom HTML Block, Email Template, Letter Head, Navbar Settings, Print Format, Print Format Field Template, Print Style, Scheduled Job Type, Server Script, System Console, Web Form, Web Page, Web Template, Webhook, Website Script, Website Theme | refused | refused |
+
+The deletes that stay allowed have no other tool, and a delete writes no code. In any other DocType, `create_document` and `update_document` refuse a value for a field of type `Code`, in child-table rows too; the type is the one `getdoctype` returns, after Custom Fields and Property Setters. Code fields that hold plain data stay writable: Translation `source_text` and `translated_text`, ERPNext's `item_tax_rate` on Purchase Invoice, Purchase Order, Purchase Receipt, Quotation, Sales Order, and Supplier Quotation items, and Purchase Order `customer_contact_email`. Auto Repeat `subject` and `message`, which Frappe renders as Jinja, are refused. Set refused values in Desk or in your app's files.
+
 `update_document` checks `expected_modified` before writing and also sends it in the update, so Frappe compares it with the stored value under a row lock. If the document changed in between, the update fails with "Document changed since preview"; request a fresh preview.
 
 `submit_document` and `cancel_document` exist so a developer can test a submittable DocType's controller; amend and workflow actions on documents are not available. Both read the DocType's metadata fresh (not from the cache) and refuse:
@@ -195,7 +222,7 @@ The preview shows `docstatus`, `modified`, and warnings: submitting runs `valida
 
 `create_doctype` accepts native DocField objects in `fields`, so Frappe's DocType controller validates field types and properties. DocType-level values such as `autoname`, `track_changes`, `title_field`, `search_fields`, `sort_field`, and `sort_order` go in `properties`; the MCP restricts this object to recognized DocType settings. Role rules go in `permissions`.
 
-By default, `is_custom: false` creates a standard DocType. It requires Developer Mode, and the app/module must exist on the site and under `FRAPPE_APPS_PATH`. Frappe writes the standard JSON and controller scaffolding; it also creates JavaScript/test scaffolds for non-child DocTypes. The MCP stages Frappe's own templates before the metadata request and reconciles a development-server restart against the site's DocType record. It refuses source writes to the protected `frappe` and `erpnext` apps.
+By default, `is_custom: false` creates a standard DocType. It requires Developer Mode, and the app/module must exist on the site and under `FRAPPE_APPS_PATH`. Frappe writes the standard JSON and controller scaffolding; it also creates JavaScript/test scaffolds for non-child DocTypes. The MCP stages Frappe's own templates before the metadata request and reconciles a development-server restart against the site's DocType record. It refuses source writes to the protected `frappe` and `erpnext` apps, and existing DocType files. When the app already has the DocType's JSON file but the site has no such DocType (`list_app_drift` reports `missing_on_site`), the error says to run `bench migrate`, which loads it from the file.
 
 Set `is_custom: true` to create a site-custom DocType. Frappe stores that definition in site metadata and does not generate app JSON/Python/JavaScript files; this path still requires an existing remote Module Def belonging to `app`, but does not require a local checkout, `FRAPPE_APPS_PATH`, or Developer Mode. Frappe rejects custom Virtual DocTypes. The live v15 matrix verified site-custom metadata and record CRUD; see the [manual report](../e2e/history/manual_functional_report.md).
 
@@ -242,7 +269,7 @@ Confirmation re-reads the DocType, refuses if `modified` moved, and sends `modif
 
 `create_custom_field` and `set_field_property` are database-backed site customizations. They need no local app checkout, `FRAPPE_APPS_PATH`, or Developer Mode. `app` and `module` are optional: `module` only tags the record for a later export. When `module` is given, its Module Def must exist on the site; when `app` is given too, the module must belong to it. `app` alone is rejected.
 
-`create_custom_field` takes the Custom Field values in `field` (`fieldname`, `fieldtype`, `label`, `insert_after`, ...). The target DocType and module come only from the arguments: a `field` that contains `doctype`, `dt`, or `module` is rejected. A `fieldname` that already exists on the DocType is rejected. To edit or remove a Custom Field afterwards, use `update_document` or `delete_document` on the `Custom Field` DocType; its name is `<DocType>-<fieldname>`.
+`create_custom_field` takes the Custom Field values in `field` (`fieldname`, `fieldtype`, `label`, `insert_after`, ...). The target DocType and module come only from the arguments: a `field` that contains `doctype`, `dt`, or `module` is rejected. A `fieldname` that already exists on the DocType is rejected. To change a Custom Field afterwards, use `set_field_property`; to remove it, `delete_document` on the `Custom Field` DocType, whose record name is `<DocType>-<fieldname>`.
 
 `set_field_property` sets `property` on `fieldname`, or on the DocType itself when `fieldname` is omitted. The supported properties and their types follow Customize Form:
 

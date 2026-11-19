@@ -10,11 +10,13 @@ Each process has one fixed target, selected by its startup environment: `FRAPPE_
 
 To work with several sites at once, configure a separate MCP server/process for each site in the host, with a distinct server name and the correct URL, optional `FRAPPE_SITE`, credentials, and—when file exports are needed—the matching Bench's `FRAPPE_APPS_PATH`. Before acting, call `get_site_info` on the explicitly selected connection and verify its user and app/version context. Keep results and writes attributed to that connection. Do not reuse one site's app checkout for another site's exports.
 
-`get_site_info` currently does not return a configured site label or host identity. The host's MCP server name is therefore the operational connection label; it is not independently verified by the server. If two configured connections are easy to confuse, stop and resolve the mapping before any writes. A future optional, non-sensitive configured label could make that check explicit.
+Give each process a `FRAPPE_SITE_LABEL`, such as `erp-dev` or `staging`. `get_site_info` returns it as `site_label`, and `mcp-frappe check` prints it, so an agent can check which connection it is using before it acts. The label is informational only: the server never uses it to choose a site, and a tool can't switch to another one. Without a label, `site_label` is `null` and the host's MCP server name is the only connection label; if two connections are easy to confuse, stop and resolve the mapping before any writes.
+
+One process serves exactly one site, and that won't change: the login session, the metadata cache, the apps path, and the preview tokens all belong to that one site, and hosts already keep sites apart by running one server per site.
 
 ### Remote sites
 
-Remote Frappe sites are reachable over HTTPS with API-key/secret or password authentication. For remote inspection, set `FRAPPE_MCP_READ_ONLY=YES`; this exposes only read tools. The server currently allows writable toolsets on remote URLs if this setting is omitted, so do not use a remote connection unless its configured tool list is read-only. Automatic remote read-only enforcement and live remote validation remain planned; see FR-2026-003 in [field feature requests](field-feedback/feature-requests.md).
+Remote Frappe sites are reachable over HTTPS with API-key/secret or password authentication. A **remote target**, one whose `FRAPPE_URL` host isn't loopback (`localhost`, `127.0.0.1`, `::1`) or a `.localhost` name, starts **read-only**: only the `read` toolset is listed, and the startup log and `mcp-frappe check` say so. To write to a remote site, set `FRAPPE_MCP_READ_ONLY=NO`; the server then logs a warning at startup, and `check` prints one. Naming a writable toolset in `FRAPPE_MCP_TOOLSETS` without `FRAPPE_MCP_READ_ONLY=NO` stops the server at startup instead of dropping the toolset silently. Live validation against a remote site is still pending; see FR-2026-003 in [field feature requests](field-feedback/feature-requests.md).
 
 ## Install
 
@@ -41,10 +43,10 @@ There, run `uv run mcp-frappe` or `uv run python -m frappe_mcp.standalone`.
 | Command | What it does |
 |---|---|
 | `mcp-frappe` | Serves MCP over stdio. This is what an MCP host launches. Nothing but the protocol is written to stdout; logs and startup errors go to stderr. |
-| `mcp-frappe check` | Reads the settings below, logs in, and prints the user, the app versions, the selected toolsets, and whether `FRAPPE_APPS_PATH` is usable. Exits 0 when ready, 1 otherwise. It never prints an API key, secret, or password, and it prints `FRAPPE_URL` without any credentials in it. |
+| `mcp-frappe check` | Reads the settings below, logs in, and prints the user, the app versions, the selected toolsets, and whether `FRAPPE_APPS_PATH` is usable. It also prints `FRAPPE_SITE_LABEL` when set, and says when a remote target is read-only or has writes enabled. Exits 0 when ready, 1 otherwise. It never prints an API key, secret, or password, and it prints `FRAPPE_URL` without any credentials in it. |
 | `mcp-frappe --version` | Prints the version. |
 
-Run `check` with the same environment the host will use before adding the server to a host. It catches bad settings (an unknown toolset, an invalid `FRAPPE_TIMEOUT`), unreachable sites, rejected credentials, a Guest session, and an `apps` checkout that is missing or read-only. It reports developer mode as unknown, because Frappe has no API for it.
+Run `check` with the same environment the host will use before adding the server to a host. It catches bad settings (an unknown toolset, an invalid `FRAPPE_TIMEOUT` or `FRAPPE_SITE_LABEL`), unreachable sites, rejected credentials, a Guest session, and an `apps` checkout that is missing or read-only. It reports developer mode as unknown, because Frappe has no API for it.
 
 ## Environment
 
@@ -52,16 +54,17 @@ Run `check` with the same environment the host will use before adding the server
 |---|---:|---|
 | `FRAPPE_URL` | Yes | Site base URL, e.g. `http://127.0.0.1:32783` |
 | `FRAPPE_SITE` | No | Site host name sent as the HTTP `Host` header for multi-site Bench routing |
+| `FRAPPE_SITE_LABEL` | No | A name for this connection, returned by `get_site_info` as `site_label` and printed by `check`; 1–64 letters, digits, spaces, `_`, `.`, or `-`, starting with a letter or digit. Never used for routing. The server refuses to start with any other value |
 | `FRAPPE_API_KEY` | Token auth | API key; use together with `FRAPPE_API_SECRET` |
 | `FRAPPE_API_SECRET` | Token auth | API secret |
 | `FRAPPE_USERNAME` | Password auth | Login username; defaults to `Administrator` |
 | `FRAPPE_PASSWORD` | Password auth | Password; never stored in this repository |
 | `FRAPPE_APPS_PATH` | DocType creation and export | Local Bench `apps/` directory visible to the MCP process |
-| `FRAPPE_TIMEOUT` | No | HTTP timeout in seconds; a positive number, defaults to `30`. The server refuses to start with any other value |
+| `FRAPPE_TIMEOUT` | No | HTTP timeout in seconds; a positive number, defaults to `30`. Connecting gives up after 5 seconds (or `FRAPPE_TIMEOUT`, if smaller), so a site that is down fails fast. The server refuses to start with any other value |
 | `FRAPPE_META_TTL` | No | Seconds to cache DocType metadata; zero or a positive number, defaults to `300`. `0` turns the cache off. The server refuses to start with any other value |
 | `FRAPPE_ALLOW_INSECURE_HTTP` | No | Set to `YES` to allow plain HTTP to non-local hosts on a trusted development network; logs a warning at startup |
 | `FRAPPE_MCP_TOOLSETS` | No | Comma-separated toolsets to expose: `read`, `data`, `customize`, `developer`. Defaults to all four. The server refuses to start with an unknown name. See [tool-reference.md](tool-reference.md#toolsets-read-only-mode-and-annotations) |
-| `FRAPPE_MCP_READ_ONLY` | No | `YES` exposes only the `read` toolset, for checking a site that must not change; `NO` or unset changes nothing. The server refuses to start with any other value, or with `YES` and a non-`read` toolset in `FRAPPE_MCP_TOOLSETS` |
+| `FRAPPE_MCP_READ_ONLY` | No | `YES` exposes only the `read` toolset, for checking a site that must not change. Unset: read-only for a remote target (see [Remote sites](#remote-sites)), no change for a local one. `NO` enables the write toolsets on a remote target too. The server refuses to start with any other value, or when read-only and `FRAPPE_MCP_TOOLSETS` names a non-`read` toolset |
 
 Use either both API token variables or a username/password. Token auth is preferred for remote sites. Password login uses Frappe's `/api/method/login`.
 

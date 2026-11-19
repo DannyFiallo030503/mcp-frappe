@@ -315,6 +315,7 @@ def _versions() -> dict:
 @pytest.fixture
 def info_site(fake_site, monkeypatch):
     monkeypatch.delenv("FRAPPE_APPS_PATH", raising=False)
+    monkeypatch.delenv("FRAPPE_SITE_LABEL", raising=False)
     fake_site.add("GET", LOGGED_USER, "dev@example.localhost")
     fake_site.add("GET", VERSIONS, _versions())
     return fake_site
@@ -370,6 +371,40 @@ def test_get_site_info_handles_an_unparsable_frappe_version(fake_site, monkeypat
     fake_site.add("GET", VERSIONS, {"frappe": {"title": "Frappe", "version": "develop"}})
 
     assert standalone.get_site_info()["frappe_major_version"] is None
+
+
+def test_get_site_info_has_no_label_by_default(info_site) -> None:
+    assert standalone.get_site_info()["site_label"] is None
+
+
+@pytest.mark.parametrize("label", ["erp-dev", "Staging 2", "a", "x" * 64, "site_1.local"])
+def test_get_site_info_returns_the_configured_label(info_site, monkeypatch, label) -> None:
+    monkeypatch.setenv("FRAPPE_SITE_LABEL", label)
+
+    assert standalone.get_site_info()["site_label"] == label
+
+
+@pytest.mark.parametrize("label", ["x" * 65, "-dash-first", "bad/label", "tab\tlabel", " lead"])
+def test_an_invalid_site_label_is_refused(info_site, monkeypatch, label) -> None:
+    monkeypatch.setenv("FRAPPE_SITE_LABEL", label)
+
+    with pytest.raises(RuntimeError, match="FRAPPE_SITE_LABEL"):
+        standalone.get_site_info()
+    assert info_site.calls == []
+
+
+def test_an_invalid_site_label_stops_startup(monkeypatch) -> None:
+    monkeypatch.setenv("FRAPPE_SITE_LABEL", "bad/label")
+    monkeypatch.setattr(standalone.server, "run", lambda **kwargs: pytest.fail("server ran"))
+
+    with pytest.raises(SystemExit, match="FRAPPE_SITE_LABEL"):
+        standalone.main([])
+
+
+def test_an_empty_site_label_counts_as_unset(info_site, monkeypatch) -> None:
+    monkeypatch.setenv("FRAPPE_SITE_LABEL", "")
+
+    assert standalone.get_site_info()["site_label"] is None
 
 
 # submit_document and cancel_document

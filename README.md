@@ -81,13 +81,13 @@ Standard DocTypes, DocType edits, and file exports need **developer mode** on th
 | `customize` | Custom Fields, Property Setters, role permissions, export to app files, rollback |
 | `developer` | Create, edit, delete, and promote DocTypes; Workflows, Notifications, Report Builder reports, Workspaces |
 
-All four are on by default. `FRAPPE_MCP_TOOLSETS=read,customize` narrows them, and `FRAPPE_MCP_READ_ONLY=YES` exposes only `read`. Every tool carries MCP annotations, so a host can run reads freely and ask before writes.
+All four are on by default for a local (loopback or `.localhost`) site; a remote site gets only `read` unless `FRAPPE_MCP_READ_ONLY=NO`. `FRAPPE_MCP_TOOLSETS=read,customize` narrows them, and `FRAPPE_MCP_READ_ONLY=YES` exposes only `read`. Every tool carries MCP annotations, so a host can run reads freely and ask before writes.
 
 ## Safety
 
 - Writes return a preview first. Updates and deletes are bound to the record's `modified` timestamp, and exports to a hash of the preview, so nothing changes if the site moved in between.
 - File writes stay inside the configured app, refuse `frappe` and `erpnext`, back up what they overwrite, and can be rolled back.
-- Fields Frappe evaluates as code (Python conditions, Query and Script Reports, custom HTML blocks) are refused.
+- Fields Frappe evaluates as code (Python conditions, Query and Script Reports, custom HTML blocks, `Code` fields) are refused, and the record tools don't write schema, configuration, or code records such as Server Scripts.
 - The server never runs `bench migrate`, restarts Bench, or deploys. Review and commit the generated files yourself.
 
 Use an Administrator key only on a development site. See the [security model](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/docs/security.md).

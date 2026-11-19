@@ -344,21 +344,16 @@ def test_set_role_permissions_invalidates_the_doctype(site) -> None:
 
 
 def test_writing_a_schema_record_clears_the_whole_cache(site) -> None:
-    site.add_doctype("Custom Field", [{"fieldname": "label", "fieldtype": "Data"}])
     site.add(
         "GET",
         standalone._resource("Custom Field", "Example-custom_x"),
         {"name": "Example-custom_x", "modified": MODIFIED},
     )
-    site.add("PUT", standalone._resource("Custom Field", "Example-custom_x"), {})
+    site.add("DELETE", standalone._resource("Custom Field", "Example-custom_x"), None)
     _warm(site, "Example", "Example Tag")
 
-    standalone.update_document(
-        "Custom Field",
-        "Example-custom_x",
-        {"label": "X"},
-        expected_modified=MODIFIED,
-        confirm=True,
+    standalone.delete_document(
+        "Custom Field", "Example-custom_x", expected_modified=MODIFIED, confirm=True
     )
 
     assert standalone._meta_cache == {}
