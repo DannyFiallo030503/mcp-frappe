@@ -6,21 +6,20 @@ Frappe MCP is a standalone stdio server for Frappe developers. This page lists w
 
 1. **Host integration and setup**: `uvx mcp-frappe`, the `mcp-frappe check` setup check, API-key or password login with session renewal, `FRAPPE_SITE` Host routing to select one site on a multi-site Bench per process, and a PyPI release workflow.
 2. **Discovery and reads**: site info, apps and modules, paged DocType lists, compact or full schemas from Frappe's form metadata (Custom Fields and Property Setters merged, cached), paged record lists with sorting and OR filters, counts, Link-style search, and bounded document reads.
-3. **Records**: create, update, and delete with previews and `modified`-bound confirmation; submit and cancel for testing a submittable DocType.
+3. **Records**: create, update, and delete with previews and `modified`-bound confirmation; submit and cancel for testing a submittable DocType. The record tools refuse schema, configuration, and code records, and `Code` fields, and name the tool to use instead.
 4. **DocTypes**: create standard and site-custom DocTypes (every variant and field type), edit them with add, change, move, and remove operations, delete DocTypes created by mistake, and promote a site-custom DocType into an app.
 5. **Customization**: Custom Fields, allowlisted Property Setters, and role permissions.
 6. **Site and app sync**: `diff_doctype` and `list_app_drift` verdicts based on `modified` and `migration_hash`, and native `custom/` exports with Client Script and Workflow fixtures, backups, and guarded rollback.
 7. **Configuration records**: Workflows, Email and System Notifications, Report Builder reports, and public Workspaces, with code fields refused.
 8. **Reports**: list reports, read their filters, and run Query and Script Reports with paging.
-9. **Agent ergonomics**: readable Frappe errors with hints, MCP instructions and annotations, and toolsets with a read-only mode.
+9. **Agent ergonomics**: readable Frappe errors with hints, a clear error naming the site when it can't be reached, MCP instructions and annotations, toolsets with a read-only mode (the default for remote targets), and an optional site label.
 10. **Validation**: unit tests against a fake site built from Frappe's source, an in-memory MCP contract test, and opt-in live runners, including the end-to-end developer flow. Every runner has passed on Frappe 15.126 and 16.55 development sites with ERPNext, and the read tools were checked as a Sales User ([matrix](docs/compatibility-and-validation.md#matrix)).
 
 ## Next
 
 - **First PyPI release** of 0.3.0 through the manual release workflow.
 - **Close the remaining validation gaps**: `set_role_permissions` on a live site, `bench migrate` re-importing an exported Custom Field, and record writes as a user without System Manager ([list](docs/compatibility-and-validation.md#not-yet-checked-on-a-site)).
-- **Stages 14–21** ([work plan](docs/work-plan/README.md#stages)), which focus on the development loop that the native Frappe MCP doesn't cover ([comparison](docs/work-plan/native-mcp-comparison.md)):
-  - fixes from field use: clear errors when the site can't be reached, record tools kept off schema and code records, a site label (FR-2026-001), and a remote read-only default (FR-2026-003), all in [field feature requests](docs/field-feedback/feature-requests.md);
+- **Stages 15–21** ([work plan](docs/work-plan/README.md#stages)), which focus on the development loop that the native Frappe MCP doesn't cover ([comparison](docs/work-plan/native-mcp-comparison.md)):
   - a smaller tool list, and docs for running next to the native server;
   - pending patches, recent errors, and the app's whitelisted methods from source;
   - allowlisted method calls;

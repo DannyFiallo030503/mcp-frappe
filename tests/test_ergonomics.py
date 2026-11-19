@@ -257,6 +257,7 @@ def tool_registry(monkeypatch):
     monkeypatch.setattr(standalone.server._tool_manager, "_tools", dict(tools))
     monkeypatch.delenv("FRAPPE_MCP_TOOLSETS", raising=False)
     monkeypatch.delenv("FRAPPE_MCP_READ_ONLY", raising=False)
+    monkeypatch.delenv("FRAPPE_URL", raising=False)
     return monkeypatch
 
 
@@ -309,6 +310,77 @@ def test_bad_toolset_settings_fail_at_startup(tool_registry, env, message) -> No
     assert len(standalone.server._tool_manager._tools) == sum(
         len(names) for names in standalone._TOOLSETS.values()
     )
+
+
+ALL = {"read", "data", "customize", "developer"}
+LOCAL = "http://site1.localhost:8000"
+REMOTE = "https://erp.example.com"
+
+
+@pytest.mark.parametrize(
+    ("url", "read_only", "expected"),
+    [
+        (LOCAL, None, ALL),
+        (LOCAL, "YES", {"read"}),
+        (LOCAL, "NO", ALL),
+        ("http://127.0.0.1:8000", None, ALL),
+        (REMOTE, None, {"read"}),
+        (REMOTE, "YES", {"read"}),
+        (REMOTE, "NO", ALL),
+        (REMOTE, "no", ALL),
+        (None, None, ALL),
+    ],
+)
+def test_remote_targets_are_read_only_unless_writes_are_enabled(
+    tool_registry, url, read_only, expected
+) -> None:
+    if url:
+        tool_registry.setenv("FRAPPE_URL", url)
+    if read_only:
+        tool_registry.setenv("FRAPPE_MCP_READ_ONLY", read_only)
+
+    assert standalone._selected_toolsets() == expected
+
+
+def test_a_remote_target_refuses_write_toolsets_until_writes_are_enabled(tool_registry) -> None:
+    tool_registry.setenv("FRAPPE_URL", REMOTE)
+    tool_registry.setenv("FRAPPE_MCP_TOOLSETS", "read,data")
+
+    with pytest.raises(RuntimeError, match="FRAPPE_MCP_READ_ONLY=NO"):
+        standalone._selected_toolsets()
+
+    tool_registry.setenv("FRAPPE_MCP_READ_ONLY", "NO")
+    assert standalone._selected_toolsets() == {"read", "data"}
+    tool_registry.setenv("FRAPPE_MCP_TOOLSETS", "read")
+    tool_registry.delenv("FRAPPE_MCP_READ_ONLY")
+    assert standalone._selected_toolsets() == {"read"}
+
+
+@pytest.mark.parametrize(
+    ("url", "read_only", "logged"),
+    [
+        (REMOTE, None, "read-only: https://erp.example.com is a remote target"),
+        (REMOTE, "NO", "write tools are enabled for the remote target https://erp.example.com"),
+        (LOCAL, None, None),
+        (REMOTE, "YES", None),
+    ],
+)
+def test_startup_logs_the_remote_decision(tool_registry, caplog, url, read_only, logged) -> None:
+    import logging
+
+    tool_registry.setenv("FRAPPE_URL", url)
+    if read_only:
+        tool_registry.setenv("FRAPPE_MCP_READ_ONLY", read_only)
+    tool_registry.setattr(standalone.server, "run", lambda **kwargs: None)
+
+    with caplog.at_level(logging.INFO, logger=standalone.__name__):
+        standalone.main([])
+
+    messages = [record.getMessage() for record in caplog.records]
+    if logged is None:
+        assert messages == []
+    else:
+        assert len(messages) == 1 and logged in messages[0]
 
 
 def test_main_applies_the_toolsets_before_serving(tool_registry) -> None:

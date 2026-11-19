@@ -3,8 +3,9 @@
 ## Operating principles
 
 - If no Frappe tools are listed, or the first call fails on settings or login, ask the user to run `mcp-frappe check` (`uvx mcp-frappe check`) in a terminal with the host's environment. It names the failing setting without printing secrets. Do not ask the user to paste a key, secret, or password into the chat.
-- For CubaZone Platform tasks, when Frappe site access is needed, use the connected Frappe MCP tools and follow Platform's local agent instructions. Log one sanitized entry per task in `docs/field-feedback/usage-log.md`, including read-only calls and failures. If a needed operation is missing, add a feature request; if an existing tool malfunctions, add a reproducible bug report. Do not bypass a gap or failure with another route to perform the same site operation.
-- Each server process is bound to one site. On a task spanning sites, select a separately configured, clearly named connection for each target and call `get_site_info` on it before acting. This tool reports user and app versions but not site identity; if the connection alias does not unambiguously identify the requested site, stop and ask for configuration clarification. Log sanitized connection aliases and keep outcomes separate per site.
+- If a needed operation is missing or a tool misbehaves, tell the user and suggest reporting it as an issue at https://github.com/DannyFiallo030503/mcp-frappe/issues, with sanitized steps and no site data. Don't work around a gap or a refusal by doing the same site operation another way.
+- Each server process is bound to one site. On a task spanning sites, select a separately configured, clearly named connection for each target and call `get_site_info` on it before acting. Its `site_label` is the connection's configured `FRAPPE_SITE_LABEL`; check that it names the site the user asked for. If it is `null`, or neither the label nor the connection name identifies the site unambiguously, stop and ask the user. Keep outcomes separate per site.
+- If a call fails with "Cannot reach the Frappe site", the site is down or the settings are wrong. Tell the user which site and failure the error names, and ask them to start the site or run `mcp-frappe check`; don't retry in a loop.
 - Begin with `get_site_info` (who you are connected as, the Frappe major version, installed apps, and which apps have a local checkout), then `list_doctypes(search=...)` to find the DocType, then `get_doctype_schema`. Do not assume an ERPNext, HRMS, or custom app catalog.
 - Use the target site's naming and field options exactly as returned by Frappe.
 - Request only fields and rows needed. Keep output limits low and narrow filters.
@@ -14,7 +15,7 @@
 - For DocTypes and fixtures, preview the app/module destination and hashes. After export, inspect the local diff and let the developer handle Git review and migrations.
 - Never place credentials in tool arguments, source code, logs, screenshots, or evidence.
 - Read tool errors to the end. They give Frappe's message as plain text and, for common exception types, a `Hint:` line: a `MandatoryError` lists the missing field labels, a `TimestampMismatchError` asks for a fresh preview, and a `PermissionError` is final.
-- The tools you see depend on the server's toolsets. With `FRAPPE_MCP_READ_ONLY=YES` only the read tools are listed; if a change needs a tool that isn't there, tell the user rather than looking for another route.
+- The tools you see depend on the server's toolsets. With `FRAPPE_MCP_READ_ONLY=YES`, and by default for a remote (not loopback or `.localhost`) site, only the read tools are listed; if a change needs a tool that isn't there, tell the user rather than looking for another route. Writes to a remote site need the user to set `FRAPPE_MCP_READ_ONLY=NO`.
 
 ## Read a record type
 
@@ -61,6 +62,8 @@ Report Builder reports return no rows from `run_report`; read their DocType with
 5. Read the record again to verify the result.
 
 Use the same preview-first pattern for creation/deletion. Do not pass `name`, `docstatus`, `owner`, or other standard columns as values; they are rejected. The exception is `name` on `create_document` for a DocType whose `autoname` is `Prompt`. Do not create records in a live system without explicit user authorization.
+
+The record tools are for record data. For DocTypes, Custom Fields, Property Setters, permissions, Workflows, Notifications, Reports, and Workspaces, the error names the tool to use; use it. Records that hold code (Server Script, Client Script, Print Format, Webhook, Email Template, ...) and values for `Code` fields are refused: tell the user to change them in Desk or in the app's files.
 
 ### Test my submittable DocType
 
@@ -192,7 +195,7 @@ A module is usable once it has a saved report or two and a Workspace in the side
 ### Custom Fields and form properties
 
 - Add a field: `create_custom_field(doctype="Customer", field={"fieldname": "custom_region", "fieldtype": "Data", "label": "Region", "insert_after": "customer_name"})`. Don't put `doctype`, `dt`, or `module` inside `field`; they are rejected.
-- Edit a Custom Field: `update_document` on the `Custom Field` DocType, name `<DocType>-<fieldname>` (for example `Customer-custom_region`). Remove it with `delete_document` on the same record. Both follow the usual preview and `expected_modified` steps.
+- Edit a Custom Field: `set_field_property` with its `fieldname`, as for any other field; `update_document` refuses Custom Field records. Remove it with `delete_document` on the `Custom Field` DocType, record name `<DocType>-<fieldname>` (for example `Customer-custom_region`), with the usual preview and `expected_modified` steps. Frappe refuses most field type changes on a field with data; tell the user instead of trying another route.
 - Change a form property (label, hidden, reqd, ...): `set_field_property`. Leave out `property_type`; the tool infers it. Check properties take `0`/`1` or booleans. If the preview says `mode: "update"`, a Property Setter already exists: confirm with the preview's `modified` as `expected_modified`. If a DocType-level preview lists `replaces_field_setters`, Frappe will delete those field-level setters; tell the user before confirming.
 
 ### Exporting customizations

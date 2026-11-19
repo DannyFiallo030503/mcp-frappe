@@ -35,6 +35,7 @@ _ENV = (
     "FRAPPE_ALLOW_INSECURE_HTTP",
     "FRAPPE_MCP_TOOLSETS",
     "FRAPPE_MCP_READ_ONLY",
+    "FRAPPE_SITE_LABEL",
 )
 
 
@@ -127,10 +128,55 @@ def test_check_reports_a_ready_setup(fake_site, clean_env, capsys) -> None:
     assert "Administrator" in output
     assert "frappe 16.33.1" in output and "erpnext 16.2.0" in output
     assert "developer mode" in output.lower()
-    assert "read, data, customize, developer" in output
+    assert "read (read-only: remote target; set FRAPPE_MCP_READ_ONLY=NO" in output
     assert "FRAPPE_APPS_PATH" in output
     assert output.rstrip().endswith("Ready.")
     _assert_no_secrets(output)
+
+
+def test_check_shows_every_toolset_for_a_local_site(fake_site, clean_env, capsys) -> None:
+    _token_env(clean_env, "http://site1.localhost:8000")
+    _site_answers(fake_site)
+
+    code, output = _run_check(capsys)
+
+    assert code == 0
+    assert "read, data, customize, developer" in output
+    assert "read-only" not in output
+
+
+def test_check_warns_when_a_remote_target_enables_writes(fake_site, clean_env, capsys) -> None:
+    _token_env(clean_env)
+    clean_env.setenv("FRAPPE_MCP_READ_ONLY", "NO")
+    _site_answers(fake_site)
+
+    code, output = _run_check(capsys)
+
+    assert code == 0
+    assert "read, data, customize, developer" in output
+    assert "warn" in output and "write tools are enabled for the remote target" in output
+
+
+def test_check_prints_the_site_label(fake_site, clean_env, capsys) -> None:
+    _token_env(clean_env)
+    clean_env.setenv("FRAPPE_SITE_LABEL", "erp-dev")
+    _site_answers(fake_site)
+
+    code, output = _run_check(capsys)
+
+    assert code == 0
+    assert "label erp-dev" in output
+
+
+def test_check_fails_for_an_invalid_site_label(fake_site, clean_env, capsys) -> None:
+    _token_env(clean_env)
+    clean_env.setenv("FRAPPE_SITE_LABEL", "bad/label")
+
+    code, output = _run_check(capsys)
+
+    assert code == 1
+    assert "FRAPPE_SITE_LABEL" in output
+    assert fake_site.calls == []
 
 
 def test_check_shows_the_selected_toolsets(fake_site, clean_env, capsys) -> None:
@@ -171,8 +217,9 @@ def test_check_fails_when_the_site_is_unreachable(fake_site, clean_env, capsys) 
     code, output = _run_check(capsys)
 
     assert code == 1
-    assert "Connection refused" in output
+    assert "connection refused" in output
     assert "http://127.0.0.1:9" in output
+    assert "Is the site running?" in output
 
 
 def test_check_fails_for_a_guest_session(fake_site, clean_env, capsys) -> None:

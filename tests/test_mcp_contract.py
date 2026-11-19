@@ -230,3 +230,40 @@ def test_paged_list_and_submit_preview_round_trip_through_an_mcp_session(fake_si
     assert decoded["preview"] is True
     assert decoded["modified"] == "2026-10-28 09:00"
     assert fake_site.calls_to("POST") == []
+
+
+def test_argument_descriptions_survive_the_tool_wrapper() -> None:
+    async def list_tools():
+        async with create_connected_server_and_client_session(
+            standalone.server._mcp_server
+        ) as client:
+            return (await client.list_tools()).tools
+
+    (tool,) = [tool for tool in anyio.run(list_tools) if tool.name == "list_documents"]
+    properties = tool.inputSchema["properties"]
+
+    assert "Operators:" in properties["filters"]["description"]
+    assert properties["limit"]["type"] == "integer"
+    assert tool.inputSchema["required"] == ["doctype"]
+
+
+def test_an_unreachable_site_reaches_the_client_as_a_clear_error(fake_site, monkeypatch) -> None:
+    monkeypatch.setenv("FRAPPE_URL", "http://127.0.0.1:8000")
+    fake_site.add(
+        "GET",
+        "/api/method/frappe.auth.get_logged_user",
+        standalone.httpx.ConnectError("[Errno 111] Connection refused"),
+    )
+
+    async def call_tool():
+        async with create_connected_server_and_client_session(
+            standalone.server._mcp_server
+        ) as client:
+            return await client.call_tool("get_site_info", {})
+
+    result = anyio.run(call_tool)
+
+    assert result.isError
+    text = result.content[0].text
+    assert "http://127.0.0.1:8000" in text and "connection refused" in text
+    assert "mcp-frappe check" in text

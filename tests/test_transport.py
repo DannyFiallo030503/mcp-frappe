@@ -358,3 +358,113 @@ def test_error_responses_carry_frappes_exception_type(site, monkeypatch) -> None
 
     assert raised.value.exc_type == "TimestampMismatchError"
     assert isinstance(raised.value, RuntimeError)
+
+
+# A site that can't be reached
+
+
+def test_connecting_gives_up_sooner_than_reading(site, monkeypatch) -> None:
+    _token_env(monkeypatch, "https://erp.example.com")
+    monkeypatch.setenv("FRAPPE_TIMEOUT", "30")
+
+    timeout = standalone._client().timeout
+
+    assert timeout.connect == 5.0
+    assert timeout.read == 30.0
+
+
+def test_a_short_timeout_also_bounds_connecting(site, monkeypatch) -> None:
+    _token_env(monkeypatch, "https://erp.example.com")
+    monkeypatch.setenv("FRAPPE_TIMEOUT", "2")
+
+    assert standalone._client().timeout.connect == 2.0
+
+
+def _registered(name: str):
+    """The function FastMCP calls for a tool, as opposed to the module-level one."""
+    return standalone.server._tool_manager._tools[name].fn
+
+
+_URL = "http://user:hunter2-secret@127.0.0.1:8000/private/path?token=abc"
+
+
+@pytest.mark.parametrize(
+    ("error", "kind"),
+    [
+        (httpx.ConnectError("[Errno 111] Connection refused"), "connection refused"),
+        (httpx.ConnectTimeout("timed out"), "no connection within 5 s"),
+        (httpx.ReadTimeout("timed out"), "no answer within 30 s"),
+        (
+            httpx.ConnectError("[Errno -2] Name or service not known"),
+            "host name could not be resolved",
+        ),
+        (
+            httpx.ConnectError("[Errno -3] Temporary failure in name resolution"),
+            "host name could not be resolved",
+        ),
+        (httpx.RemoteProtocolError("Server disconnected"), "the connection was closed"),
+    ],
+)
+def test_an_unreachable_site_names_the_site_and_the_next_step(
+    fake_site, monkeypatch, error, kind
+) -> None:
+    monkeypatch.setenv("FRAPPE_URL", _URL)
+    monkeypatch.setenv("FRAPPE_API_KEY", "key-should-not-appear")
+    monkeypatch.delenv("FRAPPE_TIMEOUT", raising=False)
+    fake_site.add("GET", "/api/method/frappe.auth.get_logged_user", error)
+
+    with pytest.raises(RuntimeError) as raised:
+        _registered("get_site_info")()
+
+    message = str(raised.value)
+    assert not isinstance(raised.value, httpx.TransportError)
+    assert "http://127.0.0.1:8000" in message
+    assert kind in message
+    assert "mcp-frappe check" in message
+    for leaked in ("hunter2", "user:", "/private", "token", "key-should-not-appear"):
+        assert leaked not in message
+
+
+def test_the_dns_failure_is_found_through_the_cause(fake_site, monkeypatch) -> None:
+    import socket
+
+    monkeypatch.setenv("FRAPPE_URL", "https://erp.example.com")
+    error = httpx.ConnectError("connect failed")
+    error.__cause__ = socket.gaierror(-2, "Name or service not known")
+    fake_site.add("GET", "/api/method/frappe.auth.get_logged_user", error)
+
+    with pytest.raises(RuntimeError, match="host name could not be resolved"):
+        _registered("get_site_info")()
+
+
+def test_module_functions_still_raise_the_transport_error(fake_site, monkeypatch) -> None:
+    monkeypatch.setenv("FRAPPE_URL", "http://127.0.0.1:8000")
+    fake_site.add(
+        "GET", "/api/method/frappe.auth.get_logged_user", httpx.ConnectError("refused")
+    )
+
+    with pytest.raises(httpx.ConnectError):
+        standalone.get_site_info()
+
+
+def test_reload_reconciliation_still_sees_the_raw_transport_error(fake_site, monkeypatch) -> None:
+    monkeypatch.setenv("FRAPPE_URL", "http://127.0.0.1:8000")
+    fake_site.add("GET", "/api/resource/Example/EX-1", {"name": "EX-1", "modified": "current"})
+    fake_site.add("DELETE", "/api/resource/Example/EX-1", httpx.ConnectError("worker restarted"))
+    monkeypatch.setattr(standalone, "_wait_for_document_deleted", lambda *args: True)
+
+    result = _registered("delete_document")(
+        "Example", "EX-1", expected_modified="current", confirm=True
+    )
+
+    assert result["reconciled_after_server_reload"] is True
+
+
+def test_registered_tools_keep_their_name_docstring_and_signature() -> None:
+    import inspect
+
+    wrapped = _registered("list_documents")
+
+    assert wrapped.__name__ == "list_documents"
+    assert wrapped.__doc__ == standalone.list_documents.__doc__
+    assert inspect.signature(wrapped) == inspect.signature(standalone.list_documents)

@@ -155,13 +155,13 @@ async def cleanup_doctype(session, name: str) -> bool:
                         "confirm": True,
                     },
                 )
-            preview = await call(session, "delete_document", {"doctype": "DocType", "name": name})
+            # delete_document refuses DocType records; delete_doctype is the tool for them.
+            preview = await call(session, "delete_doctype", {"doctype": name})
             result = await call(
                 session,
-                "delete_document",
+                "delete_doctype",
                 {
-                    "doctype": "DocType",
-                    "name": name,
+                    "doctype": name,
                     "expected_modified": preview.get("modified"),
                     "confirm": True,
                 },

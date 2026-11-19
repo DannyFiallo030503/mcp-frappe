@@ -6,6 +6,7 @@ import argparse
 import ast
 import copy
 import difflib
+import functools
 import hashlib
 import html
 import json
@@ -14,6 +15,7 @@ import math
 import os
 import re
 import shutil
+import socket
 import stat
 import sys
 import tempfile
@@ -80,7 +82,19 @@ def _tool(
 
     def register(fn: Callable[..., Any]) -> Callable[..., Any]:
         _TOOLSETS[toolset].add(fn.__name__)
-        return server.tool(title=title, annotations=annotations)(fn)
+
+        # FastMCP reads the schema through `__wrapped__`. Only the registered copy turns a
+        # network failure into a readable error: the module-level function keeps raising
+        # `httpx.TransportError`, which the reload helpers and other callers depend on.
+        @functools.wraps(fn)
+        def call(*args: Any, **kwargs: Any) -> Any:
+            try:
+                return fn(*args, **kwargs)
+            except httpx.TransportError as error:
+                raise RuntimeError(_unreachable_message(error)) from error
+
+        server.tool(title=title, annotations=annotations)(call)
+        return fn
 
     return register
 
@@ -126,6 +140,99 @@ _GETDOCTYPE = "/api/method/frappe.desk.form.load.getdoctype"
 _SCHEMA_DOCTYPES = frozenset(
     {"DocType", "DocField", "DocPerm", "Custom Field", "Property Setter", "Custom DocPerm"}
 )
+# The record tools (create_document, update_document, delete_document) keep to record data.
+# Schema and configuration records have their own tools, which run checks the record tools
+# don't; each entry maps an action ("create", "update", "delete", or "*" for all) to the tool
+# to use. An action left out stays allowed: no tool deletes these records, and a delete writes
+# no code.
+_CUSTOMIZE_TOOLS = "create_custom_field, set_field_property, or set_role_permissions"
+_RECORD_TOOL_REDIRECTS: dict[str, dict[str, str]] = {
+    "DocType": {
+        "create": "use create_doctype",
+        "update": (
+            "use update_doctype for your own app's DocTypes, or create_custom_field and "
+            "set_field_property for Frappe and ERPNext DocTypes"
+        ),
+        "delete": "use delete_doctype",
+    },
+    "DocField": {
+        "*": (
+            "DocField rows belong to their DocType; use update_doctype for your own app's "
+            "DocTypes, or create_custom_field and set_field_property for Frappe and ERPNext "
+            "DocTypes"
+        )
+    },
+    "DocPerm": {"*": "use set_role_permissions"},
+    "Custom DocPerm": {"create": "use set_role_permissions", "update": "use set_role_permissions"},
+    "Custom Field": {
+        "create": "use create_custom_field",
+        "update": "use set_field_property, which saves the change as Customize Form does",
+    },
+    "Property Setter": {"create": "use set_field_property", "update": "use set_field_property"},
+    "Customize Form": {"*": f"use {_CUSTOMIZE_TOOLS}"},
+    "Workflow": {"create": "use upsert_workflow", "update": "use upsert_workflow"},
+    "Notification": {"create": "use upsert_notification", "update": "use upsert_notification"},
+    "Report": {
+        "create": "use upsert_report (Report Builder reports)",
+        "update": "use upsert_report (Report Builder reports)",
+    },
+    "Workspace": {"create": "use upsert_workspace", "update": "use upsert_workspace"},
+}
+# DocTypes whose records hold code Frappe runs: Python, Jinja, JavaScript, CSS, or a dotted
+# method path. The record tools never create, update, or delete them. Checked against Frappe
+# v16.55.1 (each also exists in v15, except Automation Flow).
+_CODE_DOCTYPES = frozenset(
+    {
+        "Address Template",  # template: Jinja
+        "Assignment Rule",  # assign/unassign/close conditions: Python; description: Jinja
+        "Automation Flow",  # condition: Python (v16 automation engine)
+        "Client Script",  # script: JavaScript
+        "Custom HTML Block",  # html, script, style
+        "Email Template",  # subject and response: Jinja
+        "Letter Head",  # content and footer: Jinja; header/footer scripts: JavaScript
+        "Navbar Settings",  # Navbar Item action and condition: JavaScript
+        "Print Format",  # html, raw_commands: Jinja; css
+        "Print Format Field Template",  # template: Jinja
+        "Print Style",  # css
+        "Scheduled Job Type",  # method: a dotted path Frappe calls
+        "Server Script",  # script: Python
+        "System Console",  # console: Python
+        "Web Form",  # client_script: JavaScript; breadcrumbs: Python expression
+        "Web Page",  # context_script: Python; main_section: Jinja; javascript
+        "Web Template",  # template: Jinja
+        "Webhook",  # condition: Python; request_url and webhook_json: Jinja
+        "Website Script",  # javascript
+        "Website Theme",  # SCSS and JavaScript
+    }
+)
+# `Code` fields that hold plain data in common record DocTypes: Frappe and ERPNext only parse
+# them, never run them. Every other `Code` field is refused by the record tools.
+_PLAIN_CODE_FIELDS: dict[tuple[str, str], str] = {
+    ("Translation", "source_text"): "the text to translate; looked up by frappe._, not run",
+    ("Translation", "translated_text"): "the translation frappe._ returns; not run",
+    **{
+        (doctype, "item_tax_rate"): (
+            "ERPNext's JSON map of tax account to rate, read with json.loads; copied with "
+            "item rows"
+        )
+        for doctype in (
+            "Purchase Invoice Item",
+            "Purchase Order Item",
+            "Purchase Receipt Item",
+            "Quotation Item",
+            "Sales Order Item",
+            "Supplier Quotation Item",
+        )
+    },
+    ("Purchase Order", "customer_contact_email"): (
+        "an e-mail address (Code with Email options) fetched from the customer contact"
+    ),
+}
+# Fields that aren't `Code` but that Frappe renders as Jinja, in DocTypes that are otherwise
+# record data.
+_TEMPLATE_FIELDS: dict[str, frozenset[str]] = {
+    "Auto Repeat": frozenset({"subject", "message"}),  # rendered with the new document
+}
 _COMPACT_DOCTYPE_KEYS = (
     "name",
     "module",
@@ -565,6 +672,92 @@ def _timeout() -> float:
     return timeout
 
 
+_SITE_LABEL_MAX = 64
+
+
+def _site_label() -> str | None:
+    """Return FRAPPE_SITE_LABEL, a name for the site that is shown but never used for routing."""
+    raw = os.environ.get("FRAPPE_SITE_LABEL") or ""
+    if not raw:
+        return None
+    if len(raw) > _SITE_LABEL_MAX or not _SAFE_NAME.fullmatch(raw):
+        raise RuntimeError(
+            f"FRAPPE_SITE_LABEL must be 1-{_SITE_LABEL_MAX} characters: letters, digits, "
+            "spaces, '_', '.', or '-', starting with a letter or digit"
+        )
+    return raw
+
+
+def _remote_target() -> bool:
+    """True when FRAPPE_URL is set and isn't a loopback or .localhost target."""
+    url = os.environ.get("FRAPPE_URL", "")
+    return bool(url) and not _is_local_target(url)
+
+
+# A site that is down fails in seconds; reads keep the full FRAPPE_TIMEOUT.
+_CONNECT_TIMEOUT = 5.0
+
+
+def _connect_timeout(timeout: float) -> float:
+    return min(timeout, _CONNECT_TIMEOUT)
+
+
+_DNS_ERROR_TEXT = (
+    "name or service not known",
+    "name resolution",
+    "nodename nor servname",
+    "getaddrinfo failed",
+    "no address associated",
+)
+
+
+def _error_chain(error: BaseException) -> list[BaseException]:
+    chain: list[BaseException] = []
+    current: BaseException | None = error
+    while current is not None and current not in chain and len(chain) < 10:
+        chain.append(current)
+        current = current.__cause__ or current.__context__
+    return chain
+
+
+def _transport_failure(error: httpx.TransportError) -> str:
+    """Name what went wrong on the network, without the error text (it may echo the URL)."""
+    try:
+        timeout = _timeout()
+    except RuntimeError:
+        timeout = None
+    if isinstance(error, httpx.ConnectTimeout):
+        seconds = _connect_timeout(timeout) if timeout else _CONNECT_TIMEOUT
+        return f"no connection within {seconds:g} s"
+    if isinstance(error, httpx.TimeoutException):
+        return f"no answer within {timeout:g} s" if timeout else "the request timed out"
+    chain = _error_chain(error)
+    text = " ".join(str(item) for item in chain).lower()
+    if any(isinstance(item, socket.gaierror) for item in chain) or any(
+        marker in text for marker in _DNS_ERROR_TEXT
+    ):
+        return "the host name could not be resolved"
+    if any(isinstance(item, ConnectionRefusedError) for item in chain) or (
+        "connection refused" in text or "errno 111" in text or "errno 61" in text
+    ):
+        return "connection refused"
+    if isinstance(error, httpx.RemoteProtocolError):
+        return "the connection was closed before Frappe answered"
+    if isinstance(error, httpx.ConnectError):
+        return "could not connect"
+    return f"network error ({type(error).__name__})"
+
+
+def _unreachable_message(error: httpx.TransportError, *, suggest_check: bool = True) -> str:
+    """Say which site could not be reached, how it failed, and what to check next."""
+    url = os.environ.get("FRAPPE_URL", "")
+    site = _display_url(url) if url else "the site (FRAPPE_URL is not set)"
+    message = f"Cannot reach the Frappe site at {site}: {_transport_failure(error)}."
+    if suggest_check:
+        return f"{message} Is the site running? Run `mcp-frappe check` to test the connection."
+    return f"{message} Is the site running?"
+
+
 def _meta_ttl() -> float:
     raw = os.environ.get("FRAPPE_META_TTL", "300")
     try:
@@ -615,7 +808,10 @@ def _client() -> httpx.Client:
         )
 
     client = httpx.Client(
-        base_url=base_url, headers=headers, timeout=timeout, follow_redirects=False
+        base_url=base_url,
+        headers=headers,
+        timeout=httpx.Timeout(timeout, connect=_connect_timeout(timeout)),
+        follow_redirects=False,
     )
     if _password_auth():
         try:
@@ -894,6 +1090,71 @@ def _assert_writable_fields(
             raise ValueError(f"Field cannot be written: {key}")
         if fields[key].get("read_only"):
             raise ValueError(f"Read-only field cannot be written: {key}")
+
+
+def _assert_record_doctype(doctype: Any, action: Literal["create", "update", "delete"]) -> None:
+    """Refuse schema, configuration, and code DocTypes in the record tools, naming the tool."""
+    if not isinstance(doctype, str):
+        return  # the name check that follows rejects it
+    tool = f"{action}_document"
+    if doctype in _CODE_DOCTYPES:
+        raise ValueError(
+            f"{doctype} records hold code that Frappe runs (Python, Jinja, JavaScript, CSS, or "
+            f"a method path); {tool} never writes or deletes them. Change them in Desk or in "
+            "your app's files."
+        )
+    redirects = _RECORD_TOOL_REDIRECTS.get(doctype, {})
+    hint = redirects.get(action) or redirects.get("*")
+    if hint:
+        raise ValueError(f"{tool} does not {action} {doctype} records: {hint}.")
+
+
+def _assert_not_code(doctype: str, fieldname: str, row: dict[str, Any], where: str = "") -> None:
+    if fieldname in _TEMPLATE_FIELDS.get(doctype, ()):
+        raise ValueError(
+            f"{doctype}.{fieldname}{where} is rendered as a Jinja template; the record tools "
+            "don't write templates. Set it in Desk."
+        )
+    if row.get("fieldtype") == "Code" and (doctype, fieldname) not in _PLAIN_CODE_FIELDS:
+        language = f" ({row['options']})" if row.get("options") else ""
+        raise ValueError(
+            f"{doctype}.{fieldname} is a Code field{language}{where}, which Frappe may run as "
+            "code; the record tools don't write Code fields. Set it in Desk or in your app's "
+            "files."
+        )
+
+
+def _assert_no_code_fields(bundle: dict[str, Any], values: dict[str, Any]) -> None:
+    """Refuse values for `Code` and template fields, child-table rows included.
+
+    The field types come from `getdoctype`, so Custom Fields and Property Setters count.
+    """
+    schema = bundle["doctype"]
+    doctype = str(schema.get("name") or "")
+    fields = _schema_fields(schema)
+    for fieldname, value in values.items():
+        row = fields.get(fieldname)
+        if row is None:
+            continue
+        _assert_not_code(doctype, fieldname, row)
+        if row.get("fieldtype") not in _TABLE_FIELDTYPES or not isinstance(value, list):
+            continue
+        child = bundle["children"].get(row.get("options"))
+        if child is None:
+            continue
+        child_fields = _schema_fields(child)
+        for index, item in enumerate(value, 1):
+            if not isinstance(item, dict):
+                continue
+            for child_field in item:
+                child_row = child_fields.get(child_field)
+                if child_row is not None:
+                    _assert_not_code(
+                        str(child.get("name") or row.get("options")),
+                        child_field,
+                        child_row,
+                        f", in {doctype}.{fieldname} row {index}",
+                    )
 
 
 def _assert_operator(operator: Any) -> None:
@@ -1972,11 +2233,14 @@ def _local_apps(apps: list[str]) -> dict[str, Any]:
 def get_site_info() -> dict[str, Any]:
     """Say who is connected and what the site runs: user, app versions, and the local checkout.
 
-    Returns `user`; `apps` as `[{"app", "title", "version"}]` from Frappe's `get_versions`;
-    `frappe_major_version`; and `apps_path`, which says whether `FRAPPE_APPS_PATH` is set and
-    which of the site's apps have a checkout there (no paths are returned). Developer mode
-    is not reported, because Frappe has no API for it; see `notes`.
+    Returns `site_label`, the `FRAPPE_SITE_LABEL` this server was started with (null when
+    unset; a name for checking which site this is, never used to pick one); `user`; `apps`
+    as `[{"app", "title", "version"}]` from Frappe's `get_versions`; `frappe_major_version`;
+    and `apps_path`, which says whether `FRAPPE_APPS_PATH` is set and which of the site's
+    apps have a checkout there (no paths are returned). Developer mode is not reported,
+    because Frappe has no API for it; see `notes`.
     """
+    label = _site_label()
     user = _request("GET", "/api/method/frappe.auth.get_logged_user")
     versions = _request("GET", "/api/method/frappe.utils.change_log.get_versions")
     versions = versions if isinstance(versions, dict) else {}
@@ -1992,6 +2256,7 @@ def get_site_info() -> dict[str, Any]:
         )
     major = str((versions.get("frappe") or {}).get("version") or "").split(".")[0]
     return {
+        "site_label": label,
         "user": user,
         "apps": apps,
         "frappe_major_version": int(major) if major.isdigit() else None,
@@ -2281,18 +2546,25 @@ def get_document(
 def create_document(
     doctype: str, values: dict[str, Any], confirm: Confirm = False
 ) -> dict[str, Any]:
-    """Preview or create a document via the native REST resource API.
+    """Preview or create a record via the native REST resource API.
 
     `values` may include `name` only when the DocType's autoname is `Prompt` (naming rule
-    "Set by user"); otherwise Frappe names the record itself.
+    "Set by user"); otherwise Frappe names the record itself. For record data only: schema
+    and configuration DocTypes (DocType, Custom Field, Property Setter, Workflow,
+    Notification, Report, Workspace, ...) are refused with the tool to use instead; records
+    that hold code (Server Script, Client Script, Print Format, Webhook, ...) and values for
+    `Code` fields are refused.
     """
-    schema = _meta_bundle(doctype)["doctype"]
+    _assert_record_doctype(doctype, "create")
+    bundle = _meta_bundle(doctype)
+    schema = bundle["doctype"]
     prompt_named = str(schema.get("autoname") or "").lower() == "prompt"
     if isinstance(values, dict) and "name" in values and not prompt_named:
         raise ValueError(
             f"{doctype} names its records itself (autoname is not Prompt); leave out name"
         )
     _assert_writable_fields(schema, values, allow_name=prompt_named)
+    _assert_no_code_fields(bundle, values)
     if not confirm:
         return {
             "preview": True,
@@ -2320,8 +2592,15 @@ def update_document(
     expected_modified: ExpectedModified = None,
     confirm: Confirm = False,
 ) -> dict[str, Any]:
-    """Preview or update a record; confirmation requires the preview's modified token."""
-    _assert_writable_fields(_meta_bundle(doctype)["doctype"], values)
+    """Preview or update a record; confirmation requires the preview's modified token.
+
+    For record data only, with the same limits as `create_document`: schema,
+    configuration, and code records, and `Code` fields, are refused.
+    """
+    _assert_record_doctype(doctype, "update")
+    bundle = _meta_bundle(doctype)
+    _assert_writable_fields(bundle["doctype"], values)
+    _assert_no_code_fields(bundle, values)
     doc = _request("GET", _resource(doctype, name))
     if not confirm:
         return {
@@ -2358,7 +2637,14 @@ def delete_document(
     expected_modified: ExpectedModified = None,
     confirm: Confirm = False,
 ) -> dict[str, Any]:
-    """Preview or delete a record; confirmation requires the preview's modified token."""
+    """Preview or delete a record; confirmation requires the preview's modified token.
+
+    DocType deletes go to `delete_doctype`, and DocField and DocPerm rows to their DocType's
+    tools; records that hold code (Server Script, Client Script, Print Format, ...) are
+    refused. Custom Fields, Property Setters, Custom DocPerms, Workflows, Notifications,
+    Reports, and Workspaces can be deleted here: no other tool deletes them.
+    """
+    _assert_record_doctype(doctype, "delete")
     doc = _request("GET", _resource(doctype, name))
     if not confirm:
         return {
@@ -2708,6 +2994,12 @@ def create_doctype(
         expected_files = [destination, python_file]
         if not is_child_table:
             expected_files.extend([javascript_file, test_file])
+        if destination.exists():
+            raise ValueError(
+                f"{app} already has {name}'s DocType file, but the site has no such DocType "
+                "(list_app_drift reports it as missing_on_site): run `bench migrate` to load "
+                "it instead of creating it again"
+            )
         if any(path.exists() for path in expected_files):
             raise ValueError("Refusing to overwrite an existing DocType file")
         if doctype_path.exists() and any(doctype_path.iterdir()):
@@ -6469,8 +6761,33 @@ def upsert_workspace(
     }
 
 
+def _read_only_setting() -> str:
+    """Return FRAPPE_MCP_READ_ONLY as "", "YES", or "NO"."""
+    read_only = (os.environ.get("FRAPPE_MCP_READ_ONLY") or "").strip().upper()
+    if read_only not in ("", "YES", "NO"):
+        raise RuntimeError("FRAPPE_MCP_READ_ONLY must be YES or NO")
+    return read_only
+
+
+def _read_only_reason() -> str | None:
+    """Say why the server is read-only: "FRAPPE_MCP_READ_ONLY=YES", "remote target", or None.
+
+    A target that isn't loopback or .localhost is read-only unless FRAPPE_MCP_READ_ONLY=NO.
+    """
+    read_only = _read_only_setting()
+    if read_only == "YES":
+        return "FRAPPE_MCP_READ_ONLY=YES"
+    if read_only == "" and _remote_target():
+        return "remote target"
+    return None
+
+
 def _selected_toolsets() -> set[str]:
-    """Read FRAPPE_MCP_TOOLSETS and FRAPPE_MCP_READ_ONLY; every toolset is on by default."""
+    """Read FRAPPE_MCP_TOOLSETS and FRAPPE_MCP_READ_ONLY.
+
+    Every toolset is on by default for a loopback or .localhost target; any other target gets
+    only the read toolset unless FRAPPE_MCP_READ_ONLY=NO.
+    """
     raw = os.environ.get("FRAPPE_MCP_TOOLSETS") or ""
     names = {part.strip().lower() for part in raw.split(",") if part.strip()}
     unknown = sorted(names - set(_TOOLSETS))
@@ -6479,14 +6796,18 @@ def _selected_toolsets() -> set[str]:
             f"Unknown toolset in FRAPPE_MCP_TOOLSETS: {', '.join(unknown)}; "
             f"choose from {', '.join(_TOOLSETS)}"
         )
-    read_only = (os.environ.get("FRAPPE_MCP_READ_ONLY") or "").strip().upper()
-    if read_only not in ("", "YES", "NO"):
-        raise RuntimeError("FRAPPE_MCP_READ_ONLY must be YES or NO")
-    if read_only == "YES":
-        if names - {"read"}:
+    reason = _read_only_reason()
+    if reason is not None:
+        writable = sorted(names - {"read"})
+        if writable:
+            fix = (
+                "set FRAPPE_MCP_READ_ONLY=NO to enable writes on it, or remove"
+                if reason == "remote target"
+                else "remove"
+            )
             raise RuntimeError(
-                "FRAPPE_MCP_READ_ONLY=YES exposes only the read toolset; remove "
-                f"{', '.join(sorted(names - {'read'}))} from FRAPPE_MCP_TOOLSETS"
+                f"Read-only ({reason}) exposes only the read toolset; {fix} "
+                f"{', '.join(writable)} from FRAPPE_MCP_TOOLSETS"
             )
         return {"read"}
     return names or set(_TOOLSETS)
@@ -6504,7 +6825,24 @@ def _startup_settings() -> set[str]:
     """Validate the settings read at startup and return the selected toolsets."""
     _timeout()
     _meta_ttl()
+    _site_label()
     return _selected_toolsets()
+
+
+def _remote_mode_notice() -> str | None:
+    """Describe the remote-target decision for the startup log and `check`, or None."""
+    if not _remote_target():
+        return None
+    target = _display_url(os.environ.get("FRAPPE_URL", ""))
+    setting = _read_only_setting()
+    if setting == "":
+        return (
+            f"read-only: {target} is a remote target; set FRAPPE_MCP_READ_ONLY=NO to enable "
+            "write tools"
+        )
+    if setting == "NO":
+        return f"write tools are enabled for the remote target {target} (FRAPPE_MCP_READ_ONLY=NO)"
+    return None
 
 
 _INSECURE_HTTP_WARNING = (
@@ -6574,6 +6912,11 @@ def _setup_check() -> list[tuple[str, str, str]]:
         except RuntimeError as error:
             problems.append(str(error))
     try:
+        label = _site_label()
+    except RuntimeError as error:
+        problems.append(str(error))
+        label = None
+    try:
         toolsets = _selected_toolsets()
     except RuntimeError as error:
         problems.append(str(error))
@@ -6582,6 +6925,8 @@ def _setup_check() -> list[tuple[str, str, str]]:
     if not url:
         problems.append("Set FRAPPE_URL to the target site's base URL")
     target = _display_url(url) if url else "no site URL"
+    if label:
+        target += f", label {label}"
     if os.environ.get("FRAPPE_SITE"):
         target += f", site {os.environ['FRAPPE_SITE']}"
     if not _password_auth():
@@ -6596,6 +6941,9 @@ def _setup_check() -> list[tuple[str, str, str]]:
 
     try:
         info = get_site_info()
+    except httpx.TransportError as error:
+        rows.append(("FAIL", "connection", _unreachable_message(error, suggest_check=False)))
+        return rows
     except (RuntimeError, ValueError, OSError, httpx.HTTPError) as error:
         rows.append(("FAIL", "connection", str(error) or type(error).__name__))
         return rows
@@ -6607,9 +6955,14 @@ def _setup_check() -> list[tuple[str, str, str]]:
     rows.append(("ok", "versions", versions or "the site reported no app versions"))
     rows.append(("info", "developer mode", "not reported: Frappe has no API for it"))
     selected = ", ".join(name for name in _TOOLSETS if name in toolsets)
-    if os.environ.get("FRAPPE_MCP_READ_ONLY", "").strip().upper() == "YES":
+    reason = _read_only_reason()
+    if reason == "remote target":
+        selected += " (read-only: remote target; set FRAPPE_MCP_READ_ONLY=NO to enable writes)"
+    elif reason is not None:
         selected += " (read-only mode)"
     rows.append(("ok", "toolsets", selected))
+    if reason is None and _remote_target():
+        rows.append(("warn", "toolsets", _remote_mode_notice() or ""))
     usable, detail = _apps_path_check([app["app"] for app in info["apps"]])
     rows.append(("ok" if usable else "FAIL", "FRAPPE_APPS_PATH", detail))
     return rows
@@ -6667,6 +7020,9 @@ def main(argv: list[str] | None = None) -> None:
         raise SystemExit(str(error)) from None
     if _insecure_http_allowed():
         _log.warning(_INSECURE_HTTP_WARNING)
+    notice = _remote_mode_notice()
+    if notice:
+        _log.warning(notice)
     server.run(transport="stdio")
 
 
