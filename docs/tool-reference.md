@@ -10,7 +10,7 @@ Tools are grouped into four toolsets. All four are on by default for a loopback 
 
 | Toolset | Tools |
 |---|---|
-| `read` | `get_site_info`, `list_installed_apps`, `list_doctypes`, `get_doctype_schema`, `list_documents`, `count_documents`, `search_records`, `get_document`, `list_reports`, `get_report_filters`, `run_report`, `diff_doctype`, `list_app_drift`, `get_workflow`, `list_notifications`, `get_workspace` |
+| `read` | `get_site_info`, `list_installed_apps`, `list_doctypes`, `get_doctype_schema`, `list_documents`, `count_documents`, `search_records`, `get_document`, `list_reports`, `get_report_filters`, `run_report`, `diff_doctype`, `list_app_drift`, `list_pending_patches`, `get_recent_errors`, `list_app_methods`, `get_workflow`, `list_notifications`, `get_workspace` |
 | `data` | `create_document`, `update_document`, `delete_document`, `submit_document`, `cancel_document` |
 | `customize` | `create_custom_field`, `set_field_property`, `set_role_permissions`, `export_form_customizations`, `export_customizations`, `rollback_export` |
 | `developer` | `create_doctype`, `update_doctype`, `delete_doctype`, `promote_custom_doctype`, `upsert_workflow`, `upsert_notification`, `upsert_report`, `upsert_workspace` |
@@ -23,7 +23,7 @@ The server also sends MCP `instructions` in its initialize result: a short workf
 
 ### Tool-list size
 
-A host sends every listed tool's name, title, description, input schema, and annotations to the model in every session, so the list is kept small: each description says what the tool does, its key constraints, its return shape, and how to confirm, and this page holds the details. `tests/test_mcp_contract.py` keeps the whole list, serialized as a client receives it, at or below 32,000 characters (about 8,000 tokens); it was about 61,000 before stage 15. `mcp-frappe check` prints the tools and characters per toolset, and `FRAPPE_MCP_TOOLSETS` turns off what you don't need.
+A host sends every listed tool's name, title, description, input schema, and annotations to the model in every session, so the list is kept small: each description says what the tool does, its key constraints, its return shape, and how to confirm, and this page holds the details. `tests/test_mcp_contract.py` keeps the whole list, serialized as a client receives it, at or below 34,000 characters (about 8,500 tokens); it was about 61,000 before stage 15, which set the cap at 32,000, and stage 16 raised it to 34,000 for its three diagnostics tools. `mcp-frappe check` prints the tools and characters per toolset, and `FRAPPE_MCP_TOOLSETS` turns off what you don't need.
 
 The input schemas leave out what carries no meaning: pydantic's generated `title` keywords, `additionalProperties: true`, and the `null` branch and `default: null` of optional arguments (an optional argument is simply not `required`; an explicit `null` is still accepted). Tools have no output schema, because Frappe's results are open-ended JSON: a result is a JSON text block, and a list result (only `list_installed_apps`) is one text block per item.
 
@@ -320,6 +320,34 @@ How the verdict is decided: both sides are normalized first. System keys (`name`
 `list_app_drift` reads the site's DocType list once. A DocType whose file MD5 matches its `migration_hash` and whose `modified` matches the file is `in_sync` without another request; every other pair costs one DocType read. It returns `items` (`doctype`, `module`, `verdict`), `counts` for the page, `total`, `next_offset`, and `modules_missing_locally`.
 
 `promote_custom_doctype` ships a DocType prototyped on the site with an app. It saves the DocType with `custom: 0` and the target `module`; in developer mode Frappe's `on_update` then writes the DocType JSON and controller boilerplate into `<app>/<app>/<module>/doctype/<doctype>/`. It refuses `frappe` and `erpnext`, a module that belongs to another app or is a custom module (Frappe exports those into the site folder), a DocType that is already standard, one with a `default_print_format` (Frappe refuses that on a standard DocType), and an existing target folder. The preview lists the files Frappe will create and warns about Link and Table fields that point to other site-custom DocTypes, and about Custom Fields and Property Setters that stay site customizations (export them with `export_customizations`). Confirmation, like standard `create_doctype`, first writes Frappe's own controller templates (so `FRAPPE_APPS_PATH` must include the Frappe source and the app's `hooks.py` must define `app_publisher`), waits for the Bench to settle, then sends the save with `modified`. If the Bench reloads mid-save, the tool re-reads the DocType and reports `reconciled_after_server_reload: true` only when it is no longer custom; if the DocType is still custom, the staged files are removed. The result has `file_status` and `native_files_complete`.
+
+## Developer diagnostics
+
+Three read tools answer what an agent keeps asking during development. They combine the site with the app checkout under `FRAPPE_APPS_PATH` (except `get_recent_errors`, which reads only the site), work on Frappe v15 and v16, and never import or run anything from the app.
+
+| Tool | Purpose | Arguments |
+|---|---|---|
+| `list_pending_patches` | List the app's `patches.txt` entries that `Patch Log` doesn't show as run | `app` |
+| `get_recent_errors` | Read `Error Log` newest first, with the traceback trimmed to its tail | `since` (ISO datetime in the site's time zone, such as `2026-11-20T09:30`), `method` (part of the method), `reference_doctype`, `limit` (1-50, default 20), `offset` |
+| `list_app_methods` | List the methods the app checkout whitelists with `frappe.whitelist`, and their arguments | `app`, `search` (part of the dotted path, any case), `limit` (1-200, default 100), `offset` |
+
+### `list_pending_patches`
+
+The tool reads `<app>/<app>/patches.txt` with the same path checks as `diff_doctype` (it fails the same way without `FRAPPE_APPS_PATH` or the checkout) and parses it as `frappe.modules.patch_handler` does: when a `[section]` header comes before the first entry, the file is INI-like with `[pre_model_sync]` and `[post_model_sync]` sections and `#` or `;` comment lines; otherwise every line not starting with `#` is a pre-model-sync patch. The whole line is the patch name, so a re-run marker such as `my_app.patches.fix #2` is part of it, as it is in `Patch Log`. A `finally:` prefix is dropped for the comparison, because Frappe logs those patches without it. `execute:` lines are returned as text and never run.
+
+It then reads every `Patch Log` row (`patch`, `skipped`) a thousand at a time, up to 50,000 rows. A row with `skipped` set (left by `bench migrate --skip-failing`) doesn't count as run, as in Frappe; such an entry is pending with `skipped: true`. `Patch Log` is readable by System Manager.
+
+It returns `format` (`sections`, `plain`, or `missing` when the app has no `patches.txt`), `entries`, `applied_count`, `pending` in file order (`patch`, `section`, `line`), `pending_count`, `unknown_in_log` (sorted log rows whose dotted path starts with `<app>.` but which no line in the file names, such as a removed patch or a line whose `#` marker changed), `unknown_in_log_count`, and `warnings` (sections Frappe ignores, a patch listed twice). The two lists hold at most 200 entries each; the counts are exact.
+
+### `get_recent_errors`
+
+Reads `Error Log` (System Manager only) ordered by `creation desc` and returns a page (`rows`, `offset`, `limit`, `has_more`). Each row has `name`, `creation`, `method`, `reference_doctype`, `reference_name`, `exception` (the traceback's last non-empty line, at most 500 characters), `traceback` (the last 40 lines, cut to the last 4,000 characters), and `traceback_truncated`. `since` must have no time zone, because Frappe stores naive times in the site's zone. The fields it reads are the same on v15 and v16 (v16 adds `fingerprint`, `metadata`, and `fingerprint_stats`, which are not returned). Tracebacks can hold record values, so the description tells the agent to show the user only what is needed.
+
+### `list_app_methods`
+
+Walks `<app>/<app>/` and parses each `.py` file with Python's `ast` module; nothing is imported. It skips `tests`, `test`, `node_modules`, `__pycache__`, and hidden folders, does not descend into symlinked folders, and skips (and reports) a file that resolves outside the app, a file larger than 1,000,000 bytes, and a file that doesn't parse. It reads at most 5,000 files (`files_truncated` says when it stopped) and parses only files that contain the word `whitelist`.
+
+A function counts when a decorator is `@frappe.whitelist` or `@frappe.whitelist(...)` (also through `import frappe as f`), or a bare `@whitelist` or alias imported with `from frappe import whitelist`. Module-level functions and methods of module-level classes are listed; nested functions are not. Each row has `method` (the dotted path from the app package; a class method includes the class), `kind` (`module`, or `document` for a class method, with `doctype` read from the controller's `<doctype>.json` when the file is `<module>/doctype/<doctype>/<doctype>.py`, else `null`), `args` (`name`, and `annotation` and `default` as source text; `*args` and `**kwargs` keep their stars; `self` is dropped), `doc` (the docstring's first paragraph, at most 300 characters), `allow_guest`, `methods` (Frappe's default `GET`, `POST`, `PUT`, `DELETE` when the decorator doesn't say), and `file` (`<app>/<path>.py:<line of def>`). A decorator argument that isn't a literal is returned as source text. The page also has `files_scanned`, `files_truncated`, and `skipped` (`file`, `reason`; at most 50). A document method runs through `frappe.client.run_doc_method`, not `/api/method/<path>`. The list is what the checkout declares, which may differ from what the site runs until the Bench restarts.
 
 ## Workflows and Notifications
 

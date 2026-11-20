@@ -12,6 +12,7 @@ It runs as a local stdio process and talks to the site only through Frappe's RES
 - "Add a required **Priority** field after the title on Lab Sample, show it in the list view, and drop the old `legacy_code` field."
 - "On the ERPNext **Customer** form, add a Custom Field *Account Manager* linked to User, make *Territory* mandatory, then export the customizations to `lab_app`."
 - "Has anything drifted between the site and `lab_app`? Show me what `bench migrate` would change for Lab Sample."
+- "I just migrated. Which `lab_app` patches haven't run, and what failed on the server in the last hour?"
 - "I prototyped **Lab Equipment** as a custom DocType on the site. Move it into `lab_app` so it ships with the app."
 - "Add an approval workflow to Lab Sample: Draft → Pending → Approved, approved by Lab Manager."
 - "Send a System Notification to Lab Managers when a Lab Sample is submitted."
@@ -82,7 +83,7 @@ Frappe v16 ships its own MCP server for record data and whitelisted method calls
 
 | Toolset | What it does |
 |---|---|
-| `read` | Site info, DocTypes and schemas, records, counts, search, reports, drift checks, workflows, notifications, Workspaces |
+| `read` | Site info, DocTypes and schemas, records, counts, search, reports, drift checks, pending patches, recent errors, the app's whitelisted methods, workflows, notifications, Workspaces |
 | `data` | Create, update, delete, submit, and cancel records |
 | `customize` | Custom Fields, Property Setters, role permissions, export to app files, rollback |
 | `developer` | Create, edit, delete, and promote DocTypes; Workflows, Notifications, Report Builder reports, Workspaces |

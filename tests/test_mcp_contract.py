@@ -271,7 +271,7 @@ def test_an_unreachable_site_reaches_the_client_as_a_clear_error(fake_site, monk
 
 # Tool-list budget: hosts send the whole list to the model in every session.
 
-TOOL_LIST_BUDGET = 32_000
+TOOL_LIST_BUDGET = 34_000
 
 
 def _listed_tools():

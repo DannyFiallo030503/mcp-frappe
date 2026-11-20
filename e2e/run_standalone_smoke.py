@@ -70,6 +70,7 @@ async def probe_read_tools(session) -> dict:
         ("get_workflow", {"doctype": "Customer"}),
         ("list_notifications", {"limit": 5}),
         ("get_workspace", {"name": "Selling"}),
+        ("get_recent_errors", {"limit": 1}),
     ]
     results = {}
     for tool, arguments in probes:
@@ -170,6 +171,16 @@ async def run() -> dict:
                 )
                 evidence["custom_app_doctype_count"] = len(app_doctypes)
                 evidence["create_doctype_preview"] = bool(preview.get("requires_confirmation"))
+                patches = result_value(
+                    await session.call_tool("list_pending_patches", {"app": APP})
+                )
+                methods = result_value(
+                    await session.call_tool("list_app_methods", {"app": APP, "limit": 5})
+                )
+                evidence["pending_patch_count"] = patches.get("pending_count")
+                evidence["patches_format"] = patches.get("format")
+                evidence["app_method_sample_count"] = len(methods.get("rows", []))
+                evidence["app_method_files_scanned"] = methods.get("files_scanned")
                 if app_doctypes:
                     selected = app_doctypes[0]["name"]
                     custom_field = result_value(

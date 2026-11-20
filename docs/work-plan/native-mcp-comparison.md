@@ -30,7 +30,7 @@ Frappe v16 and later include an MCP server. Each site runs its own, and it is on
 | Workflows, Notifications, Report Builder reports, Workspaces | Only as raw records | Validated tools that refuse code fields |
 | Preview and confirmation | No | Every write |
 | Read-only mode | `frappectl` profiles only | `FRAPPE_MCP_READ_ONLY` |
-| Tool-list size | 13 tools | 35 tools, about 60,000 characters (about 15,000 tokens) of schemas on 2026-11-19; at most 32,000 since stage 15 |
+| Tool-list size | 13 tools | 35 tools, about 60,000 characters (about 15,000 tokens) of schemas on 2026-11-19; at most 32,000 since stage 15, 34,000 since stage 16 (38 tools) |
 | Multi-user remote access | Yes (HTTP and OAuth) | No; one local stdio process per site |
 
 ## Direction

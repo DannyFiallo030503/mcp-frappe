@@ -4210,6 +4210,384 @@ def list_app_drift(
     }
 
 
+# Developer diagnostics: pending patches, recent errors, and the app's whitelisted methods.
+
+_PATCH_SECTIONS = ("pre_model_sync", "post_model_sync")
+_PATCH_SECTION_HEADER = re.compile(r"\[(?P<header>.+)\]")
+_PATCH_LOG_PAGE = 1000
+_PATCH_LOG_MAX = 50_000
+_PATCH_LIST_MAX = 200
+
+
+def _parse_patches(text: str) -> tuple[str, list[dict[str, Any]], list[str]]:
+    """Read patches.txt the way `frappe.modules.patch_handler` does, keeping line numbers.
+
+    With a `[section]` before the first entry the file is INI-like (`configparser` with
+    `#`/`;` comment lines and the whole line as the key, so `#2` markers stay part of the
+    patch); otherwise each non-comment line is a pre-model-sync patch. Nothing is run.
+    """
+    lines = text.splitlines()
+    stripped = (line.strip() for line in lines)
+    first = next((line for line in stripped if line and not line.startswith(("#", ";"))), "")
+    entries: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    if not _PATCH_SECTION_HEADER.match(first):
+        for number, line in enumerate(lines, 1):
+            if line.strip() and not line.lstrip().startswith("#"):
+                entries.append(
+                    {"patch": line.strip(), "section": "pre_model_sync", "line": number}
+                )
+        return "plain", entries, warnings
+    section: str | None = None
+    for number, line in enumerate(lines, 1):
+        value = line.strip()
+        if not value or value.startswith(("#", ";")):
+            continue
+        header = _PATCH_SECTION_HEADER.match(value)
+        if header:
+            section = header.group("header")
+            if section not in _PATCH_SECTIONS:
+                warnings.append(f"Section [{section}] on line {number} is ignored by Frappe")
+            continue
+        if section in _PATCH_SECTIONS:
+            entries.append({"patch": value, "section": section, "line": number})
+    return "sections", entries, warnings
+
+
+def _patch_log() -> list[dict[str, Any]]:
+    """Read every Patch Log row (`patch`, `skipped`), a page at a time."""
+    rows: list[dict[str, Any]] = []
+    while True:
+        page = _request(
+            "GET",
+            _resource("Patch Log"),
+            params={
+                "fields": '["patch","skipped"]',
+                "order_by": "name asc",
+                "limit_start": len(rows),
+                "limit_page_length": _PATCH_LOG_PAGE,
+            },
+        )
+        page = page if isinstance(page, list) else []
+        rows.extend(page)
+        if len(rows) > _PATCH_LOG_MAX:
+            raise ValueError(f"Patch Log has more than {_PATCH_LOG_MAX} rows; not read")
+        if len(page) < _PATCH_LOG_PAGE:
+            return rows
+
+
+@_tool("read", "List pending patches")
+def list_pending_patches(app: str) -> dict[str, Any]:
+    """List the app's patches.txt entries not yet run on the site, per Patch Log (read-only).
+
+    Returns `pending` in file order, `applied_count`, and `unknown_in_log` (logged, not in file).
+    """
+    if not isinstance(app, str) or not _SAFE_NAME.fullmatch(app):
+        raise ValueError("Invalid app name")
+    _, package_path = _app_root(app)
+    path = _app_file(package_path, "patches.txt")
+    if path is None:
+        file_format, entries, warnings = "missing", [], []
+    else:
+        file_format, entries, warnings = _parse_patches(path.read_text(errors="replace"))
+    seen: set[str] = set()
+    for entry in entries:
+        if entry["patch"] in seen:
+            warnings.append(f"{entry['patch']} is listed more than once (line {entry['line']})")
+        seen.add(entry["patch"])
+    log = _patch_log()
+    applied = {row.get("patch") for row in log if not row.get("skipped")}
+    skipped = {row.get("patch") for row in log if row.get("skipped")}
+    pending = []
+    applied_count = 0
+    for entry in entries:
+        # Patch Log stores a `finally:` patch without the prefix.
+        key = entry["patch"].replace("finally:", "")
+        if key in applied:
+            applied_count += 1
+            continue
+        pending.append({**entry, "skipped": True} if key in skipped else entry)
+    in_file = {entry["patch"].replace("finally:", "") for entry in entries}
+    unknown = sorted(
+        {
+            patch
+            for row in log
+            if isinstance(patch := row.get("patch"), str)
+            and patch.split(maxsplit=1)[0].startswith(f"{app}.")
+            and patch not in in_file
+        }
+    )
+    return {
+        "app": app,
+        "format": file_format,
+        "entries": len(entries),
+        "applied_count": applied_count,
+        "pending_count": len(pending),
+        "pending": pending[:_PATCH_LIST_MAX],
+        "unknown_in_log_count": len(unknown),
+        "unknown_in_log": unknown[:_PATCH_LIST_MAX],
+        "warnings": warnings[:20],
+    }
+
+
+_ERROR_TRACEBACK_LINES = 40
+_ERROR_TRACEBACK_CHARS = 4000
+_ERROR_PAGE_LIMIT = 50
+
+
+def _error_row(row: dict[str, Any]) -> dict[str, Any]:
+    """Keep an Error Log row's identity and the tail of its traceback."""
+    lines = str(row.get("error") or "").rstrip().splitlines()
+    tail = "\n".join(lines[-_ERROR_TRACEBACK_LINES:])
+    truncated = len(lines) > _ERROR_TRACEBACK_LINES or len(tail) > _ERROR_TRACEBACK_CHARS
+    exception = next((line.strip() for line in reversed(lines) if line.strip()), "")
+    return {
+        **{
+            key: row.get(key)
+            for key in ("name", "creation", "method", "reference_doctype", "reference_name")
+        },
+        "exception": exception[:500],
+        "traceback": tail[-_ERROR_TRACEBACK_CHARS:],
+        "traceback_truncated": truncated,
+    }
+
+
+@_tool("read", "Get recent errors")
+def get_recent_errors(
+    since: str | None = None,
+    method: str | None = None,
+    reference_doctype: str | None = None,
+    limit: int = 20,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """Read Error Log newest first: exception and traceback tail (read-only). Returns a page.
+
+    `since`: ISO datetime, site time. Tracebacks can hold record values; show only what's needed.
+    """
+    if not isinstance(limit, int) or not 1 <= limit <= _ERROR_PAGE_LIMIT:
+        raise ValueError(f"limit must be between 1 and {_ERROR_PAGE_LIMIT}")
+    _assert_offset(offset)
+    filters: list[list[Any]] = []
+    if since is not None:
+        try:
+            moment = datetime.fromisoformat(str(since))
+        except ValueError as error:
+            raise ValueError("since must be an ISO datetime such as 2026-11-20T09:30") from error
+        if moment.tzinfo is not None:
+            raise ValueError("since takes the site's local time, without a time zone")
+        filters.append(["creation", ">=", moment.strftime("%Y-%m-%d %H:%M:%S")])
+    if method is not None:
+        if not isinstance(method, str) or not 0 < len(method) <= 140:
+            raise ValueError("method must be 1-140 characters")
+        filters.append(["method", "like", f"%{method}%"])
+    if reference_doctype is not None:
+        if not isinstance(reference_doctype, str) or not _SAFE_NAME.fullmatch(reference_doctype):
+            raise ValueError("Invalid DocType name")
+        filters.append(["reference_doctype", "=", reference_doctype])
+    rows = _request(
+        "GET",
+        _resource("Error Log"),
+        params={
+            "fields": '["name","creation","method","reference_doctype","reference_name","error"]',
+            "filters": _filters(filters),
+            "order_by": "creation desc",
+            "limit_start": offset,
+            "limit_page_length": limit + 1,
+        },
+    )
+    rows = [_error_row(row) for row in rows if isinstance(row, dict)] if isinstance(
+        rows, list
+    ) else []
+    return _page(rows, offset, limit)
+
+
+_METHOD_MAX_FILES = 5000
+_METHOD_FILE_MAX_BYTES = 1_000_000
+_METHOD_PAGE_LIMIT = 200
+_METHOD_SKIP_DIRS = {"tests", "test", "node_modules", "__pycache__"}
+_WHITELIST_DEFAULT_METHODS = ["GET", "POST", "PUT", "DELETE"]
+
+
+def _literal(node: ast.expr) -> Any:
+    try:
+        return ast.literal_eval(node)
+    except (ValueError, TypeError, SyntaxError, RecursionError):
+        return ast.unparse(node)
+
+
+def _whitelist_call(
+    fn: ast.FunctionDef | ast.AsyncFunctionDef, frappe_names: set[str], bare_names: set[str]
+) -> dict[str, Any] | None:
+    """Return the decorator's options when `fn` is decorated with `frappe.whitelist`."""
+    for decorator in fn.decorator_list:
+        target = decorator.func if isinstance(decorator, ast.Call) else decorator
+        if (
+            isinstance(target, ast.Attribute)
+            and target.attr == "whitelist"
+            and isinstance(target.value, ast.Name)
+            and target.value.id in frappe_names
+        ) or (isinstance(target, ast.Name) and target.id in bare_names):
+            keywords = decorator.keywords if isinstance(decorator, ast.Call) else []
+            options = {keyword.arg: _literal(keyword.value) for keyword in keywords if keyword.arg}
+            return {
+                "allow_guest": options.get("allow_guest", False),
+                "methods": options.get("methods") or _WHITELIST_DEFAULT_METHODS,
+            }
+    return None
+
+
+def _method_args(fn: ast.FunctionDef | ast.AsyncFunctionDef, method: bool) -> list[dict[str, Any]]:
+    spec = fn.args
+    positional = [*spec.posonlyargs, *spec.args]
+    defaults = [None] * (len(positional) - len(spec.defaults)) + list(spec.defaults)
+    pairs = list(zip(positional, defaults, strict=True))
+    if method and pairs and pairs[0][0].arg in {"self", "cls"}:
+        pairs = pairs[1:]
+    if spec.vararg:
+        pairs.append((ast.arg(arg=f"*{spec.vararg.arg}", annotation=spec.vararg.annotation), None))
+    pairs.extend(zip(spec.kwonlyargs, spec.kw_defaults, strict=True))
+    if spec.kwarg:
+        pairs.append((ast.arg(arg=f"**{spec.kwarg.arg}", annotation=spec.kwarg.annotation), None))
+    args = []
+    for arg, default in pairs:
+        row: dict[str, Any] = {"name": arg.arg}
+        if arg.annotation is not None:
+            row["annotation"] = ast.unparse(arg.annotation)
+        if default is not None:
+            row["default"] = ast.unparse(default)
+        args.append(row)
+    return args
+
+
+def _controller_doctype(path: Path) -> str | None:
+    """Name the DocType when `path` is `<module>/doctype/<slug>/<slug>.py`."""
+    folder = path.parent
+    if folder.parent.name != "doctype" or path.stem != folder.name:
+        return None
+    try:
+        json_path = _app_file(folder, f"{folder.name}.json")
+        name = json.loads(json_path.read_bytes()).get("name") if json_path else None
+    except (OSError, ValueError, AttributeError):
+        name = None
+    return name if isinstance(name, str) else folder.name.replace("_", " ").title()
+
+
+def _file_methods(tree: ast.Module, dotted: str, path: Path, file: str) -> list[dict[str, Any]]:
+    frappe_names: set[str] = set()
+    bare_names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            frappe_names.update(alias.asname or "frappe" for alias in node.names
+                                if alias.name == "frappe")
+        elif isinstance(node, ast.ImportFrom) and node.module == "frappe" and not node.level:
+            bare_names.update(alias.asname or "whitelist" for alias in node.names
+                              if alias.name == "whitelist")
+    functions = (ast.FunctionDef, ast.AsyncFunctionDef)
+    found: list[tuple[ast.FunctionDef | ast.AsyncFunctionDef, str | None]] = []
+    for node in tree.body:
+        if isinstance(node, functions):
+            found.append((node, None))
+        elif isinstance(node, ast.ClassDef):
+            found.extend((child, node.name) for child in node.body if isinstance(child, functions))
+    rows = []
+    for fn, class_name in found:
+        options = _whitelist_call(fn, frappe_names, bare_names)
+        if options is None:
+            continue
+        row: dict[str, Any] = {
+            "method": ".".join(part for part in (dotted, class_name, fn.name) if part),
+            "kind": "document" if class_name else "module",
+        }
+        if class_name:
+            row["doctype"] = _controller_doctype(path)
+        doc = (ast.get_docstring(fn) or "").split("\n\n")[0]
+        row.update(
+            {
+                "args": _method_args(fn, bool(class_name)),
+                "doc": " ".join(doc.split())[:300],
+                **options,
+                "file": f"{file}:{fn.lineno}",
+            }
+        )
+        rows.append(row)
+    return rows
+
+
+@_tool("read", "List app methods")
+def list_app_methods(
+    app: str, search: str | None = None, limit: int = 100, offset: int = 0
+) -> dict[str, Any]:
+    """List the app checkout's whitelisted methods with their args (read-only; never imported).
+
+    `search` matches part of the dotted path. Returns a page; document methods name the DocType.
+    """
+    if not isinstance(limit, int) or not 1 <= limit <= _METHOD_PAGE_LIMIT:
+        raise ValueError(f"limit must be between 1 and {_METHOD_PAGE_LIMIT}")
+    _assert_offset(offset)
+    if not isinstance(app, str) or not _SAFE_NAME.fullmatch(app):
+        raise ValueError("Invalid app name")
+    app_path, package_path = _app_root(app)
+    rows: list[dict[str, Any]] = []
+    skipped: list[dict[str, str]] = []
+    scanned = 0
+    truncated = False
+    for folder, dirnames, filenames in os.walk(package_path):
+        # os.walk lists symlinked folders but doesn't descend into them (followlinks=False).
+        dirnames[:] = sorted(
+            name for name in dirnames
+            if not name.startswith(".") and name not in _METHOD_SKIP_DIRS
+        )
+        for filename in sorted(filenames):
+            if filename.startswith(".") or not filename.endswith(".py"):
+                continue
+            if scanned >= _METHOD_MAX_FILES:
+                truncated = True
+                break
+            scanned += 1
+            path = Path(folder) / filename
+            relative = path.relative_to(app_path)
+            file = relative.as_posix()
+            try:
+                resolved = path.resolve(strict=True)
+            except (OSError, RuntimeError):
+                skipped.append({"file": file, "reason": "could not be resolved"})
+                continue
+            if not resolved.is_relative_to(app_path) or not resolved.is_file():
+                skipped.append({"file": file, "reason": "escapes the app"})
+                continue
+            if resolved.stat().st_size > _METHOD_FILE_MAX_BYTES:
+                skipped.append(
+                    {"file": file, "reason": f"larger than {_METHOD_FILE_MAX_BYTES} bytes"}
+                )
+                continue
+            source = resolved.read_bytes()
+            if b"whitelist" not in source:
+                continue
+            try:
+                tree = ast.parse(source, filename=file)
+            except SyntaxError as error:
+                skipped.append({"file": file, "reason": f"syntax error on line {error.lineno}"})
+                continue
+            except (ValueError, RecursionError, MemoryError):
+                skipped.append({"file": file, "reason": "could not be parsed"})
+                continue
+            parts = list(relative.with_suffix("").parts)
+            if parts[-1] == "__init__":
+                parts.pop()
+            rows.extend(_file_methods(tree, ".".join(parts), path, file))
+        if truncated:
+            break
+    if search:
+        needle = str(search).lower()
+        rows = [row for row in rows if needle in row["method"].lower()]
+    return {
+        **_page(rows[offset : offset + limit + 1], offset, limit),
+        "files_scanned": scanned,
+        "files_truncated": truncated,
+        "skipped": skipped[:50],
+    }
+
+
 def _promoted(doc: Any, module: str, expected_modified: str) -> bool:
     return (
         isinstance(doc, dict)
