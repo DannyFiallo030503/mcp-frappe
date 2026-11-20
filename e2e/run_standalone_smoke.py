@@ -181,6 +181,20 @@ async def run() -> dict:
                 evidence["patches_format"] = patches.get("format")
                 evidence["app_method_sample_count"] = len(methods.get("rows", []))
                 evidence["app_method_files_scanned"] = methods.get("files_scanned")
+                suggested = result_value(
+                    await session.call_tool(
+                        "list_app_methods", {"app": APP, "limit": 5, "as_config": True}
+                    )
+                )
+                evidence["app_method_config_suggestions"] = len(suggested.get("rows", []))
+            if "list_allowed_methods" in {tool.name for tool in tools.tools}:
+                # Only with FRAPPE_MCP_METHODS and the data toolset on. Read-only: lists the
+                # allowlist and calls nothing from it.
+                allowed = result_value(await session.call_tool("list_allowed_methods", {}))
+                evidence["allowed_method_count"] = allowed.get("count")
+                evidence["allowed_methods_checked"] = sum(
+                    bool(row.get("checked_against_source")) for row in allowed.get("methods", [])
+                )
                 if app_doctypes:
                     selected = app_doctypes[0]["name"]
                     custom_field = result_value(

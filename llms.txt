@@ -1,6 +1,6 @@
 # Frappe MCP
 
-> Standalone, permission-aware Model Context Protocol server for Frappe developers. Runs as a local MCP stdio process and connects to a development site over Frappe's HTTP API. It creates and edits DocTypes, customizes standard forms, checks site/app drift, pending patches, recent errors, and the app's whitelisted methods, exports customizations to app files, and sets up Workflows, Notifications, Report Builder reports, and Workspaces, previewing every change. It is not installed as a Frappe app.
+> Standalone, permission-aware Model Context Protocol server for Frappe developers. Runs as a local MCP stdio process and connects to a development site over Frappe's HTTP API. It creates and edits DocTypes, customizes standard forms, checks site/app drift, pending patches, recent errors, and the app's whitelisted methods, exports customizations to app files, calls only the app methods the user allowlists in `FRAPPE_MCP_METHODS`, and sets up Workflows, Notifications, Report Builder reports, and Workspaces, previewing every change. It is not installed as a Frappe app.
 
 ## Documentation
 
@@ -25,4 +25,4 @@
 - Preview mutations and confirm only after review. Updates and deletes require the preview's exact `modified` token; exports and rollbacks require the `preview_id`.
 - Write files only into an explicitly configured local app; review the diff and commit through Git. The server never migrates or deploys.
 - Do not expose credentials in prompts, committed config, logs, or test evidence.
-- Arbitrary SQL/Python, unrestricted method dispatch, and fields Frappe evaluates as code are not provided.
+- Arbitrary SQL/Python, unrestricted method dispatch, and fields Frappe evaluates as code are not provided. App methods run only from the user's `FRAPPE_MCP_METHODS` allowlist; the model can suggest entries but never adds them.

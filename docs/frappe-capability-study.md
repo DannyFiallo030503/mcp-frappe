@@ -116,7 +116,7 @@ Generic CRUD can read and create draft records where permissions and required fi
 | Users, User Permissions, role membership | none (DocType role permissions only) | Missing | n/a |
 | Dashboards, charts, Number Cards, private Workspaces, Web Forms, translations | none | Missing | n/a |
 | App code, hooks, server and client scripts, patches | managed fixture export only | Missing by design: code stays a reviewed development workflow | n/a |
-| App-specific methods, mapped documents | none | Missing ([stage 17](work-plan/stage-17-method-allowlist.md)) | n/a |
+| App-specific methods, mapped documents | `list_allowed_methods`, `make_mapped_document`, `call_allowed_method` | Yes, for the methods the user lists in `FRAPPE_MCP_METHODS` ([allowlist](tool-reference.md#allowlisted-method-calls)); none by default | Unit tests; example entries checked against ERPNext v15 and v16 source, not run on a site |
 | ERPNext end-to-end flows | generic records and reports | Not proven | not yet |
 
 The 0.3.0 runs used two fresh development sites (v15 and v16) with ERPNext, as Administrator and as a Sales User. They are not evidence for production sites, visual parity with Desk, or ERPNext business processes.
@@ -169,7 +169,7 @@ Every manual/live run should record: exact MCP commit, Frappe/ERPNext/app versio
 3. Add lifecycle tools: submit, cancel, amend/copy, rename, and workflow action discovery/execution, each with preview/current-state checks where sensible and native endpoint semantics.
 4. Add permission-aware identity surfaces: User Permissions, shares, comments/assignments, and Page/Report access as separately scoped tools.
 5. Add file and print operations with size/privacy bounds; then workspace/report/notification/web surfaces based on user scenarios.
-6. Add app-specific adapters only for explicit actions, each with a named allowlist, permission model, version support, and tests. Keep arbitrary RPC/SQL/Python out of scope.
+6. Add app-specific adapters only for explicit actions, each with a named allowlist, permission model, version support, and tests (done as the `FRAPPE_MCP_METHODS` allowlist in stage 17). Keep arbitrary RPC/SQL/Python out of scope.
 7. Build repeatable Frappe+ERPNext v15/v16 and generic custom-app acceptance suites. Update the compatibility claim only from those reports.
 
 ## Official references

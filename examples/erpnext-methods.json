@@ -1,0 +1,71 @@
+[
+  {
+    "method": "erpnext.selling.doctype.quotation.quotation.make_sales_order",
+    "kind": "mapper",
+    "source_doctype": "Quotation",
+    "target_doctype": "Sales Order",
+    "description": "Draft a Sales Order from a submitted Quotation"
+  },
+  {
+    "method": "erpnext.selling.doctype.sales_order.sales_order.make_delivery_note",
+    "kind": "mapper",
+    "source_doctype": "Sales Order",
+    "target_doctype": "Delivery Note",
+    "description": "Draft a Delivery Note for the undelivered items of a submitted Sales Order"
+  },
+  {
+    "method": "erpnext.selling.doctype.sales_order.sales_order.make_sales_invoice",
+    "kind": "mapper",
+    "source_doctype": "Sales Order",
+    "target_doctype": "Sales Invoice",
+    "description": "Draft a Sales Invoice for the unbilled items of a submitted Sales Order"
+  },
+  {
+    "method": "erpnext.stock.doctype.delivery_note.delivery_note.make_sales_invoice",
+    "kind": "mapper",
+    "source_doctype": "Delivery Note",
+    "target_doctype": "Sales Invoice",
+    "description": "Draft a Sales Invoice for the unbilled items of a submitted Delivery Note"
+  },
+  {
+    "method": "erpnext.buying.doctype.purchase_order.purchase_order.make_purchase_receipt",
+    "kind": "mapper",
+    "source_doctype": "Purchase Order",
+    "target_doctype": "Purchase Receipt",
+    "description": "Draft a Purchase Receipt for the unreceived items of a submitted Purchase Order"
+  },
+  {
+    "method": "erpnext.buying.doctype.purchase_order.purchase_order.make_purchase_invoice",
+    "kind": "mapper",
+    "source_doctype": "Purchase Order",
+    "target_doctype": "Purchase Invoice",
+    "description": "Draft a Purchase Invoice for the unbilled items of a submitted Purchase Order"
+  },
+  {
+    "method": "erpnext.accounts.doctype.payment_entry.payment_entry.get_payment_entry",
+    "kind": "read",
+    "target_doctype": "Payment Entry",
+    "description": "Draft a Payment Entry for the outstanding amount of a submitted document",
+    "params": {
+      "dt": {
+        "type": "string",
+        "required": true,
+        "enum": ["Sales Invoice", "Purchase Invoice", "Sales Order", "Purchase Order"],
+        "description": "DocType of the document to pay"
+      },
+      "dn": {
+        "type": "string",
+        "required": true,
+        "description": "Name of the document to pay"
+      },
+      "party_amount": {
+        "type": "number",
+        "description": "Amount to pay, when less than the outstanding amount"
+      },
+      "bank_account": {
+        "type": "string",
+        "description": "Bank Account to pay from or into"
+      }
+    }
+  }
+]

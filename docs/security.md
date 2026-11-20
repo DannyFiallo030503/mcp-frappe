@@ -36,7 +36,7 @@ Administrator is a full-privilege account. For the local Aspire site only, the M
 
 `confirm=true` is not a human checkpoint: the model sets it itself. The preview tokens (`expected_modified`, `preview_id`) guard against stale state, so a change applies only to the record or files the preview showed; they do not stop a model that decides to confirm.
 
-The human checkpoint is the MCP host. Every tool declares MCP annotations: the `read` toolset has `readOnlyHint: true`, every other tool `readOnlyHint: false`, and tools that delete or can remove data (`delete_document`, `cancel_document`, `delete_doctype`, `update_doctype`, `set_role_permissions`, `rollback_export`) `destructiveHint: true`. A host can run read tools without asking and ask a person before any write, which is what the annotations are for. Annotations are hints a host chooses to follow; configure the host to require approval for non-read tools.
+The human checkpoint is the MCP host. Every tool declares MCP annotations: the `read` toolset, `list_allowed_methods`, and `make_mapped_document` have `readOnlyHint: true`, every other tool `readOnlyHint: false`, and tools that delete or can remove data (`delete_document`, `cancel_document`, `delete_doctype`, `update_doctype`, `set_role_permissions`, `rollback_export`, and `call_allowed_method`, whose listed methods can do anything) `destructiveHint: true`. A host can run read tools without asking and ask a person before any write, which is what the annotations are for. Annotations are hints a host chooses to follow; configure the host to require approval for non-read tools.
 
 To take writes away entirely, start the server with `FRAPPE_MCP_READ_ONLY=YES` (or narrow `FRAPPE_MCP_TOOLSETS`; remote targets are read-only unless `FRAPPE_MCP_READ_ONLY=NO`): the unselected tools are removed at startup and never listed. The connected Frappe user's permissions still bound what any remaining tool can do.
 
@@ -44,7 +44,7 @@ Error text returned to the model is decoded from Frappe's messages and never inc
 
 ## Tool boundaries
 
-- There is no arbitrary Python, SQL, or unrestricted dotted-method tool.
+- There is no arbitrary Python, SQL, or unrestricted dotted-method tool. App methods are called only from the user's allowlist ([next section](#allowlisted-method-calls)).
 - Lists and report output have explicit caps.
 - Document changes preview first; update/delete confirmations require the current `modified` token. Updates also send that token to Frappe, which re-checks it under a row lock (`check_if_latest`), so a change between the check and the write is refused.
 - Field names in reads, filters, and writes are checked against the DocType's metadata (Custom Fields and Property Setters included); filter operators are allowlisted, and four-element filters may only name the DocType's own child tables. Writes refuse standard columns and read-only fields.
@@ -66,6 +66,19 @@ Error text returned to the model is decoded from Frappe's messages and never inc
 - `count_documents` uses `frappe.client.get_count`, which counts only records the user may read. `search_records` calls `frappe.desk.search.search_link` with the DocType's own search settings; it never sends a `query` method (which would dispatch to an arbitrary whitelisted function) or `ignore_user_permissions`, and returns at most 50 results.
 - `get_site_info` returns the user, app titles and versions (branch and commit details dropped), and which site apps have a checkout under `FRAPPE_APPS_PATH`; it returns no local paths.
 - `submit_document` and `cancel_document` need the current `modified`, refuse DocTypes that aren't submittable, and refuse DocTypes with an active Workflow: a direct submit or cancel there would skip the workflow's transitions and roles, because Frappe only moves the document to the first state with the new docstatus.
+
+## Allowlisted method calls
+
+`call_allowed_method` and `make_mapped_document` call whitelisted methods by their dotted path, which AGENTS.md allows only with a per-method allowlist. The allowlist is a JSON file the user writes and names in `FRAPPE_MCP_METHODS`; the server never writes it, and without it the method tools aren't registered. The model can't add an entry: `list_app_methods(as_config=True)` only suggests entries for the user to review.
+
+- **Only listed methods run.** Each tool looks the method up in the loaded file before sending anything and refuses a method that isn't there, or that is listed with another kind. There are no wildcards, and each entry names one dotted path.
+- **No dispatchers.** The loader refuses `frappe.client.*` (generic record reads and writes, which would skip the record tools' guards against code DocTypes and fields) and methods that run another method by name (`make_mapped_doc`, `map_docs`, `run_doc_method`, `runserverobj`, `execute_action`). `make_mapped_document` calls `make_mapped_doc` itself, but only with a `mapper` entry's method.
+- **Arguments are checked.** `params` fixes the names, types, and allowed values; without it, only scalar values are sent, and only names the function takes when the app source was checked. `cmd` (Frappe's name for the method to run) and `ignore_permissions` are never sent, whatever the entry says.
+- **Entries are checked against the source.** With a checkout of the method's app under `FRAPPE_APPS_PATH`, startup fails unless the method is a whitelisted module function whose HTTP methods fit its kind. This catches a typo or a stale entry; it reads the checkout, which can differ from the running code, and doesn't follow `override_whitelisted_methods`.
+- **Frappe still decides.** Every call runs as the connected user: Frappe checks that the method is whitelisted and the method checks its own permissions (a mapper checks read access on the source; ERPNext's `get_payment_entry` checks create access on Payment Entry). Mapper and `read` calls are `GET` requests, which Frappe rolls back at the end unless the method commits on its own; `write` calls are `POST` requests and need a preview and `confirm`.
+- **Outputs are bounded.** List results are paged, and nested values, strings, and the total size are capped.
+
+**The user is responsible for what they list.** A whitelisted method can do anything its code does, including writes a `read` entry's `GET` won't roll back if the method commits, and some accept arguments that widen what they touch. List only methods you have read, prefer `params` to the scalar default, and list anything that changes data as `write` so it is previewed. A `write` confirmation is the model's own `confirm=true`; rely on the host's approval prompt (`call_allowed_method` has `destructiveHint: true`) for a human checkpoint.
 
 ## Code fields and templates
 

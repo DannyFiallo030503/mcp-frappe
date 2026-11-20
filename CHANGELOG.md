@@ -26,6 +26,16 @@ All notable changes to this project are listed here. The format follows
 - `list_app_methods(app, search, limit, offset)`: the app checkout's `frappe.whitelist`
   methods with their arguments, found by parsing the files with `ast` (nothing is imported).
 - The tool-list budget test allows 34,000 characters (was 32,000).
+- Allowlisted method calls: `FRAPPE_MCP_METHODS` names a JSON file listing the only app
+  methods the server may call, each as a `mapper`, `read`, or `write` entry with optional
+  `params`. With it set, the `data` toolset adds `list_allowed_methods()`,
+  `make_mapped_document(method, source_name)` (an unsaved draft shaped for
+  `create_document`), and `call_allowed_method(method, args, limit, offset, confirm)` (reads
+  run at once, writes are previewed). The file is checked at startup, against the app
+  checkout when `FRAPPE_APPS_PATH` has it; a problem stops the server with its line.
+  `mcp-frappe check` reports it. Example: `examples/erpnext-methods.json`.
+- `list_app_methods(..., as_config=True)` suggests `FRAPPE_MCP_METHODS` entries.
+- `mcp-frappe check` and the startup log report the method allowlist.
 
 ## [0.3.0] - 2026-11-20
 

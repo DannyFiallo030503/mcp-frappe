@@ -11,19 +11,19 @@ Tools are grouped into four toolsets. All four are on by default for a loopback 
 | Toolset | Tools |
 |---|---|
 | `read` | `get_site_info`, `list_installed_apps`, `list_doctypes`, `get_doctype_schema`, `list_documents`, `count_documents`, `search_records`, `get_document`, `list_reports`, `get_report_filters`, `run_report`, `diff_doctype`, `list_app_drift`, `list_pending_patches`, `get_recent_errors`, `list_app_methods`, `get_workflow`, `list_notifications`, `get_workspace` |
-| `data` | `create_document`, `update_document`, `delete_document`, `submit_document`, `cancel_document` |
+| `data` | `create_document`, `update_document`, `delete_document`, `submit_document`, `cancel_document`; with `FRAPPE_MCP_METHODS` set, also `list_allowed_methods`, `make_mapped_document`, `call_allowed_method` ([allowlisted method calls](#allowlisted-method-calls)) |
 | `customize` | `create_custom_field`, `set_field_property`, `set_role_permissions`, `export_form_customizations`, `export_customizations`, `rollback_export` |
 | `developer` | `create_doctype`, `update_doctype`, `delete_doctype`, `promote_custom_doctype`, `upsert_workflow`, `upsert_notification`, `upsert_report`, `upsert_workspace` |
 
 `FRAPPE_MCP_READ_ONLY=YES` is shorthand for `FRAPPE_MCP_TOOLSETS=read`: use it to look at a site that must not change. When `FRAPPE_MCP_READ_ONLY` is unset, a remote target (a `FRAPPE_URL` host that isn't loopback or `.localhost`) is read-only too; `FRAPPE_MCP_READ_ONLY=NO` enables writes on it, and the startup log and `mcp-frappe check` report either case. The server refuses to start on an unknown toolset name, on a `FRAPPE_MCP_READ_ONLY` value other than `YES` or `NO`, and when it is read-only (by `YES` or as a remote target) and `FRAPPE_MCP_TOOLSETS` names a toolset other than `read`.
 
-Every tool has a `title` (its display name) and MCP annotations; the annotations don't repeat the title. Tools in `read` have `readOnlyHint: true`; the others have `readOnlyHint: false` and say whether they are destructive and idempotent. `destructiveHint: true` is set on `delete_document`, `cancel_document`, `delete_doctype`, `update_doctype` (it can remove fields and change field types), `set_role_permissions`, and `rollback_export`. `idempotentHint: true` is set where repeating the call with the same arguments leaves the same end state: `update_document`, `delete_document`, `delete_doctype`, `set_field_property`, `set_role_permissions`, and the four `upsert_*` tools. `openWorldHint` is `false` everywhere: the tools reach only the configured site and `FRAPPE_APPS_PATH`. Hosts use these hints to run read tools without asking and to ask a person before a write; see [security](security.md#human-approval).
+Every tool has a `title` (its display name) and MCP annotations; the annotations don't repeat the title. Tools in `read` have `readOnlyHint: true`, and so do `list_allowed_methods` and `make_mapped_document`, which save nothing; the others have `readOnlyHint: false` and say whether they are destructive and idempotent. `destructiveHint: true` is set on `delete_document`, `cancel_document`, `delete_doctype`, `update_doctype` (it can remove fields and change field types), `set_role_permissions`, `rollback_export`, and `call_allowed_method` (a listed write method can do anything). `idempotentHint: true` is set where repeating the call with the same arguments leaves the same end state: `update_document`, `delete_document`, `delete_doctype`, `set_field_property`, `set_role_permissions`, and the four `upsert_*` tools. `openWorldHint` is `false` everywhere: the tools reach only the configured site and `FRAPPE_APPS_PATH`. Hosts use these hints to run read tools without asking and to ask a person before a write; see [security](security.md#human-approval).
 
 The server also sends MCP `instructions` in its initialize result: a short workflow (start with `get_site_info`, read the schema first, which tool changes what, preview then confirm, a permission denial is final). The arguments shared by many tools (`filters`, `or_filters`, `fields`, `order_by`, `expected_modified`, `expected_preview`, `confirm`, `detail`, and the `run_report` filters) carry descriptions in each tool's input schema.
 
 ### Tool-list size
 
-A host sends every listed tool's name, title, description, input schema, and annotations to the model in every session, so the list is kept small: each description says what the tool does, its key constraints, its return shape, and how to confirm, and this page holds the details. `tests/test_mcp_contract.py` keeps the whole list, serialized as a client receives it, at or below 34,000 characters (about 8,500 tokens); it was about 61,000 before stage 15, which set the cap at 32,000, and stage 16 raised it to 34,000 for its three diagnostics tools. `mcp-frappe check` prints the tools and characters per toolset, and `FRAPPE_MCP_TOOLSETS` turns off what you don't need.
+A host sends every listed tool's name, title, description, input schema, and annotations to the model in every session, so the list is kept small: each description says what the tool does, its key constraints, its return shape, and how to confirm, and this page holds the details. `tests/test_mcp_contract.py` keeps the whole list, serialized as a client receives it, at or below 34,000 characters (about 8,500 tokens); it was about 61,000 before stage 15, which set the cap at 32,000, and stage 16 raised it to 34,000 for its three diagnostics tools. The three method tools are listed only when `FRAPPE_MCP_METHODS` is set, so the 34,000 cap applies to the list without them; with them the cap is 36,500 (they add about 1,600 characters). `mcp-frappe check` prints the tools and characters per toolset, and `FRAPPE_MCP_TOOLSETS` turns off what you don't need.
 
 The input schemas leave out what carries no meaning: pydantic's generated `title` keywords, `additionalProperties: true`, and the `null` branch and `default: null` of optional arguments (an optional argument is simply not `required`; an explicit `null` is still accepted). Tools have no output schema, because Frappe's results are open-ended JSON: a result is a JSON text block, and a list result (only `list_installed_apps`) is one text block per item.
 
@@ -329,7 +329,7 @@ Three read tools answer what an agent keeps asking during development. They comb
 |---|---|---|
 | `list_pending_patches` | List the app's `patches.txt` entries that `Patch Log` doesn't show as run | `app` |
 | `get_recent_errors` | Read `Error Log` newest first, with the traceback trimmed to its tail | `since` (ISO datetime in the site's time zone, such as `2026-11-20T09:30`), `method` (part of the method), `reference_doctype`, `limit` (1-50, default 20), `offset` |
-| `list_app_methods` | List the methods the app checkout whitelists with `frappe.whitelist`, and their arguments | `app`, `search` (part of the dotted path, any case), `limit` (1-200, default 100), `offset` |
+| `list_app_methods` | List the methods the app checkout whitelists with `frappe.whitelist`, and their arguments | `app`, `search` (part of the dotted path, any case), `limit` (1-200, default 100), `offset`, `as_config` (return suggested `FRAPPE_MCP_METHODS` entries instead) |
 
 ### `list_pending_patches`
 
@@ -348,6 +348,69 @@ Reads `Error Log` (System Manager only) ordered by `creation desc` and returns a
 Walks `<app>/<app>/` and parses each `.py` file with Python's `ast` module; nothing is imported. It skips `tests`, `test`, `node_modules`, `__pycache__`, and hidden folders, does not descend into symlinked folders, and skips (and reports) a file that resolves outside the app, a file larger than 1,000,000 bytes, and a file that doesn't parse. It reads at most 5,000 files (`files_truncated` says when it stopped) and parses only files that contain the word `whitelist`.
 
 A function counts when a decorator is `@frappe.whitelist` or `@frappe.whitelist(...)` (also through `import frappe as f`), or a bare `@whitelist` or alias imported with `from frappe import whitelist`. Module-level functions and methods of module-level classes are listed; nested functions are not. Each row has `method` (the dotted path from the app package; a class method includes the class), `kind` (`module`, or `document` for a class method, with `doctype` read from the controller's `<doctype>.json` when the file is `<module>/doctype/<doctype>/<doctype>.py`, else `null`), `args` (`name`, and `annotation` and `default` as source text; `*args` and `**kwargs` keep their stars; `self` is dropped), `doc` (the docstring's first paragraph, at most 300 characters), `allow_guest`, `methods` (Frappe's default `GET`, `POST`, `PUT`, `DELETE` when the decorator doesn't say), and `file` (`<app>/<path>.py:<line of def>`). A decorator argument that isn't a literal is returned as source text. The page also has `files_scanned`, `files_truncated`, and `skipped` (`file`, `reason`; at most 50). A document method runs through `frappe.client.run_doc_method`, not `/api/method/<path>`. The list is what the checkout declares, which may differ from what the site runs until the Bench restarts.
+
+With `as_config: true`, the page holds suggested [`FRAPPE_MCP_METHODS`](#allowlisted-method-calls) entries instead of rows, for module functions only (a controller method can't be called by its dotted path), and a `note`. The kind is a guess: `mapper` for a `make_*` function whose first argument is `source_name` (with `source_doctype` when the file is a DocType controller), `read` when the name starts with `get_`, `list_`, `fetch_`, `search_`, `count_`, `is_`, or `has_` and the decorator allows `GET` (or doesn't allow `POST`), else `write`. `params` lists every argument except `*args`, `**kwargs`, `cmd`, and `ignore_permissions`, with `type` from a plain annotation (`str`, `int`, `float`, `int | float`, `bool`, `dict`, `list`, optionally `| None`) and `required: true` when the argument has no default. Review each entry before adding it; the server never writes the file.
+
+## Allowlisted method calls
+
+These tools call app-specific whitelisted methods, such as ERPNext's Sales Order to Sales Invoice mapper, or a custom app's API while you develop it. They call only the methods listed in a JSON file that `FRAPPE_MCP_METHODS` names; without the variable they aren't registered at all, and no code path calls an unlisted method. They are in the `data` toolset, so a read-only server doesn't list them.
+
+| Tool | Purpose | Arguments |
+|---|---|---|
+| `list_allowed_methods` | The allowlist: `method`, `kind`, `description`, `source_doctype`, `target_doctype`, `params`, and `checked_against_source` per entry, plus `count` | none |
+| `make_mapped_document` | Run a `mapper` entry through `frappe.model.mapper.make_mapped_doc` and return the unsaved draft | `method`, `source_name` |
+| `call_allowed_method` | Run a `read` entry (`GET`) or preview, then run, a `write` entry (`POST`) | `method`, `args` (object), `limit` (1-500, default 100), `offset`, `confirm` |
+
+### The `FRAPPE_MCP_METHODS` file
+
+A JSON list of 1 to 200 entries ([example for ERPNext](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/examples/erpnext-methods.json)):
+
+```json
+[
+  {
+    "method": "erpnext.selling.doctype.sales_order.sales_order.make_sales_invoice",
+    "kind": "mapper",
+    "source_doctype": "Sales Order",
+    "target_doctype": "Sales Invoice",
+    "description": "Draft a Sales Invoice for the unbilled items of a submitted Sales Order"
+  },
+  {
+    "method": "my_app.api.get_price",
+    "kind": "read",
+    "params": {
+      "item": {"type": "string", "required": true},
+      "qty": {"type": "integer"},
+      "mode": {"enum": ["net", "gross"]}
+    }
+  }
+]
+```
+
+| Key | Rule |
+|---|---|
+| `method` | Required. A dotted Python path of at least two parts (`app.module.function`), letters, digits, and `_` only, at most 200 characters. No wildcards; each method is listed once. `frappe.client.*`, `frappe.model.mapper.make_mapped_doc`, `frappe.model.mapper.map_docs`, `frappe.handler.run_doc_method`, `frappe.desk.form.run_method.runserverobj`, and `frappe.model.document.execute_action` are refused: they run other methods or write any record, which would make the allowlist unrestricted (use the record tools for records). |
+| `kind` | Required. `mapper` (called through `make_mapped_doc`; returns a draft and never saves), `read` (a `GET` with arguments), or `write` (a `POST`, previewed first). |
+| `description` | Optional text, at most 300 characters; shown in the list and in a write preview. |
+| `source_doctype`, `target_doctype` | Optional DocType names. A `mapper` may have both; a `read` entry may have `target_doctype` (its result is then shaped as a draft, like a mapper's); a `write` entry has neither. When `target_doctype` is set, a mapper that returns another DocType is an error. |
+| `params` | Optional, `read` and `write` only: an object of argument name to `{type, required, enum, description}`, at most 50. `type` is `string`, `integer`, `number`, `boolean`, `object`, or `array`; without a `type`, only a scalar is accepted. `cmd` and `ignore_permissions` are never allowed. |
+
+The server checks the file at startup and refuses to start, naming the file, the line, and the method of each problem (up to 20 at once). Unknown keys and invalid values are problems. `mcp-frappe check` reports the same, plus the number of entries.
+
+**Checked against the app source.** When `FRAPPE_APPS_PATH` holds a checkout of the method's app (the first part of the path), the loader finds the function in `<app>/<app>/<module path>.py` (or the package's `__init__.py`) with the same parser as `list_app_methods` and checks that it is a module-level function decorated with `frappe.whitelist`, that the decorator's `methods` allow `GET` for a `read` entry and `POST` for a `write` entry, that a mapper takes an argument, and that every name in `params` is an argument (unless the function takes `**kwargs`). A mismatch stops startup. The function's argument names are kept, so an entry without `params` still refuses an argument the function doesn't take. Without a checkout of that app, startup logs a warning per app and goes on; the entry's `checked_against_source` is `false`. The check reads the checkout, not the running site: an `override_whitelisted_methods` hook on the site is not followed.
+
+### Calling
+
+`call_allowed_method` refuses a method that isn't listed and a `mapper` entry (and `make_mapped_document` refuses `read` and `write` entries), naming the right tool. It checks `args` before any request: every name must be in `params` (or, without `params`, a scalar value and, when the source was checked, an argument of the function); types and `enum` must fit (`true` is not an integer); `required` ones must be present; `null` values are left out; one value can be at most 10,000 characters as JSON; `cmd` and `ignore_permissions` are refused. A `read` entry is sent as `GET /api/method/<method>` with the arguments as query parameters (objects and arrays as JSON text). A `write` entry returns a preview (`method`, `kind`, `description`, the checked `args`, `requires_confirmation`) and is sent as `POST /api/method/<method>` with a JSON body only with `confirm: true`.
+
+The result comes back as `{method, kind, result, truncated}`. A list result is paged like `run_report`: `result` holds items `offset` to `offset + limit`, with `total_rows`, `offset`, `limit`, `returned_rows`, and `has_more`. Inside the result, lists and objects are cut to `limit` items, strings to 2,000 characters, and nesting to 8 levels; if the result is still over 100,000 characters as JSON, `result` is `null` and `result_text` holds the first 100,000 characters. `truncated` says whether anything was cut.
+
+Frappe rolls back what a `GET` request writes unless the method commits on its own, so a `read` entry should be a method that only reads; list anything that changes data as `write`.
+
+### `make_mapped_document`
+
+Sends `GET /api/method/frappe.model.mapper.make_mapped_doc` with `method` and `source_name`. Frappe resolves the method, checks it is whitelisted, and calls it with `source_name`; the mapper checks the source's permissions and builds an unsaved document. Because the request is a `GET`, Frappe rolls back anything the mapper wrote; for example, ERPNext's Quotation to Sales Order mapper creates a Customer from a Lead when the Quotation is for a Lead, and that Customer is not kept, so create the Customer first.
+
+The result has `method`, `source_doctype`, `source_name`, `doctype` (the target), `values`, and `read_only`. `values` holds what `create_document` accepts: the target's fields that are not read-only and not empty, with child-table rows whole except for `__`-prefixed keys, local names, `parent*`, `idx`, `docstatus`, and empty values. Child rows keep their other fields, read-only and hidden ones included (such as ERPNext's `so_detail`), because they tie the new document to its source. `read_only` holds the top-level read-only fields (names fetched from links, totals), which Frappe sets again on save. A child table over 200 rows is cut, named in `_truncated_child_tables`, and a `note` says the draft can't be created as it is. Save the draft with `create_document(doctype, values)`, then `submit_document` if needed.
 
 ## Workflows and Notifications
 
@@ -487,4 +550,4 @@ The exporter creates local backups and a rollback manifest, and `rollback_export
 
 ## Deliberate exclusions
 
-There is no arbitrary Python execution, SQL execution, or unrestricted whitelisted-method dispatcher. Query Reports, Script Reports, custom HTML blocks, Dashboard Charts, and private Workspaces are not written. Other Frappe features such as applying workflow actions to documents, Notification conditions, Slack and SMS channels, file downloads, translations, print rendering, and arbitrary app-specific method calls require explicit wrappers and are not exposed by this standalone release yet. Do not infer a tool exists from the retained legacy source tree.
+There is no arbitrary Python execution, SQL execution, or unrestricted whitelisted-method dispatcher: method calls go only to the methods the user lists in `FRAPPE_MCP_METHODS`. Query Reports, Script Reports, custom HTML blocks, Dashboard Charts, and private Workspaces are not written. Other Frappe features such as applying workflow actions to documents, Notification conditions, Slack and SMS channels, file downloads, translations, print rendering, and app-specific methods that aren't in the `FRAPPE_MCP_METHODS` allowlist require explicit wrappers and are not exposed by this standalone release yet. Do not infer a tool exists from the retained legacy source tree.

@@ -84,7 +84,7 @@ Frappe v16 ships its own MCP server for record data and whitelisted method calls
 | Toolset | What it does |
 |---|---|
 | `read` | Site info, DocTypes and schemas, records, counts, search, reports, drift checks, pending patches, recent errors, the app's whitelisted methods, workflows, notifications, Workspaces |
-| `data` | Create, update, delete, submit, and cancel records |
+| `data` | Create, update, delete, submit, and cancel records; with `FRAPPE_MCP_METHODS`, call the app methods you allowlist (mapped drafts such as Sales Order to Sales Invoice, reads, previewed writes) |
 | `customize` | Custom Fields, Property Setters, role permissions, export to app files, rollback |
 | `developer` | Create, edit, delete, and promote DocTypes; Workflows, Notifications, Report Builder reports, Workspaces |
 

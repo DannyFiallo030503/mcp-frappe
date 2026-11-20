@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import subprocess
@@ -36,6 +37,7 @@ _ENV = (
     "FRAPPE_MCP_TOOLSETS",
     "FRAPPE_MCP_READ_ONLY",
     "FRAPPE_SITE_LABEL",
+    "FRAPPE_MCP_METHODS",
 )
 
 
@@ -132,6 +134,32 @@ def test_check_reports_a_ready_setup(fake_site, clean_env, capsys) -> None:
     assert "FRAPPE_APPS_PATH" in output
     assert output.rstrip().endswith("Ready.")
     _assert_no_secrets(output)
+
+
+def test_check_reports_the_method_allowlist(fake_site, clean_env, capsys, tmp_path) -> None:
+    _token_env(clean_env, "http://site1.localhost:8000")
+    _site_answers(fake_site)
+    path = tmp_path / "methods.json"
+    path.write_text(json.dumps([{"method": "lab_app.api.ping", "kind": "read"}]))
+    clean_env.setenv("FRAPPE_MCP_METHODS", str(path))
+    clean_env.setattr(
+        standalone.server._tool_manager, "_tools", dict(standalone.server._tool_manager._tools)
+    )
+    clean_env.setattr(standalone, "_TOOLSETS", copy.deepcopy(standalone._TOOLSETS))
+
+    try:
+        code, output = _run_check(capsys)
+        assert code == 0
+        assert "methods" in output and "1 allowlisted" in output
+        assert "not checked against the app source" in output
+        assert str(tmp_path) not in output
+
+        path.write_text(json.dumps([{"method": "lab_app.*", "kind": "read"}]))
+        code, output = _run_check(capsys)
+        assert code == 1
+        assert "wildcards are not allowed" in output
+    finally:
+        standalone._method_config.clear()
 
 
 def test_check_shows_every_toolset_for_a_local_site(fake_site, clean_env, capsys) -> None:
