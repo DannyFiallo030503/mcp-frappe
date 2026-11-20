@@ -26,7 +26,7 @@ The server answers by reading the schema first, returning a preview (fields adde
 uvx mcp-frappe --version
 ```
 
-Until the first PyPI release, run it from GitHub: `uvx --from git+https://github.com/DannyFiallo030503/mcp-frappe mcp-frappe`. You need Python 3.10+ and an MCP host that runs local stdio servers.
+You need Python 3.10+ and an MCP host that runs local stdio servers.
 
 ## Configure
 

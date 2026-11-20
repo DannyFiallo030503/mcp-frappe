@@ -22,7 +22,7 @@ Frappe v16 and later include an MCP server. Each site runs its own, and it is on
 
 | | Native (v16+) | mcp-frappe |
 |---|---|---|
-| Install | Nothing to install on v16 | `uvx` package, not yet on PyPI |
+| Install | Nothing to install on v16 | `uvx mcp-frappe` (on PyPI since 0.3.0, 2026-11-20) |
 | Frappe v15 | No | Yes |
 | Record CRUD, document methods, whitelisted method calls | Complete | CRUD, submit, and cancel only; no method calls |
 | Create and edit DocTypes, Custom Fields, Property Setters | No | Yes |

@@ -35,7 +35,9 @@ The version is `__version__` in `frappe_mcp/__init__.py`; `pyproject.toml` reads
 After PyPI has the release, list it in the [MCP registry](https://registry.modelcontextprotocol.io) from `server.json` (repository root):
 
 1. Set `version` and `packages[0].version` in `server.json` to the released version (`tests/test_cli.py` checks they match `__version__`, and that the README keeps the `mcp-name` marker the registry looks for in the PyPI description).
-2. Install `mcp-publisher` (a release binary from the registry repository, or `brew install mcp-publisher`), run `mcp-publisher login github` as the repository owner, then `mcp-publisher publish`.
+2. Run the **Publish to MCP registry** workflow (`.github/workflows/publish-mcp.yml`) from the Actions tab. It checks that the version is on PyPI, installs a pinned and checksum-verified `mcp-publisher`, logs in with GitHub Actions OIDC, and publishes. OIDC grants the namespace of the repository owner, so any collaborator who can run workflows can publish `io.github.DannyFiallo030503/mcp-frappe`.
+
+Publishing from your own machine (`mcp-publisher login github`, then `mcp-publisher publish`) works only when signed in as the `DannyFiallo030503` account: the interactive login grants only the signed-in user's `io.github.<user>/*` namespace.
 
 The workflow has only a manual trigger for now. The file's header lists the one-time PyPI and GitHub setup, and how to switch to publishing on every pushed tag. A PyPI release is public and permanent; a version number cannot be reused.
 
