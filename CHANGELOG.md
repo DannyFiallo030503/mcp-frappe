@@ -15,7 +15,9 @@ All notable changes to this project are listed here. The format follows
   **Breaking** in its release, with what to change.
 - From 1.0 on, only a major release breaks the tool contract.
 
-## [0.3.0] - Unreleased
+## [Unreleased]
+
+## [0.3.0] - 2026-11-19
 
 This release refocuses the server on Frappe developers working against a development site:
 editing DocTypes, customizing standard DocTypes, keeping the site and the app files in sync,
@@ -145,5 +147,6 @@ and setting up configuration records. It covers work-plan stages 00–15.
 - Standalone MCP server over stdio that talks to a Frappe site through its HTTP API, replacing
   the earlier implementation that ran as an installed Frappe app (now under `legacy/`).
 
-[0.3.0]: https://github.com/DannyFiallo030503/mcp-frappe/compare/5ceaff6...HEAD
+[Unreleased]: https://github.com/DannyFiallo030503/mcp-frappe/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/DannyFiallo030503/mcp-frappe/compare/5ceaff6...v0.3.0
 [0.2.0]: https://github.com/DannyFiallo030503/mcp-frappe/commit/5ceaff6
