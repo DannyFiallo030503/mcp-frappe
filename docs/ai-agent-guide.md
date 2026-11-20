@@ -118,6 +118,18 @@ Things to tell the user before confirming:
    - `site_custom`: see the next recipe.
 4. Never run Bench commands yourself; the MCP doesn't, and the user's site may hold work that `bench migrate` would replace.
 
+### After a change, check
+
+After the user migrates, restarts, or tries the change, check three things before saying it worked:
+
+1. **Drift**: `list_app_drift(app="my_app")` should show the DocTypes you touched as `in_sync`.
+2. **Pending patches**: `list_pending_patches(app="my_app")`. Anything in `pending` hasn't run on this site; `skipped: true` means a migrate skipped it after a failure. Show the user `execute:` lines as text; never run them another way. `unknown_in_log` lists logged patches no longer in the file, often a line whose `#` re-run marker changed.
+3. **Recent errors**: `get_recent_errors(since="<when the user started>")`, narrowed with `method` or `reference_doctype`. Read `exception` first and the `traceback` tail only when you need it. Tracebacks can hold record values: quote only the lines that explain the failure.
+
+### Which methods does my app expose
+
+`list_app_methods(app="my_app", search="api")` lists the whitelisted functions in the checkout with their arguments, defaults, annotations, allowed HTTP methods, and `file:line`, without importing the app. A `document` row is a method on a DocType controller; it runs through `run_doc_method` on a saved record, not as `/api/method/<path>`. The checkout can be ahead of the running site until the Bench restarts. This server doesn't call the methods.
+
 ### Ship a prototype DocType with my app
 
 1. Check the DocType is site-custom: `diff_doctype(doctype="Lab Sample")` says `site_custom`.

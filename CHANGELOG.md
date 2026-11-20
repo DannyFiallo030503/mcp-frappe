@@ -17,6 +17,16 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `list_pending_patches(app)`: the app's `patches.txt` entries that `Patch Log` doesn't show
+  as run, in file order with section and line, plus logged patches no longer in the file.
+- `get_recent_errors(since, method, reference_doctype, limit, offset)`: `Error Log` newest
+  first, with the exception line and the last 40 traceback lines.
+- `list_app_methods(app, search, limit, offset)`: the app checkout's `frappe.whitelist`
+  methods with their arguments, found by parsing the files with `ast` (nothing is imported).
+- The tool-list budget test allows 34,000 characters (was 32,000).
+
 ## [0.3.0] - 2026-11-20
 
 This release refocuses the server on Frappe developers working against a development site:
