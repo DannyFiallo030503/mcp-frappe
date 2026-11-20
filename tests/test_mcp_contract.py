@@ -1,11 +1,29 @@
 """Exercise the server through a real MCP client session, as an agent would see it."""
 
+import copy
 import json
 
 import anyio
+import pytest
 from mcp.shared.memory import create_connected_server_and_client_session
 
 from frappe_mcp import standalone
+
+
+@pytest.fixture
+def methods_on(monkeypatch, tmp_path):
+    """Load a small allowlist and register the method tools, undone after the test."""
+    monkeypatch.setattr(
+        standalone.server._tool_manager, "_tools", dict(standalone.server._tool_manager._tools)
+    )
+    monkeypatch.setattr(standalone, "_TOOLSETS", copy.deepcopy(standalone._TOOLSETS))
+    monkeypatch.delenv("FRAPPE_APPS_PATH", raising=False)
+    path = tmp_path / "methods.json"
+    path.write_text(json.dumps([{"method": "lab_app.api.close_period", "kind": "write"}]))
+    monkeypatch.setenv("FRAPPE_MCP_METHODS", str(path))
+    standalone._method_settings()
+    yield
+    standalone._method_config.clear()
 
 
 def test_every_tool_has_a_description_and_an_object_schema() -> None:
@@ -294,6 +312,39 @@ def test_the_tool_list_fits_its_character_budget() -> None:
     total = sum(_chars(tool) for tool in tools)
 
     assert total <= TOOL_LIST_BUDGET, f"tool list is {total} characters"
+
+
+# The method tools exist only when FRAPPE_MCP_METHODS is set, so they have their own cap.
+TOOL_LIST_WITH_METHODS_BUDGET = 36_500
+
+
+def test_the_tool_list_with_the_method_tools_fits_its_budget(methods_on) -> None:
+    tools = _listed_tools()
+
+    assert set(standalone._METHOD_TOOLS) <= {tool.name for tool in tools}
+    total = sum(_chars(tool) for tool in tools)
+    assert total <= TOOL_LIST_WITH_METHODS_BUDGET, f"tool list is {total} characters"
+
+
+def test_an_allowlisted_write_previews_through_an_mcp_session(methods_on, fake_site) -> None:
+    async def call_tools():
+        async with create_connected_server_and_client_session(
+            standalone.server._mcp_server
+        ) as client:
+            refused = await client.call_tool(
+                "call_allowed_method", {"method": "frappe.client.get_list"}
+            )
+            preview = await client.call_tool(
+                "call_allowed_method",
+                {"method": "lab_app.api.close_period", "args": {"period": "2026-10"}},
+            )
+            return refused, preview
+
+    refused, preview = anyio.run(call_tools)
+
+    assert refused.isError and "not in the FRAPPE_MCP_METHODS allowlist" in refused.content[0].text
+    assert json.loads(preview.content[0].text)["requires_confirmation"] is True
+    assert fake_site.calls == []
 
 
 def test_check_reports_the_same_cost_per_toolset_as_a_client_sees() -> None:

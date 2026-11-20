@@ -10,7 +10,7 @@ Frappe v16 and later include an MCP server on every site. It and this server do 
 | Login | OAuth 2, or an API key and secret | An API key and secret, or a password |
 | Frappe v15 | No | Yes |
 | Records | List, read, count, create, update, delete | The same, plus submit and cancel; no other document methods |
-| Method calls | Any whitelisted method, document methods (`call_method`, `call_document_method`) | None |
+| Method calls | Any whitelisted method, document methods (`call_method`, `call_document_method`) | Only the methods you list in `FRAPPE_MCP_METHODS` (mapped drafts, reads, previewed writes); none by default |
 | DocTypes | Read the schema | Create, edit, delete, and promote DocTypes |
 | Customizations | Only as raw records | Custom Fields, Property Setters, role permissions |
 | App files | No | Diff and drift checks, native `custom/` exports, rollback |

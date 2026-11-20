@@ -72,10 +72,18 @@ _TOOLSETS: dict[str, set[str]] = {
 
 
 def _tool(
-    toolset: str, title: str, *, destructive: bool = False, idempotent: bool = False
+    toolset: str,
+    title: str,
+    *,
+    destructive: bool = False,
+    idempotent: bool = False,
+    read_only: bool | None = None,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
-    """Register an MCP tool in a toolset, with annotations hosts use to gate approval."""
-    read_only = toolset == "read"
+    """Register an MCP tool in a toolset, with annotations hosts use to gate approval.
+
+    Tools of the read toolset are read-only; `read_only=True` marks one in another toolset.
+    """
+    read_only = toolset == "read" if read_only is None else read_only
     # The display name is the tool's `title`; repeating it in the annotations (the pre-2025-06-18
     # place for it) would only lengthen the tool list.
     annotations = ToolAnnotations(
@@ -4515,11 +4523,16 @@ def _file_methods(tree: ast.Module, dotted: str, path: Path, file: str) -> list[
 
 @_tool("read", "List app methods")
 def list_app_methods(
-    app: str, search: str | None = None, limit: int = 100, offset: int = 0
+    app: str,
+    search: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+    as_config: bool = False,
 ) -> dict[str, Any]:
     """List the app checkout's whitelisted methods with their args (read-only; never imported).
 
     `search` matches part of the dotted path. Returns a page; document methods name the DocType.
+    `as_config` returns FRAPPE_MCP_METHODS entries to review and paste instead.
     """
     if not isinstance(limit, int) or not 1 <= limit <= _METHOD_PAGE_LIMIT:
         raise ValueError(f"limit must be between 1 and {_METHOD_PAGE_LIMIT}")
@@ -4580,12 +4593,625 @@ def list_app_methods(
     if search:
         needle = str(search).lower()
         rows = [row for row in rows if needle in row["method"].lower()]
+    extra: dict[str, Any] = {}
+    if as_config:
+        # Only module functions can be called by their dotted path; controller methods can't.
+        rows = [_config_suggestion(row, app_path) for row in rows if row["kind"] == "module"]
+        extra["note"] = _CONFIG_SUGGESTION_NOTE
     return {
         **_page(rows[offset : offset + limit + 1], offset, limit),
         "files_scanned": scanned,
         "files_truncated": truncated,
         "skipped": skipped[:50],
+        **extra,
     }
+
+
+# Allowlisted method calls. FRAPPE_MCP_METHODS names a JSON file listing the only methods the
+# method tools may call; without it they aren't registered. Nothing here calls a method that
+# isn't in that file.
+_METHODS_ENV = "FRAPPE_MCP_METHODS"
+_METHOD_PATH = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+")
+_METHOD_PATH_MAX = 200
+_METHOD_KINDS = ("mapper", "read", "write")
+_METHOD_ENTRY_KEYS = frozenset(
+    {"method", "kind", "description", "source_doctype", "target_doctype", "params"}
+)
+_METHOD_CONFIG_MAX_BYTES = 1_000_000
+_METHOD_CONFIG_MAX_ENTRIES = 200
+_METHOD_TEXT_MAX = 300
+_METHOD_PARAMS_MAX = 50
+_METHOD_PARAM_KEYS = frozenset({"type", "required", "enum", "description"})
+_METHOD_PARAM_TYPES: dict[str, tuple[type, ...]] = {
+    "string": (str,),
+    "integer": (int,),
+    "number": (int, float),
+    "boolean": (bool,),
+    "object": (dict,),
+    "array": (list,),
+}
+_METHOD_ARG_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")
+_METHOD_ARG_MAX_CHARS = 10_000
+# `cmd` is how Frappe's handler names the method to run; `ignore_permissions` would skip
+# Frappe's permission checks in methods that accept it.
+_FORBIDDEN_METHOD_ARGS = frozenset({"cmd", "ignore_permissions"})
+# Methods that run another method or write any record. Listing one would turn the allowlist into
+# unrestricted dispatch, so the loader refuses them; the record tools cover frappe.client.
+_DISPATCH_METHODS = frozenset(
+    {
+        "frappe.model.mapper.make_mapped_doc",
+        "frappe.model.mapper.map_docs",
+        "frappe.handler.run_doc_method",
+        "frappe.desk.form.run_method.runserverobj",
+        "frappe.model.document.execute_action",
+    }
+)
+_DISPATCH_PREFIXES = ("frappe.client.",)
+_MAKE_MAPPED_DOC = "/api/method/frappe.model.mapper.make_mapped_doc"
+_METHOD_RESULT_LIMIT = 500
+_METHOD_RESULT_TEXT = 2000
+_METHOD_RESULT_DEPTH = 8
+_METHOD_RESULT_MAX_CHARS = 100_000
+_MAPPED_CHILD_ROWS = 200
+_METHOD_TOOLS = ("list_allowed_methods", "make_mapped_document", "call_allowed_method")
+_CONFIG_SUGGESTION_NOTE = (
+    "Suggested FRAPPE_MCP_METHODS entries; kind and params are guesses from the name and "
+    "signature. Review each one (a method that changes data must be a write entry), then add "
+    "it to the file yourself; the server never writes it."
+)
+_ANNOTATION_TYPES = {
+    "str": "string",
+    "int": "integer",
+    "float": "number",
+    "bool": "boolean",
+    "dict": "object",
+    "list": "array",
+}
+_READ_NAME_PREFIXES = ("get_", "list_", "fetch_", "search_", "count_", "is_", "has_")
+
+# method -> entry: the file's keys plus `_args` (argument names from the source, or None when
+# unknown or the function takes **kwargs) and `_source` ("<app>/<path>.py:<line>" or None).
+_method_config: dict[str, dict[str, Any]] = {}
+
+
+def _param_type(annotation: str | None) -> str | None:
+    """Map a source annotation such as `str | None` or `dict[str, Any]` to a param type."""
+    if not annotation:
+        return None
+    parts = [part.strip() for part in annotation.split("|") if part.strip() != "None"]
+    if sorted(parts) == ["float", "int"]:
+        return "number"
+    if len(parts) != 1:
+        return None
+    return _ANNOTATION_TYPES.get(parts[0].split("[", 1)[0])
+
+
+def _config_suggestion(row: dict[str, Any], app_path: Path) -> dict[str, Any]:
+    """Turn a `list_app_methods` row of a module function into a config entry to review."""
+    name = row["method"].rsplit(".", 1)[-1]
+    args = [arg for arg in row["args"] if not arg["name"].startswith("*")]
+    verbs = {str(verb).upper() for verb in row["methods"]} if isinstance(
+        row["methods"], list
+    ) else set(_WHITELIST_DEFAULT_METHODS)
+    entry: dict[str, Any] = {"method": row["method"]}
+    if name.startswith("make_") and args and args[0]["name"] == "source_name":
+        entry["kind"] = "mapper"
+        source = _controller_doctype(app_path / row["file"].rsplit(":", 1)[0])
+        if source:
+            entry["source_doctype"] = source
+    else:
+        read = name.startswith(_READ_NAME_PREFIXES)
+        entry["kind"] = "read" if ("GET" in verbs and (read or "POST" not in verbs)) else "write"
+    if row["doc"]:
+        entry["description"] = row["doc"][:_METHOD_TEXT_MAX]
+    if entry["kind"] != "mapper":
+        params = {}
+        for arg in args:
+            if arg["name"] in _FORBIDDEN_METHOD_ARGS:
+                continue
+            spec: dict[str, Any] = {}
+            kind = _param_type(arg.get("annotation"))
+            if kind:
+                spec["type"] = kind
+            if "default" not in arg:
+                spec["required"] = True
+            params[arg["name"]] = spec
+        if params:
+            entry["params"] = params
+    return entry
+
+
+def _config_line(text: str, method: str, occurrence: int) -> int | None:
+    """Line of the `occurrence`-th `"method": "<method>"` in the config text, if found."""
+    pattern = re.compile(r'"method"\s*:\s*"' + re.escape(method) + '"')
+    for index, match in enumerate(pattern.finditer(text)):
+        if index == occurrence:
+            return text.count("\n", 0, match.start()) + 1
+    return None
+
+
+def _config_param(name: Any, spec: Any) -> str | None:
+    """Return the problem with one `params` entry, or None."""
+    if not isinstance(name, str) or not _METHOD_ARG_NAME.fullmatch(name):
+        return f"params name {name!r} is not a Python identifier"
+    if name in _FORBIDDEN_METHOD_ARGS:
+        return f"params may not include {name}"
+    if not isinstance(spec, dict):
+        return f"params.{name} must be an object"
+    unknown = sorted(set(spec) - _METHOD_PARAM_KEYS)
+    if unknown:
+        return f"params.{name} has unknown keys: {', '.join(unknown)}"
+    if "type" in spec and spec["type"] not in _METHOD_PARAM_TYPES:
+        return f"params.{name}.type must be one of {', '.join(_METHOD_PARAM_TYPES)}"
+    if "required" in spec and not isinstance(spec["required"], bool):
+        return f"params.{name}.required must be true or false"
+    enum = spec.get("enum")
+    if "enum" in spec and (
+        not isinstance(enum, list)
+        or not 1 <= len(enum) <= _METHOD_PARAMS_MAX
+        or any(not isinstance(item, str | int | float | bool) for item in enum)
+    ):
+        return f"params.{name}.enum must be a list of 1 to {_METHOD_PARAMS_MAX} scalar values"
+    description = spec.get("description")
+    if "description" in spec and (
+        not isinstance(description, str) or len(description) > _METHOD_TEXT_MAX
+    ):
+        return f"params.{name}.description must be text up to {_METHOD_TEXT_MAX} characters"
+    return None
+
+
+def _config_entry(item: dict[str, Any]) -> str | None:
+    """Return the problem with one config entry's keys and values (not its method), or None."""
+    unknown = sorted(set(item) - _METHOD_ENTRY_KEYS)
+    if unknown:
+        return f"unknown keys: {', '.join(unknown)}"
+    kind = item.get("kind")
+    if kind not in _METHOD_KINDS:
+        return f"kind must be one of {', '.join(_METHOD_KINDS)}"
+    description = item.get("description")
+    if "description" in item and (
+        not isinstance(description, str) or len(description) > _METHOD_TEXT_MAX
+    ):
+        return f"description must be text up to {_METHOD_TEXT_MAX} characters"
+    for key in ("source_doctype", "target_doctype"):
+        if key not in item:
+            continue
+        if not isinstance(item[key], str) or not _SAFE_NAME.fullmatch(item[key]):
+            return f"{key} must be a DocType name"
+        if kind == "write" or (kind == "read" and key == "source_doctype"):
+            return f"{key} does not apply to a {kind} entry"
+    if "params" in item:
+        params = item["params"]
+        if kind == "mapper":
+            return "a mapper takes only source_name; remove params"
+        if not isinstance(params, dict) or len(params) > _METHOD_PARAMS_MAX:
+            return f"params must be an object with at most {_METHOD_PARAMS_MAX} arguments"
+        for name, spec in params.items():
+            problem = _config_param(name, spec)
+            if problem:
+                return problem
+    return None
+
+
+def _method_source(method: str) -> dict[str, Any] | None:
+    """Find `method` in the app checkout as a whitelisted module function.
+
+    Returns its `list_app_methods` row, `{}` when the checkout doesn't define it that way, or
+    None when there is no checkout of the method's app to check against.
+    """
+    parts = method.split(".")
+    if not os.environ.get("FRAPPE_APPS_PATH"):
+        return None
+    try:
+        app_path, package_path = _app_root(parts[0])
+    except (RuntimeError, ValueError, OSError):
+        return None
+    modules = parts[1:-1]
+    candidates = (
+        [(*modules[:-1], f"{modules[-1]}.py"), (*modules, "__init__.py")]
+        if modules
+        else [("__init__.py",)]
+    )
+    for candidate in candidates:
+        try:
+            path = _app_file(package_path, *candidate)
+        except (ValueError, OSError):
+            return {}
+        if path is None:
+            continue
+        try:
+            tree = ast.parse(path.read_bytes())
+        except (SyntaxError, ValueError, RecursionError, MemoryError):
+            return {}
+        file = path.relative_to(app_path).as_posix()
+        dotted = ".".join(parts[:-1])
+        for row in _file_methods(tree, dotted, path, file):
+            if row["method"] == method and row["kind"] == "module":
+                return row
+        return {}
+    return {}
+
+
+def _source_problem(entry: dict[str, Any], row: dict[str, Any]) -> str | None:
+    """Compare an entry with its whitelisted function in the source; record its arguments."""
+    methods = row["methods"]
+    verbs = {str(verb).upper() for verb in methods} if isinstance(methods, list) else set()
+    needed = {"read": "GET", "write": "POST"}.get(entry["kind"])
+    if needed and verbs and needed not in verbs:
+        return (
+            f"{row['file']} whitelists it for {', '.join(sorted(verbs))} only; a "
+            f"{entry['kind']} entry calls it with {needed}"
+        )
+    names = [arg["name"] for arg in row["args"]]
+    plain = [name for name in names if not name.startswith("*")]
+    if entry["kind"] == "mapper" and not plain:
+        return f"{row['file']} takes no argument; a mapper is called with source_name"
+    takes_kwargs = any(name.startswith("**") for name in names)
+    for param in entry.get("params") or {}:
+        if param not in plain and not takes_kwargs:
+            return f"{row['file']} has no argument {param}"
+    entry["_args"] = None if takes_kwargs else set(plain)
+    entry["_source"] = row["file"]
+    return None
+
+
+def _load_method_config(value: str) -> tuple[dict[str, dict[str, Any]], list[str]]:
+    """Read and check the FRAPPE_MCP_METHODS file; return (entries by method, warnings).
+
+    Raises RuntimeError naming the file and line of every problem found.
+    """
+    path = Path(value).expanduser()
+    label = path.name or value
+    try:
+        if path.stat().st_size > _METHOD_CONFIG_MAX_BYTES:
+            raise RuntimeError(f"{label} is larger than {_METHOD_CONFIG_MAX_BYTES} bytes")
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        raise RuntimeError(
+            f"{_METHODS_ENV}: cannot read {label} ({type(error).__name__})"
+        ) from None
+    try:
+        items = json.loads(text)
+    except ValueError as error:
+        line = f" line {error.lineno}" if isinstance(error, json.JSONDecodeError) else ""
+        raise RuntimeError(f"{label}{line}: invalid JSON") from None
+    if not isinstance(items, list) or not 1 <= len(items) <= _METHOD_CONFIG_MAX_ENTRIES:
+        raise RuntimeError(
+            f"{label}: the file must hold a JSON list of 1 to {_METHOD_CONFIG_MAX_ENTRIES} "
+            "entries"
+        )
+    entries: dict[str, dict[str, Any]] = {}
+    problems: list[str] = []
+    seen: dict[str, int] = {}
+    unchecked: dict[str, int] = {}
+    for index, item in enumerate(items, 1):
+        method = item.get("method") if isinstance(item, dict) else None
+        if not isinstance(method, str):
+            problems.append(f"{label} entry {index}: needs a method")
+            continue
+        occurrence = seen.get(method, 0)
+        seen[method] = occurrence + 1
+        line = _config_line(text, method, occurrence)
+        where = f"{label} line {line}" if line else f"{label} entry {index}"
+        if "*" in method:
+            problems.append(f"{where}: {method}: wildcards are not allowed; list each method")
+            continue
+        if len(method) > _METHOD_PATH_MAX or not _METHOD_PATH.fullmatch(method):
+            problems.append(f"{where}: {method!r} is not a dotted Python path")
+            continue
+        if method in _DISPATCH_METHODS or method.startswith(_DISPATCH_PREFIXES):
+            problems.append(
+                f"{where}: {method} runs other methods or writes any record; it can't be "
+                "allowlisted (use the record tools)"
+            )
+            continue
+        if occurrence:
+            problems.append(f"{where}: {method} is listed twice")
+            continue
+        problem = _config_entry(item)
+        if problem:
+            problems.append(f"{where}: {method}: {problem}")
+            continue
+        entry = {key: copy.deepcopy(item[key]) for key in _METHOD_ENTRY_KEYS if key in item}
+        entry.update({"_args": None, "_source": None})
+        row = _method_source(method)
+        if row is None:
+            app = method.split(".", 1)[0]
+            unchecked[app] = unchecked.get(app, 0) + 1
+        elif not row:
+            problems.append(
+                f"{where}: {method} is not a whitelisted module function in the "
+                f"{method.split('.', 1)[0]} checkout"
+            )
+            continue
+        else:
+            problem = _source_problem(entry, row)
+            if problem:
+                problems.append(f"{where}: {method}: {problem}")
+                continue
+        entries[method] = entry
+    if problems:
+        shown = problems[:20]
+        if len(problems) > len(shown):
+            shown.append(f"... and {len(problems) - len(shown)} more")
+        raise RuntimeError(f"{_METHODS_ENV} has problems:\n" + "\n".join(shown))
+    apps_path_set = bool(os.environ.get("FRAPPE_APPS_PATH"))
+    warnings = [
+        f"{label}: {count} {app} entr{'y' if count == 1 else 'ies'} not checked against the "
+        "app source ("
+        + (f"no {app} checkout under FRAPPE_APPS_PATH" if apps_path_set else
+           "FRAPPE_APPS_PATH is not set")
+        + ")"
+        for app, count in sorted(unchecked.items())
+    ]
+    return entries, warnings
+
+
+def _register_method_tools() -> None:
+    """Register the method tools in the data toolset (once)."""
+    if _METHOD_TOOLS[0] in server._tool_manager._tools:
+        return
+    _tool("data", "List allowed methods", read_only=True)(list_allowed_methods)
+    _tool("data", "Make mapped document", read_only=True)(make_mapped_document)
+    _tool("data", "Call allowed method", destructive=True)(call_allowed_method)
+
+
+def _unregister_method_tools() -> None:
+    for name in _METHOD_TOOLS:
+        if name in server._tool_manager._tools:
+            server.remove_tool(name)
+        _TOOLSETS["data"].discard(name)
+
+
+def _method_settings() -> list[str]:
+    """Load FRAPPE_MCP_METHODS when set and register the method tools; return warnings."""
+    _method_config.clear()
+    value = (os.environ.get(_METHODS_ENV) or "").strip()
+    if not value:
+        return []
+    entries, warnings = _load_method_config(value)
+    _method_config.update(entries)
+    _register_method_tools()
+    return warnings
+
+
+def _allowed_entry(method: Any, kinds: tuple[str, ...], tool: str) -> dict[str, Any]:
+    """Return the config entry for `method`, refusing unlisted methods and other kinds."""
+    entry = _method_config.get(method) if isinstance(method, str) else None
+    if entry is None:
+        raise ValueError(
+            f"{method!r} is not in the FRAPPE_MCP_METHODS allowlist; list_allowed_methods shows "
+            "what can be called"
+        )
+    if entry["kind"] not in kinds:
+        other = "make_mapped_document" if entry["kind"] == "mapper" else "call_allowed_method"
+        raise ValueError(f"{method} is a {entry['kind']} entry; call it with {other}, not {tool}")
+    return entry
+
+
+def _method_call_args(entry: dict[str, Any], args: Any) -> dict[str, Any]:
+    """Check `args` against the entry's params (or, without params, allow scalars only)."""
+    method = entry["method"]
+    if args is None:
+        args = {}
+    if not isinstance(args, dict):
+        raise ValueError("args must be an object of argument names and values")
+    params = entry.get("params")
+    known = entry.get("_args")
+    checked: dict[str, Any] = {}
+    for name, value in args.items():
+        if not isinstance(name, str) or not _METHOD_ARG_NAME.fullmatch(name):
+            raise ValueError(f"Invalid argument name: {name!r}")
+        if name in _FORBIDDEN_METHOD_ARGS:
+            raise ValueError(f"The argument {name} is never sent")
+        if value is None:
+            continue
+        if params is not None:
+            spec = params.get(name)
+            if spec is None:
+                allowed = ", ".join(params) or "none"
+                raise ValueError(f"{method} takes no argument {name}; allowed: {allowed}")
+            kind = spec.get("type")
+            if kind is None and not isinstance(value, str | int | float | bool):
+                raise ValueError(f"{name} must be a scalar value")
+            if kind is not None and (
+                not isinstance(value, _METHOD_PARAM_TYPES[kind])
+                or (kind in ("integer", "number") and isinstance(value, bool))
+            ):
+                raise ValueError(f"{name} must be of type {kind}")
+            if "enum" in spec and value not in spec["enum"]:
+                raise ValueError(f"{name} must be one of {spec['enum']}")
+        else:
+            if known is not None and name not in known:
+                raise ValueError(f"{method} takes no argument {name}")
+            if not isinstance(value, str | int | float | bool):
+                raise ValueError(
+                    f"{name} must be a scalar value; add params to the {method} entry to allow "
+                    "objects or arrays"
+                )
+        if len(json.dumps(value, default=str)) > _METHOD_ARG_MAX_CHARS:
+            raise ValueError(f"{name} is longer than {_METHOD_ARG_MAX_CHARS} characters")
+        checked[name] = value
+    missing = [
+        name
+        for name, spec in (params or {}).items()
+        if spec.get("required") and name not in checked
+    ]
+    if missing:
+        raise ValueError(f"{method} needs {', '.join(missing)}")
+    return checked
+
+
+def _capped(value: Any, limit: int, state: dict[str, bool], depth: int = 0) -> Any:
+    """Cap nested lists and objects at `limit` items and strings at a fixed length."""
+    if isinstance(value, list | dict):
+        if depth >= _METHOD_RESULT_DEPTH:
+            state["truncated"] = True
+            return "..."
+        items = list(value.items() if isinstance(value, dict) else value)
+        if len(items) > limit:
+            state["truncated"] = True
+            items = items[:limit]
+        if isinstance(value, dict):
+            return {key: _capped(item, limit, state, depth + 1) for key, item in items}
+        return [_capped(item, limit, state, depth + 1) for item in items]
+    if isinstance(value, str) and len(value) > _METHOD_RESULT_TEXT:
+        state["truncated"] = True
+        return value[:_METHOD_RESULT_TEXT] + "..."
+    return value
+
+
+def _bounded_result(value: Any, limit: int, offset: int) -> dict[str, Any]:
+    """Page a list result like run_report; cap anything else. `truncated` says if cut."""
+    state = {"truncated": False}
+    out: dict[str, Any] = {}
+    if isinstance(value, list):
+        page = value[offset : offset + limit]
+        out["result"] = [_capped(item, limit, state, 1) for item in page]
+        out.update(
+            {
+                "total_rows": len(value),
+                "offset": offset,
+                "limit": limit,
+                "returned_rows": len(page),
+                "has_more": len(value) > offset + limit,
+            }
+        )
+    else:
+        out["result"] = _capped(value, limit, state)
+    text = json.dumps(out["result"], default=str)
+    if len(text) > _METHOD_RESULT_MAX_CHARS:
+        state["truncated"] = True
+        out["result"] = None
+        out["result_text"] = text[:_METHOD_RESULT_MAX_CHARS]
+    out["truncated"] = state["truncated"]
+    return out
+
+
+def _draft_row(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in row.items()
+        if not key.startswith("__") and key not in _RESERVED_FIELDS and not _is_empty(value)
+    }
+
+
+def _mapped_draft(doc: Any, method: str, expected: str | None) -> dict[str, Any]:
+    """Shape an unsaved document as `create_document` input.
+
+    `values` holds the fields create_document accepts (child rows whole, minus local names);
+    read-only fields, which Frappe computes again on save, go to `read_only`.
+    """
+    target = doc.get("doctype") if isinstance(doc, dict) else None
+    if not isinstance(target, str) or not _SAFE_NAME.fullmatch(target):
+        raise RuntimeError(f"{method} did not return a document")
+    if expected and target != expected:
+        raise RuntimeError(f"{method} returned a {target}, not the listed {expected}")
+    fields = _schema_fields(_meta_bundle(target)["doctype"])
+    values: dict[str, Any] = {}
+    read_only: dict[str, Any] = {}
+    truncated = []
+    for key, value in doc.items():
+        row = fields.get(key)
+        if row is None or key in _RESERVED_FIELDS or _is_empty(value):
+            continue
+        if row.get("fieldtype") in _TABLE_FIELDTYPES and isinstance(value, list):
+            if len(value) > _MAPPED_CHILD_ROWS:
+                truncated.append(key)
+                value = value[:_MAPPED_CHILD_ROWS]
+            value = [_draft_row(item) for item in value if isinstance(item, dict)]
+        (read_only if row.get("read_only") else values)[key] = value
+    state = {"truncated": False}
+    result: dict[str, Any] = {
+        "doctype": target,
+        "values": values,
+        "read_only": _capped(read_only, _MAPPED_CHILD_ROWS, state),
+    }
+    if truncated:
+        result["_truncated_child_tables"] = sorted(truncated)
+        result["note"] = (
+            f"Child tables over {_MAPPED_CHILD_ROWS} rows were cut; this draft can't be "
+            "created as it is"
+        )
+    return result
+
+
+def list_allowed_methods() -> dict[str, Any]:
+    """List the methods FRAPPE_MCP_METHODS allows: kind (mapper, read, write), description, params.
+
+    No other method can be called.
+    """
+    rows = []
+    for method in sorted(_method_config):
+        entry = _method_config[method]
+        row = {key: entry[key] for key in sorted(_METHOD_ENTRY_KEYS) if key in entry}
+        row["checked_against_source"] = entry.get("_source") is not None
+        rows.append(row)
+    return {"methods": rows, "count": len(rows)}
+
+
+def make_mapped_document(method: str, source_name: str) -> dict[str, Any]:
+    """Map a record into a new unsaved draft through an allowlisted mapper (nothing is saved).
+
+    Returns `doctype` and `values` for create_document; `read_only` holds fields Frappe
+    computes again on save.
+    """
+    entry = _allowed_entry(method, ("mapper",), "make_mapped_document")
+    if not isinstance(source_name, str) or not source_name.strip() or len(source_name) > 140:
+        raise ValueError("source_name must be the name of the source record")
+    # GET: Frappe rolls back anything a GET request writes, so the mapper only builds a draft.
+    doc = _request(
+        "GET", _MAKE_MAPPED_DOC, params={"method": method, "source_name": source_name}
+    )
+    return {
+        "method": method,
+        "source_doctype": entry.get("source_doctype"),
+        "source_name": source_name,
+        **_mapped_draft(doc, method, entry.get("target_doctype")),
+    }
+
+
+def call_allowed_method(
+    method: str,
+    args: dict[str, Any] | None = None,
+    limit: int = 100,
+    offset: int = 0,
+    confirm: Confirm = False,
+) -> dict[str, Any]:
+    """Call an allowlisted read or write method; `args` must fit its params.
+
+    read runs at once (GET); write returns a preview until confirm. A list result is paged
+    (`limit`, `offset`, `has_more`); long results are cut (`truncated`).
+    """
+    entry = _allowed_entry(method, ("read", "write"), "call_allowed_method")
+    if not isinstance(limit, int) or not 1 <= limit <= _METHOD_RESULT_LIMIT:
+        raise ValueError(f"limit must be between 1 and {_METHOD_RESULT_LIMIT}")
+    _assert_offset(offset)
+    checked = _method_call_args(entry, args)
+    path = f"/api/method/{method}"
+    if entry["kind"] == "write":
+        if not confirm:
+            return {
+                "preview": True,
+                "action": "call_allowed_method",
+                "method": method,
+                "kind": "write",
+                "description": entry.get("description"),
+                "args": checked,
+                "requires_confirmation": True,
+            }
+        value = _request("POST", path, json=checked)
+    else:
+        # GET carries strings; objects and arrays go as JSON, which Frappe parses back.
+        params = {
+            name: json.dumps(value) if isinstance(value, dict | list) else value
+            for name, value in checked.items()
+        }
+        value = _request("GET", path, params=params)
+    target = entry.get("target_doctype")
+    if target and isinstance(value, dict) and value.get("doctype") == target:
+        return {"method": method, "kind": entry["kind"], **_mapped_draft(value, method, target)}
+    return {"method": method, "kind": entry["kind"], **_bounded_result(value, limit, offset)}
 
 
 def _promoted(doc: Any, module: str, expected_modified: str) -> bool:
@@ -7211,6 +7837,17 @@ def _setup_check() -> list[tuple[str, str, str]]:
     versions = ", ".join(f"{app['app']} {app['version']}" for app in info["apps"])
     rows.append(("ok", "versions", versions or "the site reported no app versions"))
     rows.append(("info", "developer mode", "not reported: Frappe has no API for it"))
+    if (os.environ.get(_METHODS_ENV) or "").strip():
+        try:
+            method_warnings = _method_settings()
+        except RuntimeError as error:
+            rows.append(("FAIL", "methods", str(error)))
+        else:
+            detail = f"{len(_method_config)} allowlisted"
+            if "data" not in toolsets:
+                detail += "; the method tools are off with the data toolset"
+            rows.append(("ok", "methods", detail))
+            rows.extend(("warn", "methods", warning) for warning in method_warnings)
     selected = ", ".join(name for name in _TOOLSETS if name in toolsets)
     reason = _read_only_reason()
     if reason == "remote target":
@@ -7273,9 +7910,16 @@ def main(argv: list[str] | None = None) -> None:
     if args.command == "check":
         raise SystemExit(_run_setup_check())
     try:
-        _apply_toolsets(_startup_settings())
+        selected = _startup_settings()
+        method_warnings = _method_settings()
+        _apply_toolsets(selected)
     except RuntimeError as error:
         raise SystemExit(str(error)) from None
+    for warning in method_warnings:
+        _log.warning(warning)
+    if _method_config and "data" not in selected:
+        _log.warning("FRAPPE_MCP_METHODS is set, but the method tools are in the data toolset, "
+                     "which is off")
     if _insecure_http_allowed():
         _log.warning(_INSECURE_HTTP_WARNING)
     notice = _remote_mode_notice()

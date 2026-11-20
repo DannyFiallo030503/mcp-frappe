@@ -12,15 +12,14 @@ Frappe MCP is a standalone stdio server for Frappe developers. This page lists w
 6. **Site and app sync**: `diff_doctype` and `list_app_drift` verdicts based on `modified` and `migration_hash`, and native `custom/` exports with Client Script and Workflow fixtures, backups, and guarded rollback.
 7. **Configuration records**: Workflows, Email and System Notifications, Report Builder reports, and public Workspaces, with code fields refused.
 8. **Reports**: list reports, read their filters, and run Query and Script Reports with paging.
-9. **Agent ergonomics**: readable Frappe errors with hints, a clear error naming the site when it can't be reached, MCP instructions and annotations, toolsets with a read-only mode (the default for remote targets), and an optional site label.
-10. **Validation**: unit tests against a fake site built from Frappe's source, an in-memory MCP contract test, and opt-in live runners, including the end-to-end developer flow. Every runner has passed on Frappe 15.126 and 16.55 development sites with ERPNext, and the read tools were checked as a Sales User ([matrix](docs/compatibility-and-validation.md#matrix)).
+9. **Developer diagnostics and app methods**: pending patches, recent errors, and the app's whitelisted methods read from source; calls to app methods only from the user's `FRAPPE_MCP_METHODS` allowlist (mapped drafts such as Sales Order to Sales Invoice, previewed writes, bounded reads), with entries checked against the app source at startup.
+10. **Agent ergonomics**: readable Frappe errors with hints, a clear error naming the site when it can't be reached, MCP instructions and annotations, toolsets with a read-only mode (the default for remote targets), and an optional site label.
+11. **Validation**: unit tests against a fake site built from Frappe's source, an in-memory MCP contract test, and opt-in live runners, including the end-to-end developer flow. Every runner has passed on Frappe 15.126 and 16.55 development sites with ERPNext, and the read tools were checked as a Sales User ([matrix](docs/compatibility-and-validation.md#matrix)).
 
 ## Next
 
 - **Close the remaining validation gaps**: `set_role_permissions` on a live site, `bench migrate` re-importing an exported Custom Field, and record writes as a user without System Manager ([list](docs/compatibility-and-validation.md#not-yet-checked-on-a-site)).
-- **Stages 15–21** ([work plan](docs/work-plan/README.md#stages)), which focus on the development loop that the native Frappe MCP doesn't cover ([comparison](docs/work-plan/native-mcp-comparison.md)):
-  - pending patches, recent errors, and the app's whitelisted methods from source;
-  - allowlisted method calls;
+- **Stages 18–21** ([work plan](docs/work-plan/README.md#stages)), which focus on the development loop that the native Frappe MCP doesn't cover ([comparison](docs/work-plan/native-mcp-comparison.md)):
   - opt-in Bench commands (migrate, reload-doc, export-fixtures, tests);
   - full Customize Form saves and renames;
   - batch inserts and undo;
@@ -39,7 +38,7 @@ Detailed plans for the first two are in [docs/work-plan/backlog](docs/work-plan/
 
 ## Security boundaries
 
-- No arbitrary SQL, Python, or unrestricted method dispatch.
+- No arbitrary SQL, Python, or unrestricted method dispatch: app methods only from the user's own allowlist.
 - Preserve the connected user's Frappe permissions.
 - Preview and explicitly confirm mutations; bind changes to existing records to fresh state.
 - Keep filesystem writes inside the configured app, with backups and rollback.

@@ -78,6 +78,26 @@ Use this to check a submittable DocType's controller (`validate`, `on_submit`, `
 6. Preview the cancel: `cancel_document(doctype="Lab Test", name="LT-0001")`, then confirm with its `modified`. Frappe refuses if submitted documents link to this one; cancel those first.
 7. A cancelled document stays (docstatus 2). Delete the test records with `delete_document` when the user is done.
 
+### Quotation to Sales Invoice
+
+The document chain needs ERPNext's mapper methods. They are available only when the user lists them in the `FRAPPE_MCP_METHODS` file (the [ERPNext example](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/examples/erpnext-methods.json) has the common ones); `list_allowed_methods` shows what is listed. If a step's method isn't there, tell the user which entry to add; don't look for another way to call it.
+
+1. The Quotation must be submitted. Map it: `make_mapped_document(method="erpnext.selling.doctype.quotation.quotation.make_sales_order", source_name="SAL-QTN-2026-00001")`. Nothing is saved yet. Mapping a Quotation for a Lead doesn't keep the Customer it would create: create the Customer first.
+2. Read `values` and `read_only` to the user, fill what the draft lacks (a Sales Order needs `delivery_date`), then `create_document(doctype=draft["doctype"], values=draft["values"])`: preview, then confirm. Pass only `values`; `read_only` fields are recomputed on save.
+3. `submit_document(doctype="Sales Order", name=...)`: preview, then confirm with `expected_modified`.
+4. Repeat from the Sales Order: `...sales_order.make_delivery_note` and `...sales_order.make_sales_invoice` (or `...delivery_note.make_sales_invoice` from the Delivery Note), then create and submit each draft.
+5. Payment: `call_allowed_method(method="erpnext.accounts.doctype.payment_entry.payment_entry.get_payment_entry", args={"dt": "Sales Invoice", "dn": "ACC-SINV-2026-00001"})` returns a Payment Entry draft in the same shape; create and submit it the same way.
+
+If `_truncated_child_tables` is present, the draft has more rows than the server returns: don't create it; tell the user.
+
+### Call my app's method
+
+To see what one of the app's whitelisted methods returns on the live site:
+
+1. `list_allowed_methods()`. If the method isn't listed, `list_app_methods(app="my_app", search="get_price", as_config=True)` suggests an entry. Show it to the user, check the suggested `kind` (anything that changes data must be `write`), and ask them to add it to the file and restart the server. You can't add it yourself.
+2. A `read` entry: `call_allowed_method(method="my_app.api.get_price", args={"item": "ITEM-1"})` runs at once. A list result is paged: follow `has_more` with `offset`; `truncated` means values were cut.
+3. A `write` entry: the first call returns a preview of the method and arguments. Show it, and call again with `confirm=True` only after the user agrees.
+
 ## Change a DocType
 
 Pick the tool by who owns the DocType. Read its `module` from `get_doctype_schema`, and its app from `list_installed_apps`:
@@ -128,7 +148,7 @@ After the user migrates, restarts, or tries the change, check three things befor
 
 ### Which methods does my app expose
 
-`list_app_methods(app="my_app", search="api")` lists the whitelisted functions in the checkout with their arguments, defaults, annotations, allowed HTTP methods, and `file:line`, without importing the app. A `document` row is a method on a DocType controller; it runs through `run_doc_method` on a saved record, not as `/api/method/<path>`. The checkout can be ahead of the running site until the Bench restarts. This server doesn't call the methods.
+`list_app_methods(app="my_app", search="api")` lists the whitelisted functions in the checkout with their arguments, defaults, annotations, allowed HTTP methods, and `file:line`, without importing the app. A `document` row is a method on a DocType controller; it runs through `run_doc_method` on a saved record, not as `/api/method/<path>`. The checkout can be ahead of the running site until the Bench restarts. To call one, it must be in the `FRAPPE_MCP_METHODS` allowlist; see [Call my app's method](#call-my-apps-method).
 
 ### Ship a prototype DocType with my app
 
