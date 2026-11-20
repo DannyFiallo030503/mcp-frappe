@@ -1,0 +1,51 @@
+name: Publish to MCP registry
+
+# Publishes server.json to the MCP registry (https://registry.modelcontextprotocol.io).
+#
+# Run it by hand (Actions -> Publish to MCP registry -> Run workflow) after the version in
+# server.json is on PyPI: the registry checks that the PyPI package exists and that its
+# description (the README) carries the `mcp-name` marker for `name`.
+#
+# GitHub Actions OIDC proves the run belongs to this repository, which grants the
+# io.github.<repository owner>/* namespace. So anyone who can run workflows here can publish
+# io.github.DannyFiallo030503/mcp-frappe without the owner's own GitHub login. A registry
+# entry only describes the package; it publishes no code.
+#
+# mcp-publisher is pinned to a release and its SHA-256 (from the release's asset digest);
+# bump both together, deliberately.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      MCP_PUBLISHER_VERSION: v1.8.9
+      MCP_PUBLISHER_SHA256: 4d527ca8f1ced0394c962dc925c2a4a4addef441cbefd62501c875e9481823a8
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: The server.json version is on PyPI
+        shell: bash
+        run: |
+          version=$(jq -r .version server.json)
+          if ! curl -sSf -o /dev/null "https://pypi.org/pypi/mcp-frappe/${version}/json"; then
+            echo "mcp-frappe ${version} is not on PyPI yet; publish it first"; exit 1
+          fi
+      - name: Install mcp-publisher
+        shell: bash
+        run: |
+          curl -sSfL -o mcp-publisher.tar.gz \
+            "https://github.com/modelcontextprotocol/registry/releases/download/${MCP_PUBLISHER_VERSION}/mcp-publisher_linux_amd64.tar.gz"
+          echo "${MCP_PUBLISHER_SHA256}  mcp-publisher.tar.gz" | sha256sum -c -
+          tar xzf mcp-publisher.tar.gz mcp-publisher
+      - run: ./mcp-publisher login github-oidc
+      - run: ./mcp-publisher publish

@@ -4,7 +4,7 @@ Frappe MCP is a standalone stdio server for Frappe developers. This page lists w
 
 ## Implemented
 
-1. **Host integration and setup**: `uvx mcp-frappe`, the `mcp-frappe check` setup check, API-key or password login with session renewal, `FRAPPE_SITE` Host routing to select one site on a multi-site Bench per process, and a PyPI release workflow.
+1. **Host integration and setup**: `uvx mcp-frappe`, the `mcp-frappe check` setup check, API-key or password login with session renewal, `FRAPPE_SITE` Host routing to select one site on a multi-site Bench per process, PyPI releases (the first was 0.3.0), and a manual workflow that lists each release in the MCP registry.
 2. **Discovery and reads**: site info, apps and modules, paged DocType lists, compact or full schemas from Frappe's form metadata (Custom Fields and Property Setters merged, cached), paged record lists with sorting and OR filters, counts, Link-style search, and bounded document reads.
 3. **Records**: create, update, and delete with previews and `modified`-bound confirmation; submit and cancel for testing a submittable DocType. The record tools refuse schema, configuration, and code records, and `Code` fields, and name the tool to use instead.
 4. **DocTypes**: create standard and site-custom DocTypes (every variant and field type), edit them with add, change, move, and remove operations, delete DocTypes created by mistake, and promote a site-custom DocType into an app.
@@ -17,10 +17,8 @@ Frappe MCP is a standalone stdio server for Frappe developers. This page lists w
 
 ## Next
 
-- **First PyPI release** of 0.3.0 through the manual release workflow.
 - **Close the remaining validation gaps**: `set_role_permissions` on a live site, `bench migrate` re-importing an exported Custom Field, and record writes as a user without System Manager ([list](docs/compatibility-and-validation.md#not-yet-checked-on-a-site)).
 - **Stages 15–21** ([work plan](docs/work-plan/README.md#stages)), which focus on the development loop that the native Frappe MCP doesn't cover ([comparison](docs/work-plan/native-mcp-comparison.md)):
-  - a smaller tool list, and docs for running next to the native server;
   - pending patches, recent errors, and the app's whitelisted methods from source;
   - allowlisted method calls;
   - opt-in Bench commands (migrate, reload-doc, export-fixtures, tests);

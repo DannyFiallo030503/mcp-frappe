@@ -22,7 +22,11 @@ pytestmark = pytest.mark.skipif(not (ROOT / "docs").is_dir(), reason="docs/ not 
 
 
 def _documents() -> list[Path]:
-    skipped = {"legacy", ".venv", ".worktrees", "node_modules", "dist", ".git"}
+    # Tool caches (.pytest_cache has a README.md) appear only after a first run.
+    skipped = {
+        "legacy", ".venv", ".worktrees", "node_modules", "dist", ".git",
+        ".pytest_cache", ".ruff_cache", ".mypy_cache",
+    }
     files = [path for path in [ROOT / "llms.txt"] if path.is_file()]
     files += [
         path

@@ -17,7 +17,7 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
-## [0.3.0] - 2026-11-19
+## [0.3.0] - 2026-11-20
 
 This release refocuses the server on Frappe developers working against a development site:
 editing DocTypes, customizing standard DocTypes, keeping the site and the app files in sync,

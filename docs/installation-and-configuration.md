@@ -26,7 +26,7 @@ Run the published package with [`uvx`](https://docs.astral.sh/uv/guides/tools/);
 uvx mcp-frappe --version
 ```
 
-Until the first PyPI release is out, use `uvx --from git+https://github.com/DannyFiallo030503/mcp-frappe mcp-frappe`. `pipx run mcp-frappe` and `pip install mcp-frappe` also work. Pin a version with `uvx mcp-frappe@0.3.0`; [CHANGELOG.md](../CHANGELOG.md) lists what each release changes, breaking changes first.
+`pipx run mcp-frappe` and `pip install mcp-frappe` also work. Pin a version with `uvx mcp-frappe@0.3.0`; [CHANGELOG.md](../CHANGELOG.md) lists what each release changes, breaking changes first.
 
 For development, use a checkout:
 
