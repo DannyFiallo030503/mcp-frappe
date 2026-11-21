@@ -1,6 +1,6 @@
 ---
 name: commit-and-pr
-description: Commit finished work and open a pull request through the GitHub MCP server. Use when the user asks to "commit", "commit and PR", "push this", "open a PR", "ship it", or "make a PR for this", or approves work that they now want landed. Do not commit on your own just because an edit is done — the work plan says commit, push, and PR only on request. The `gh` CLI is NOT installed on this machine, so any plan that runs `gh` will fail; PRs are created with the GitHub MCP tools instead.
+description: Commit finished work and open a pull request through the GitHub MCP server. Use when the user asks to "commit", "commit and PR", "push this", "open a PR", "ship it", or "make a PR for this", or approves work that they now want landed. Do not commit on your own just because an edit is done — the work plan says commit, push, and PR only on request. PRs are created with the GitHub MCP tools; the `gh` CLI is installed too, but it can lose its connection inside Claude Code's sandbox, so it is the fallback, not the plan.
 ---
 
 # Committing and opening a pull request
@@ -8,9 +8,14 @@ description: Commit finished work and open a pull request through the GitHub MCP
 A change lands well when someone else can read the branch, understand from the commit *why*
 it happened, and review the PR without re-deriving the context you already have.
 
-`gh` is not installed here. Reach for `mcp__github__*` tools for anything that touches
-github.com, and plain `git` for anything local (`status`, `diff`, `commit`, `push` — push over
-SSH works fine).
+Reach for `mcp__github__*` tools for anything that touches github.com, and plain `git` for
+anything local (`status`, `diff`, `commit`, `push` — push over SSH works fine).
+
+`gh` is installed and logged in (`gh auth status`), and it is handy for reading CI
+(`gh pr checks`, `gh run view --log-failed`). Inside Claude Code's sandbox it can fail with
+"error connecting to api.github.com"; then use the MCP tools, or `curl` the public REST API (the
+repository is public). Never run `gh workflow run`: the Release and MCP-registry workflows
+publish permanently, so the user runs them (`! gh workflow run release.yml --ref v<version>`).
 
 ## 1. Look before you commit
 
