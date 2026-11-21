@@ -160,7 +160,7 @@ git push origin HEAD:main          # plain fast-forward; if rejected, fetch + re
 Then go to step 9.
 
 **PR (either kind):** rebase onto `origin/main` the same way, `git push -u origin <branch>`, then
-the `commit-and-pr` skill's steps 5–6 (GitHub MCP — `gh` is not installed). **Merge when green**
+the `commit-and-pr` skill's steps 5–6 (GitHub MCP; `gh` only as a fallback). **Merge when green**
 → step 8. **Leave it open** → report the URL and stop; step 9 happens when the user comes back
 and says it merged (or asks you to watch it — then step 8).
 
@@ -172,10 +172,11 @@ branch has no `.github/workflows/`, there is no CI:** the step-3 run is the only
 and merge only if the user confirms it.
 
 Read check runs with `mcp__github__pull_request_read` (`method: "get_check_runs"`, owner
-`DannyFiallo030503`, repo `mcp-frappe`). Their logs are not reachable from here (no Actions MCP
-tool, no `gh`). The Monitor tool cannot call MCP tools, so pace the polls with a timer: Bash
-`sleep 180` with `run_in_background` after a push, then `sleep 90` between checks. You are
-re-invoked when it exits; never poll in a tight loop.
+`DannyFiallo030503`, repo `mcp-frappe`). For a failed job's log, try
+`gh run view <run-id> --log-failed`; when `gh` can't reach api.github.com from the sandbox, the
+log isn't reachable, so reproduce the failure locally. The Monitor tool cannot call MCP tools,
+so pace the polls with a timer: Bash `sleep 180` with `run_in_background` after a push, then
+`sleep 90` between checks. You are re-invoked when it exits; never poll in a tight loop.
 
 Each poll, read `method: "get"` and `get_check_runs` and compare:
 
