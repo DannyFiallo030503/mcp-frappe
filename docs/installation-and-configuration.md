@@ -121,9 +121,36 @@ Inside Claude Code, the same is `/plugin marketplace add DannyFiallo030503/mcp-f
 
 An option left empty is passed as an empty value, which the server treats as unset. The plugin supports API-key login only; for a password login or any other variable from the [Environment](#environment) table, add the server with `claude mcp add` instead and disable the plugin's server in `/mcp`, keeping the skill. Remove the plugin with `claude plugin uninstall frappe-dev@mcp-frappe`. The plugin's files are in [plugins/frappe-dev](../plugins/frappe-dev/README.md).
 
+## Codex
+
+Codex installs the repository's `frappe-development` skill through its plugin marketplace and runs the MCP server as a local stdio process. Install the marketplace from the repository root:
+
+```bash
+codex plugin marketplace add DannyFiallo030503/mcp-frappe --sparse .agents/plugins --sparse plugins/frappe-dev
+```
+
+Then open Codex, run `/plugins`, find **Frappe development**, and install it. Start a new Codex conversation after installation.
+
+From the CLI, the same install is `codex plugin add frappe-dev@mcp-frappe`.
+
+Register the server in `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.frappe-dev]
+command = "uvx"
+args = ["mcp-frappe"]
+env_vars = ["FRAPPE_URL", "FRAPPE_SITE", "FRAPPE_SITE_LABEL", "FRAPPE_API_KEY", "FRAPPE_API_SECRET", "FRAPPE_USERNAME", "FRAPPE_PASSWORD", "FRAPPE_APPS_PATH", "FRAPPE_TIMEOUT", "FRAPPE_META_TTL", "FRAPPE_ALLOW_INSECURE_HTTP", "FRAPPE_MCP_TOOLSETS", "FRAPPE_MCP_METHODS", "FRAPPE_BENCH_PATH", "FRAPPE_BENCH_SITE", "FRAPPE_BENCH_COMMAND", "FRAPPE_BENCH_TIMEOUT", "FRAPPE_MCP_JOURNAL_RECORDS", "FRAPPE_MCP_READ_ONLY"]
+```
+
+Provide those values in the environment used to launch Codex. Codex forwards the listed variables from its own environment to this MCP process; use your operating system's secret manager or a local shell environment manager to supply them. Don't put API keys or secrets in a shared project file or commit them. Set `FRAPPE_URL`, `FRAPPE_API_KEY`, and `FRAPPE_API_SECRET` at minimum. `FRAPPE_SITE` is needed for host-based multi-site routing; `FRAPPE_APPS_PATH` enables standard DocType file changes and exports; `FRAPPE_BENCH_PATH` opts in to the fixed Bench commands. `FRAPPE_MCP_TOOLSETS` can narrow what Codex sees. If Codex was launched from a desktop shortcut and doesn't inherit your shell environment, configure the variables in the environment from which that app launches or use Claude Code's plugin, which prompts for the site and stores API credentials in the system credential store.
+
+Restart Codex after changing `config.toml` or the environment. Check the server is registered with `codex mcp list`, then run `uvx mcp-frappe check` from a terminal where the same Frappe settings are available. The check logs in, reports Frappe and app versions, and describes the version-specific MCP guidance. Once connected in Codex, call `get_site_info` and confirm the site, user, Frappe version, and installed apps before making changes. The repository supports Frappe 15 as its primary target and Frappe 16 as a supported target; tool behavior is selected from the detected site version where the APIs differ.
+
+To remove the server, run `codex mcp remove frappe-dev`. To remove the marketplace, run `codex plugin marketplace remove mcp-frappe`.
+
 ## MCP host configuration
 
-The host launches `uvx mcp-frappe` with the settings in its environment. The [README](../README.md#configure) has ready snippets for Claude Code (`claude mcp add frappe-dev -e FRAPPE_URL=... -- uvx mcp-frappe`) and Claude Desktop. The suggested server name is `frappe-dev`, because Frappe's built-in MCP server suggests `frappe`; to run both, see [using both servers](native-frappe-mcp.md). A generic local server declaration:
+The host launches `uvx mcp-frappe` with the settings in its environment. The [README](../README.md#configure) has ready snippets for Claude Code (`claude mcp add frappe-dev -e FRAPPE_URL=... -- uvx mcp-frappe`), Codex (above), and Claude Desktop. The suggested server name is `frappe-dev`, because Frappe's built-in MCP server suggests `frappe`; to run both, see [using both servers](native-frappe-mcp.md). A generic local server declaration:
 
 ```json
 {

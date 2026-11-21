@@ -9,6 +9,8 @@ claude plugin marketplace add DannyFiallo030503/mcp-frappe
 claude plugin install frappe-dev@mcp-frappe
 ```
 
+This plugin marketplace also includes the `frappe-development` skill for Codex. Codex setup is documented in the [installation guide](../../docs/installation-and-configuration.md#codex); Codex uses its own plugin marketplace and MCP server configuration.
+
 Or inside Claude Code: `/plugin marketplace add DannyFiallo030503/mcp-frappe`, then `/plugin install frappe-dev@mcp-frappe`.
 
 Claude Code asks for the settings when the plugin is enabled. Change them later with `claude plugin configure frappe-dev@mcp-frappe`.

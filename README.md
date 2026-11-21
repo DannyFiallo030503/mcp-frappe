@@ -53,6 +53,10 @@ claude plugin install frappe-dev@mcp-frappe
 
 Claude Code asks for the site URL, the API key and secret (kept in the system's credential store), and optionally the Bench `apps` folder. See the [plugin's README](https://github.com/DannyFiallo030503/mcp-frappe/tree/main/plugins/frappe-dev) for every option.
 
+### Codex
+
+Codex users can install the `frappe-development` skill from this repository's plugin marketplace, then register the local MCP server. The skill gives Codex the same Frappe workflow as the Claude Code plugin; the MCP server is configured separately so API credentials can come from the environment instead of being embedded in a shared plugin manifest. Follow [the Codex setup](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/docs/installation-and-configuration.md#codex).
+
 ### By hand
 
 Add the server to your host. The examples name it `frappe-dev`, so it doesn't clash with Frappe's built-in MCP server, whose guide suggests `frappe`. **Claude Code:**
