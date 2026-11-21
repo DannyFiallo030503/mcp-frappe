@@ -49,9 +49,9 @@ FRAPPE_APPS_PATH (file writes need one).
 - Find DocTypes with list_doctypes(search=...) and read get_doctype_schema before changing \
 anything; use its fieldnames.
 - Your own app's DocTypes: create_doctype, update_doctype, delete_doctype, \
-promote_custom_doctype. frappe/erpnext DocTypes: create_custom_field, set_field_property, \
-set_role_permissions, export_form_customizations for native Customize Form files, and \
-export_customizations for fixtures. Workflows, Notifications, \
+promote_custom_doctype. frappe/erpnext DocTypes: customize_doctype, \
+create_custom_field, set_field_property, set_role_permissions, export_form_customizations \
+for native Customize Form files, and export_customizations for fixtures. Workflows, Notifications, \
 Report Builder reports, Workspaces: the upsert_* tools.
 - Run diff_doctype before and after editing a standard DocType; list_app_drift shows what \
 differs between the site and the app files.
@@ -221,7 +221,9 @@ _SCHEMA_DOCTYPES = frozenset(
 # don't; each entry maps an action ("create", "update", "delete", or "*" for all) to the tool
 # to use. An action left out stays allowed: no tool deletes these records, and a delete writes
 # no code.
-_CUSTOMIZE_TOOLS = "create_custom_field, set_field_property, or set_role_permissions"
+_CUSTOMIZE_TOOLS = (
+    "customize_doctype, create_custom_field, set_field_property, or set_role_permissions"
+)
 _RECORD_TOOL_REDIRECTS: dict[str, dict[str, str]] = {
     "DocType": {
         "create": "use create_doctype",
@@ -1967,6 +1969,64 @@ def _created_dirs(app_path: Path, path: Path) -> list[str]:
     return [str(directory.relative_to(app_path)) for directory in reversed(missing)]
 
 
+def _write_app_files(
+    app_path: Path, payloads: list[tuple[Path, str]], preview_id: str
+) -> tuple[str, Callable[[], None]]:
+    """Back up the files `payloads` overwrite, write a rollback manifest, then write them.
+
+    Returns the `rollback_id` rollback_export takes, and a function that undoes the writes at
+    once (restoring files, removing created ones, the backups, and the manifest).
+    """
+    backup_root = _safe_app_file(app_path, app_path / ".mcp-frappe-backups")
+    backup_root.mkdir(parents=True, exist_ok=True)
+    rollback_id = f"export-{preview_id[:32]}.json"
+    manifest: list[dict[str, Any]] = []
+    previous: list[tuple[Path, str | None, str | None]] = []
+    app_root = app_path.resolve()
+    for path, content in payloads:
+        path = _safe_app_file(app_path, path)
+        backup_name = old = None
+        if path.exists():
+            old = path.read_text(encoding="utf-8")
+            backup_name = f"{uuid.uuid4().hex}.bak"
+            _atomic_write(backup_root / backup_name, old, mode=0o600)
+        manifest.append(
+            {
+                "path": str(path.relative_to(app_root)),
+                "backup": backup_name,
+                "exported_sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+                "created_dirs": _created_dirs(app_root, path),
+            }
+        )
+        previous.append((path, old, backup_name))
+    manifest_path = backup_root / rollback_id
+    _atomic_write(
+        manifest_path,
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+        mode=0o600,
+    )
+    for path, content in payloads:
+        _atomic_write(_safe_app_file(app_path, path), content)
+
+    def undo() -> None:
+        for path, old, backup_name in previous:
+            if old is None:
+                path.unlink(missing_ok=True)
+            else:
+                _atomic_write(path, old)
+            if backup_name:
+                (backup_root / backup_name).unlink(missing_ok=True)
+        created = {app_root / directory for item in manifest for directory in item["created_dirs"]}
+        for directory in sorted(created, key=lambda path: len(path.parts), reverse=True):
+            if directory.is_dir() and not any(directory.iterdir()):
+                directory.rmdir()
+        manifest_path.unlink(missing_ok=True)
+        if backup_root.is_dir() and not any(backup_root.iterdir()):
+            backup_root.rmdir()
+
+    return rollback_id, undo
+
+
 def _customization_export_snapshot(
     module_path: Path,
     doctype: str,
@@ -3120,8 +3180,8 @@ def _editable_doctype(doctype: str) -> tuple[dict[str, Any], str]:
     app = _module_app(doc.get("module"))
     if not doc.get("custom") and app.casefold() in _PROTECTED_APPS:
         raise ValueError(
-            f"{doctype} is a standard DocType of {app}; change it with create_custom_field "
-            "and set_field_property instead"
+            f"{doctype} is a standard DocType of {app}; change it with customize_doctype "
+            "(or create_custom_field and set_field_property) instead"
         )
     return doc, app
 
@@ -3157,7 +3217,7 @@ def _field_values(values: Any, where: str, allowed: frozenset[str]) -> dict[str,
         raise ValueError(f"{where} must be a non-empty object")
     if "fieldname" in values and "fieldname" not in allowed:
         raise ValueError(
-            f"{where}: a fieldname cannot be changed; renaming fields is not supported"
+            f"{where}: a fieldname cannot be changed here; rename it with rename(kind='field')"
         )
     unsupported = sorted(set(values) - allowed)
     if unsupported:
@@ -3516,7 +3576,7 @@ def update_doctype(
     For Frappe and ERPNext DocTypes use create_custom_field and set_field_property. Saved in one
     request:
     - {"op": "add_field", "field": {...}, "insert_after": fieldname} (omitted: last; null: first)
-    - {"op": "update_field", "fieldname": ..., "set": {...}} (the fieldname can't change)
+    - {"op": "update_field", "fieldname": ..., "set": {...}} (fieldnames change with rename)
     - {"op": "remove_field", "fieldname": ...}
     - {"op": "move_field", "fieldname": ..., "insert_after": fieldname or null}
     - {"op": "set_properties", "set": {...}} for DocType settings
@@ -3730,6 +3790,537 @@ def delete_doctype(
     return {
         "deleted": True,
         "doctype": doctype,
+        "reconciled_after_server_reload": reconciled,
+    }
+
+
+# Renames through Frappe's own code paths, which update what points at the renamed thing.
+
+_RENAME_DOCUMENT = "/api/method/frappe.model.rename_doc.update_document_title"
+_RENAME_CUSTOM_FIELD = (
+    "/api/method/frappe.custom.doctype.custom_field.custom_field.rename_fieldname"
+)
+_RENAME_NAME_MAX = 140
+_RENAME_LINK_COUNTS = 50
+_RENAME_MENTIONS_MAX = 50
+# DocType settings that hold one fieldname; a field rename carries them along.
+_FIELD_REFERENCE_PROPERTIES = (
+    "title_field",
+    "image_field",
+    "sort_field",
+    "timeline_field",
+    "subject_field",
+    "sender_field",
+    "sender_name_field",
+    "recipient_account_field",
+    "website_search_field",
+    "is_published_field",
+    "nsm_parent_field",
+)
+# DocField properties that name other fields inside an expression.
+_FIELD_EXPRESSION_PROPERTIES = (
+    "depends_on",
+    "mandatory_depends_on",
+    "read_only_depends_on",
+    "collapsible_depends_on",
+    "fetch_from",
+    "link_filters",
+)
+_PATCH_MODULE = re.compile(r"[a-z_][a-z0-9_]{0,199}")
+# The only Python this server writes: a fixed template, filled with checked identifiers as
+# string literals (repr), that calls Frappe's own `rename_field` from a patch.
+_RENAME_FIELD_PATCH = """\
+# Generated by mcp-frappe: renames the {doctype} field {old} to {new}.
+import frappe
+from frappe.model.utils.rename_field import rename_field
+
+
+def execute():
+\tfrappe.reload_doc({module!r}, "doctype", {slug!r})
+\trename_field({doctype!r}, {old!r}, {new!r})
+"""
+
+
+def _rename_name(value: Any, what: str) -> str:
+    if not isinstance(value, str) or not value.strip() or len(value) > _RENAME_NAME_MAX:
+        raise ValueError(f"{what} must be a non-empty string of at most {_RENAME_NAME_MAX} chars")
+    if value != value.strip() or "\n" in value:
+        raise ValueError(f"{what} must not have surrounding spaces or line breaks")
+    return value
+
+
+def _mentions(text: Any, name: str) -> bool:
+    return isinstance(text, str) and re.search(rf"(?<![\w]){re.escape(name)}(?![\w])", text)
+
+
+def _incoming_links(doctype: str, old: str) -> dict[str, Any]:
+    """Count records whose Link fields hold `old` of `doctype`, per field."""
+    links = [link for link in _doctype_links(doctype) if link["fieldtype"] == "Link"]
+    shown = links[:_RENAME_LINK_COUNTS]
+    for link in shown:
+        link["records"] = _count_records(link["doctype"], [[link["fieldname"], "=", old]])
+    counts = [link["records"] for link in shown]
+    total = None if None in counts or len(links) > len(shown) else sum(counts)
+    return {"links": shown, "links_truncated": len(links) > len(shown), "linked_records": total}
+
+
+def _app_mentions(base: Path, pattern: re.Pattern[str], skip: Path | None = None) -> list[Any]:
+    """List the app files under `base` that match `pattern`, with line numbers (bounded).
+
+    Symlinks are not followed, and hidden, test, and cache folders are skipped.
+    """
+    found: list[dict[str, Any]] = []
+    seen = 0
+    for folder, dirs, files in os.walk(base):
+        current = Path(folder)
+        dirs[:] = sorted(
+            name
+            for name in dirs
+            if name not in _METHOD_SKIP_DIRS
+            and not name.startswith(".")
+            and (skip is None or current / name != skip)
+        )
+        for name in sorted(files):
+            path = current / name
+            if path.suffix not in (".py", ".js", ".json", ".txt", ".html") or path.is_symlink():
+                continue
+            seen += 1
+            if seen > _METHOD_MAX_FILES or len(found) >= _RENAME_MENTIONS_MAX:
+                return found
+            if path.stat().st_size > _METHOD_FILE_MAX_BYTES:
+                continue
+            text = path.read_text(errors="replace")
+            lines = [n for n, line in enumerate(text.splitlines(), 1) if pattern.search(line)]
+            if lines:
+                found.append({"file": path.relative_to(base).as_posix(), "lines": lines[:20]})
+    return found
+
+
+def _append_patch(text: str, patch: str) -> str:
+    """Add `patch` at the end of patches.txt's [post_model_sync] section (or the file)."""
+    if not text.strip():
+        return f"[pre_model_sync]\n\n[post_model_sync]\n{patch}\n"
+    file_format, _, _ = _parse_patches(text)
+    lines = text.splitlines()
+    if file_format == "sections":
+        start = next(
+            (i for i, line in enumerate(lines) if line.strip() == "[post_model_sync]"), None
+        )
+        if start is None:
+            lines += ["", "[post_model_sync]", patch]
+        else:
+            end = next(
+                (
+                    i
+                    for i in range(start + 1, len(lines))
+                    if _PATCH_SECTION_HEADER.match(lines[i].strip())
+                ),
+                len(lines),
+            )
+            while end > start + 1 and (
+                not lines[end - 1].strip() or lines[end - 1].lstrip().startswith(("#", ";"))
+            ):
+                end -= 1
+            lines.insert(end, patch)
+    else:
+        lines.append(patch)
+    return "\n".join(lines) + "\n"
+
+
+def _rename_document_plan(doctype: str, old: str, new: str, merge: bool) -> dict[str, Any]:
+    if doctype == "DocType":
+        raise ValueError("Rename a DocType with kind='doctype'")
+    if doctype in _CODE_DOCTYPES or doctype in _SCHEMA_DOCTYPES or doctype == "Customize Form":
+        raise ValueError(f"rename does not rename {doctype} records")
+    meta = _meta_bundle(doctype)["doctype"]
+    if meta.get("issingle") or meta.get("istable"):
+        raise ValueError(f"{doctype} records are not renamed on their own")
+    if not meta.get("allow_rename"):
+        raise ValueError(
+            f"{doctype} does not allow renaming (its Allow Rename setting is off); Frappe refuses"
+        )
+    current = _request("GET", _resource(doctype, old))
+    exists = _count_records(doctype, [["name", "=", new]])
+    if merge and exists == 0:
+        raise ValueError(f"merge needs an existing {doctype} {new}")
+    if not merge and exists:
+        raise ValueError(f"{doctype} {new} already exists; pass merge=true to merge into it")
+    return {
+        "modified": current.get("modified"),
+        **_incoming_links(doctype, old),
+        "frappe_updates": [
+            "Link fields that point to it, and Dynamic Links",
+            "its child rows, attachments, versions, and assignments",
+        ],
+        "notes": [
+            "Frappe may adjust the new name (naming rules, the DocType's before_rename hook)."
+        ],
+    }
+
+
+def _rename_custom_field_plan(doctype: str, old: str, new: str) -> dict[str, Any]:
+    meta = _meta_bundle(doctype)["doctype"]
+    fields = {row.get("fieldname"): row for row in meta.get("fields") or []}
+    rows = _listed(
+        "Custom Field",
+        ["name", "fieldname", "fieldtype", "is_system_generated", "modified"],
+        {"dt": doctype, "fieldname": old},
+    )
+    if not rows:
+        if old in fields:
+            raise ValueError(
+                f"{doctype}.{old} is a standard field, not a Custom Field; kind='field' renames "
+                "fields of your own app's DocTypes"
+            )
+        raise ValueError(f"{doctype} has no Custom Field {old}")
+    row = rows[0]
+    if row.get("is_system_generated"):
+        raise ValueError("Frappe does not rename system-generated Custom Fields")
+    if not _NEW_FIELDNAME.fullmatch(new):
+        raise ValueError("new must be lowercase letters, digits, and underscores, at most 64")
+    if new in fields:
+        raise ValueError(f"{doctype} already has a field {new}")
+    countable = not meta.get("issingle") and not meta.get("is_virtual")
+    has_value = row.get("fieldtype") not in _NO_VALUE_FIELDTYPES and countable
+    setters = _listed(
+        "Property Setter", ["name", "field_name", "property", "value"], {"doc_type": doctype}
+    )
+    stale = [
+        f"Property Setter {row['property']} on {old}"
+        for row in setters
+        if row.get("field_name") == old
+    ]
+    stale += [
+        f"field_order Property Setter of {doctype}"
+        for row in setters
+        if row.get("property") == "field_order" and old in (_json_list(row.get("value")) or [])
+    ]
+    stale += [
+        f"DocType setting {prop}" for prop in _FIELD_REFERENCE_PROPERTIES if meta.get(prop) == old
+    ]
+    stale += [
+        f"{other}.{prop}"
+        for other, other_row in fields.items()
+        for prop in _FIELD_EXPRESSION_PROPERTIES
+        if other != old and _mentions(other_row.get(prop), old)
+    ]
+    warnings = []
+    if stale:
+        warnings.append(
+            "Frappe renames the column and updates insert_after of other Custom Fields, but not: "
+            + ", ".join(stale[:_RENAME_MENTIONS_MAX])
+            + ". Update them afterwards (customize_doctype or set_field_property)."
+        )
+    return {
+        "modified": row.get("modified"),
+        "custom_field": row["name"],
+        "fieldtype": row.get("fieldtype"),
+        "records_with_value": _count_records(doctype, [[old, "is", "set"]]) if has_value else None,
+        "warnings": warnings,
+        "notes": [
+            f"The Custom Field record keeps its name {row['name']}; only its fieldname changes.",
+            "Export the customization again for apps that ship it as a fixture.",
+        ],
+    }
+
+
+def _rename_field_plan(doctype: str, old: str, new: str) -> dict[str, Any]:
+    doc, app = _editable_doctype(doctype)
+    if doc.get("custom"):
+        raise ValueError(
+            f"{doctype} is site-custom: there is no app to hold the patch that moves the data. "
+            "Promote it with promote_custom_doctype first, or add a new field instead."
+        )
+    if not _PATCH_MODULE.fullmatch(app):
+        raise ValueError(f"App name {app!r} is not a Python package name")
+    app_path, package_path = _app_root(app)
+    rows = [dict(row) for row in doc.get("fields") or []]
+    row = rows[_field_index(rows, old, "old")]
+    if not _NEW_FIELDNAME.fullmatch(new):
+        raise ValueError("new must be lowercase letters, digits, and underscores, at most 64")
+    taken = {row.get("fieldname") for row in _meta_bundle(doctype)["doctype"].get("fields", [])}
+    if new in taken or any(other.get("fieldname") == new for other in rows):
+        raise ValueError(f"{doctype} already has a field {new}")
+    row["fieldname"] = new
+    properties = {prop: new for prop in _FIELD_REFERENCE_PROPERTIES if doc.get(prop) == old}
+    search = doc.get("search_fields")
+    if _mentions(search, old):
+        properties["search_fields"] = ",".join(
+            new if part.strip() == old else part.strip() for part in search.split(",")
+        )
+    slug, module_slug = _scrub(doctype), _scrub(doc["module"])
+    patch_name = f"rename_{slug}_{old}_to_{new}"
+    if not _PATCH_MODULE.fullmatch(patch_name) or not _PATCH_MODULE.fullmatch(module_slug):
+        raise ValueError(f"{doctype} or its module is not a Python identifier once scrubbed")
+    patch = f"{app}.patches.{patch_name}"
+    patches_dir = package_path / "patches"
+    patch_path = _safe_app_file(app_path, patches_dir / f"{patch_name}.py")
+    if patch_path.exists():
+        raise ValueError(f"{patch_path} already exists")
+    patches_txt = _app_file(package_path, "patches.txt")
+    text = patches_txt.read_text(encoding="utf-8") if patches_txt else ""
+    if patch in {entry["patch"] for entry in _parse_patches(text)[1]}:
+        raise ValueError(f"patches.txt already lists {patch}")
+    content = _RENAME_FIELD_PATCH.format(
+        doctype=doctype, old=old, new=new, module=module_slug, slug=slug
+    )
+    payloads = [(patch_path, content)]
+    init = _safe_app_file(app_path, patches_dir / "__init__.py")
+    if not init.exists():
+        payloads.append((init, ""))
+    patches_path = _safe_app_file(app_path, package_path / "patches.txt")
+    payloads.append((patches_path, _append_patch(text, patch)))
+    countable = not doc.get("issingle") and not doc.get("is_virtual")
+    has_value = row.get("fieldtype") not in _NO_VALUE_FIELDTYPES and countable
+    expressions = [
+        f"{other.get('fieldname')}.{prop}"
+        for other in rows
+        for prop in _FIELD_EXPRESSION_PROPERTIES
+        if other is not row and _mentions(other.get(prop), old)
+    ]
+    folder = _module_dir(package_path, doc["module"])
+    pattern = re.compile(rf"(?<![\w]){re.escape(old)}(?![\w])")
+    code = (
+        [
+            {**item, "file": f"{module_slug}/doctype/{slug}/{item['file']}"}
+            for item in _app_mentions(folder / "doctype" / slug, pattern)
+            if item["file"] != f"{slug}.json"
+        ]
+        if folder is not None and (folder / "doctype" / slug).is_dir()
+        else []
+    )
+    warnings = [
+        f"Until the patch runs, {doctype}.{new} reads empty on this site: the values stay in "
+        f"the {old} column. {_pending_patches_hint()} and copies them.",
+    ]
+    if expressions:
+        warnings.append(
+            "These expressions still name the old field; update them: " + ", ".join(expressions)
+        )
+    if code:
+        warnings.append("App code in the DocType folder names the old field (see code_mentions).")
+    return {
+        "app": app,
+        "modified": doc.get("modified"),
+        "records_with_value": _count_records(doctype, [[old, "is", "set"]]) if has_value else None,
+        "doctype_settings": properties,
+        "patch": patch,
+        "files": [_file_preview(path, content) for path, content in payloads],
+        "code_mentions": code,
+        "warnings": warnings,
+        "requires_developer_mode": True,
+        "_doc": doc,
+        "_rows": rows,
+        "_app_path": app_path,
+        "_payloads": payloads,
+    }
+
+
+def _rename_doctype_plan(old: str, new: str, merge: bool) -> dict[str, Any]:
+    if merge:
+        raise ValueError("Frappe does not merge DocTypes")
+    doc, app = _editable_doctype(old)
+    if not _SAFE_NAME.fullmatch(new):
+        raise ValueError("Invalid new DocType name")
+    if _doctype_exists(new):
+        raise ValueError(f"DocType {new} already exists")
+    custom = bool(doc.get("custom"))
+    countable = not doc.get("issingle") and not doc.get("is_virtual")
+    plan: dict[str, Any] = {
+        "app": app,
+        "module": doc.get("module"),
+        "custom": custom,
+        "modified": doc.get("modified"),
+        "records": _count_records(old, []) if countable else None,
+        "links": _doctype_links(old)[:_RENAME_LINK_COUNTS],
+        "customizations": {
+            "custom_fields": _count_records("Custom Field", [["dt", "=", old]]),
+            "property_setters": _count_records("Property Setter", [["doc_type", "=", old]]),
+        },
+        "frappe_updates": [
+            "its table, records, child rows, and customizations",
+            "Link and Table fields of other DocTypes that use it",
+        ],
+    }
+    if custom:
+        return plan
+    before, after = _doctype_files(app, doc["module"], old), _doctype_files(app, doc["module"], new)
+    plan["app_files"] = {"from": before["folder"], "to": after["folder"]}
+    plan["requires_developer_mode"] = True
+    plan["requires_administrator"] = True
+    warnings = [
+        "Frappe renames the folder, the file names, and the class names in its controller; it "
+        "does not change other app code. Other DocTypes' JSON files still name the old DocType "
+        "until they are saved again; list_app_drift shows them."
+    ]
+    try:
+        _, package_path = _app_root(app)
+    except (RuntimeError, ValueError):
+        package_path = None
+    if package_path is not None:
+        folder = _module_dir(package_path, doc["module"])
+        skip = folder / "doctype" / _scrub(old) if folder is not None else None
+        pattern = re.compile(
+            rf"(?<![\w]){re.escape(old)}(?![\w])|(?<![\w]){re.escape(_scrub(old))}(?![\w])"
+        )
+        plan["code_mentions"] = _app_mentions(package_path, pattern, skip)
+    plan["warnings"] = warnings
+    return plan
+
+
+@_tool("developer", "Rename", destructive=True)
+def rename(
+    kind: Literal["document", "custom_field", "field", "doctype"],
+    doctype: str,
+    old: str,
+    new: str,
+    merge: bool = False,
+    expected_preview: ExpectedPreview = None,
+    confirm: Confirm = False,
+) -> dict[str, Any]:
+    """Preview or rename through Frappe's own code, which updates what points at it.
+
+    - document: record `old` of `doctype` to `new`; merge=true merges into an existing `new`.
+    - custom_field: a Custom Field's fieldname on `doctype`; Frappe renames the column.
+    - field: a field of your app's standard DocType. Also writes a patch from a fixed template
+      that calls rename_field, listed in patches.txt; the data moves when migrate runs it.
+    - doctype: your app's DocType `old` to `new` (pass doctype="DocType").
+    The preview shows the counts and files involved; confirm with its `preview_id`.
+    """
+    if kind not in ("document", "custom_field", "field", "doctype"):
+        raise ValueError("kind must be document, custom_field, field, or doctype")
+    if not isinstance(doctype, str) or not _SAFE_NAME.fullmatch(doctype):
+        raise ValueError("Invalid DocType name")
+    old, new = _rename_name(old, "old"), _rename_name(new, "new")
+    if old == new:
+        raise ValueError("old and new are the same")
+    if kind == "doctype" and doctype != "DocType":
+        raise ValueError("kind='doctype' takes doctype='DocType' and the DocType names")
+    if kind == "document":
+        plan = _rename_document_plan(doctype, old, new, merge)
+    elif merge:
+        raise ValueError("merge applies to kind='document' only")
+    elif kind == "custom_field":
+        plan = _rename_custom_field_plan(doctype, old, new)
+    elif kind == "field":
+        plan = _rename_field_plan(doctype, old, new)
+    else:
+        plan = _rename_doctype_plan(old, new, merge)
+    shown = {key: value for key, value in plan.items() if not key.startswith("_")}
+    summary = {"kind": kind, "doctype": doctype, "old": old, "new": new, "merge": merge}
+    preview_id = hashlib.sha256(
+        json.dumps({**summary, **shown}, sort_keys=True, default=str).encode()
+    ).hexdigest()
+    if not confirm:
+        return {
+            "preview": True,
+            "action": "rename",
+            **summary,
+            **shown,
+            "preview_id": preview_id,
+            "requires_confirmation": True,
+        }
+    if expected_preview != preview_id:
+        raise ValueError("The preview is missing or stale; request a fresh preview")
+    if kind == "document":
+        name = _request(
+            "POST",
+            _RENAME_DOCUMENT,
+            json={"doctype": doctype, "docname": old, "name": new, "merge": merge},
+        )
+        return {"renamed": True, **summary, "name": name}
+    if kind == "custom_field":
+        try:
+            _request(
+                "POST",
+                _RENAME_CUSTOM_FIELD,
+                json={"custom_field": plan["custom_field"], "fieldname": new},
+            )
+        finally:
+            _forget_meta(doctype)
+        return {"renamed": True, **summary, "warnings": plan["warnings"]}
+    if kind == "field":
+        return _apply_field_rename(doctype, old, new, plan, summary, preview_id)
+    return _apply_doctype_rename(old, new, summary)
+
+
+def _apply_field_rename(
+    doctype: str,
+    old: str,
+    new: str,
+    plan: dict[str, Any],
+    summary: dict[str, Any],
+    preview_id: str,
+) -> dict[str, Any]:
+    """Write the patch files, then save the DocType; undo the files if the save fails."""
+    rollback_id, undo = _write_app_files(plan["_app_path"], plan["_payloads"], preview_id)
+    expected = str(plan["modified"])
+    target = {
+        "rows": plan["_rows"],
+        "touched": {new: {"fieldname"}},
+        "properties": plan["doctype_settings"],
+    }
+    rows = [{**row, "idx": index} for index, row in enumerate(plan["_rows"], start=1)]
+    reconciled = False
+    try:
+        _request(
+            "PUT",
+            _resource("DocType", doctype),
+            json={"data": {**plan["doctype_settings"], "fields": rows, "modified": expected}},
+        )
+    except FrappeError as error:
+        undo()
+        if error.exc_type == "TimestampMismatchError":
+            raise ValueError(_STALE_DOCUMENT) from error
+        raise
+    except httpx.TransportError as error:
+        _wait_for_server_ready()
+        saved = _request("GET", _resource("DocType", doctype))
+        if not _doctype_matches(saved, target, expected):
+            undo()
+            raise RuntimeError(
+                "Frappe disconnected while saving the DocType and the saved DocType does not "
+                "hold the rename; the patch files were removed. Request a fresh preview."
+            ) from error
+        reconciled = True
+    finally:
+        _forget_meta(doctype)
+    return {
+        "renamed": True,
+        **summary,
+        "patch": plan["patch"],
+        "files": [str(path) for path, _ in plan["_payloads"]],
+        "rollback_id": rollback_id,
+        "next_step": _pending_patches_hint(),
+        "warnings": plan["warnings"],
+        "reconciled_after_server_reload": reconciled,
+    }
+
+
+def _apply_doctype_rename(old: str, new: str, summary: dict[str, Any]) -> dict[str, Any]:
+    reconciled = False
+    name: Any = new
+    try:
+        name = _request(
+            "POST",
+            _RENAME_DOCUMENT,
+            json={"doctype": "DocType", "docname": old, "name": new, "merge": False},
+        )
+    except httpx.TransportError as error:
+        # Renaming a standard DocType moves its Python files, which can reload a dev Bench.
+        _wait_for_server_ready()
+        if not _doctype_exists(new) or _doctype_exists(old):
+            raise RuntimeError(
+                "Frappe disconnected during the rename and the DocType was not renamed; "
+                "request a fresh preview before retrying."
+            ) from error
+        reconciled = True
+    finally:
+        _forget_meta()
+    return {
+        "renamed": True,
+        **summary,
+        "name": name,
         "reconciled_after_server_reload": reconciled,
     }
 
@@ -5691,6 +6282,670 @@ def _save_property_setter(
         raise
 
 
+# Customize Form saves: the same `save_customization` Desk runs, so Frappe compares each value
+# with the standard one, drops redundant Property Setters, keeps the field order, and validates
+# the whole form together.
+
+# The full path: v15 and v16 resolve it to the same function, without the shorthand warning.
+_RUN_DOC_METHOD = "/api/method/frappe.handler.run_doc_method"
+# Customize Form's `docfield_properties` (customize_form.py, v16.55.1) that update_doctype also
+# allows, with Customize Form's property types. `fieldtype` has its own operation; `idx`,
+# `is_virtual`, `collapsible_depends_on`, `ignore_xss_filter`, and `in_import_template` are left
+# out. v15 lacks alignment, button_color, mask, and set_only_once.
+_CUSTOMIZE_FIELD_PROPERTIES = {
+    "label": "Data",
+    "options": "Text",
+    "sort_options": "Check",
+    "fetch_from": "Small Text",
+    "fetch_if_empty": "Check",
+    "show_dashboard": "Check",
+    "permlevel": "Int",
+    "width": "Data",
+    "print_width": "Data",
+    "alignment": "Select",
+    "non_negative": "Check",
+    "reqd": "Check",
+    "unique": "Check",
+    "ignore_user_permissions": "Check",
+    "in_list_view": "Check",
+    "in_standard_filter": "Check",
+    "in_global_search": "Check",
+    "in_preview": "Check",
+    "bold": "Check",
+    "no_copy": "Check",
+    "hidden": "Check",
+    "collapsible": "Check",
+    "print_hide": "Check",
+    "print_hide_if_no_value": "Check",
+    "report_hide": "Check",
+    "allow_on_submit": "Check",
+    "translatable": "Check",
+    "mandatory_depends_on": "Data",
+    "read_only_depends_on": "Data",
+    "depends_on": "Data",
+    "description": "Text",
+    "default": "Text",
+    "precision": "Select",
+    "read_only": "Check",
+    "length": "Int",
+    "columns": "Int",
+    "remember_last_selected_value": "Check",
+    "allow_bulk_edit": "Check",
+    "allow_in_quick_entry": "Check",
+    "hide_border": "Check",
+    "hide_days": "Check",
+    "hide_seconds": "Check",
+    "link_filters": "JSON",
+    "placeholder": "Data",
+    "button_color": "Select",
+    "mask": "Check",
+    "set_only_once": "Check",
+}
+# Customize Form's `doctype_properties` (v16.55.1) that update_doctype also allows; `istable`
+# is left out. v15 lacks hide_toolbar.
+_CUSTOMIZE_DOCTYPE_PROPERTIES = {
+    "search_fields": "Data",
+    "title_field": "Data",
+    "image_field": "Data",
+    "sort_field": "Data",
+    "sort_order": "Data",
+    "default_print_format": "Data",
+    "hide_toolbar": "Check",
+    "allow_copy": "Check",
+    "quick_entry": "Check",
+    "queue_in_background": "Check",
+    "editable_grid": "Check",
+    "max_attachments": "Int",
+    "make_attachments_public": "Check",
+    "protect_attached_files": "Check",
+    "track_changes": "Check",
+    "track_views": "Check",
+    "allow_auto_repeat": "Check",
+    "allow_import": "Check",
+    "show_name_in_global_search": "Check",
+    "show_preview_popup": "Check",
+    "default_email_template": "Data",
+    "email_append_to": "Check",
+    "subject_field": "Data",
+    "sender_field": "Data",
+    "naming_rule": "Data",
+    "autoname": "Data",
+    "show_title_field_in_link": "Check",
+    "is_calendar_and_gantt": "Check",
+    "default_view": "Select",
+    "force_re_route_to_default_view": "Check",
+    "translated_doctype": "Check",
+    "grid_page_length": "Int",
+    "rows_threshold_for_grid_search": "Int",
+}
+# Customize Form's ALLOWED_OPTIONS_CHANGE, without HTML (its options are markup).
+_CUSTOMIZE_OPTIONS_FIELDTYPES = frozenset({"Data", "Read Only"})
+# frappe.model.no_value_fields; get_fields_not_allowed_in_list_view starts from it.
+_NO_VALUE_FIELDTYPES = frozenset(
+    {
+        "Section Break",
+        "Column Break",
+        "Tab Break",
+        "Attachment Gallery",
+        "HTML",
+        "Table",
+        "Table MultiSelect",
+        "Button",
+        "Image",
+        "Fold",
+        "Heading",
+    }
+)
+# frappe.model.docfield.supports_translation.
+_TRANSLATABLE_FIELDTYPES = frozenset({"Data", "Select", "Text", "Small Text", "Text Editor"})
+_CUSTOMIZE_OPERATIONS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
+    "set_property": (frozenset({"property", "value"}), frozenset({"fieldname"})),
+    "move_field": (frozenset({"fieldname", "insert_after"}), frozenset()),
+    "add_custom_field": (frozenset({"field"}), frozenset({"insert_after"})),
+    "change_fieldtype": (frozenset({"fieldname", "fieldtype"}), frozenset()),
+}
+_CUSTOMIZE_LIST_LIMIT = 2000
+
+
+def _typed_value(where: str, property: str, value: Any, property_type: str) -> Any:
+    """Check a Customize Form value against its property type and return it as Frappe holds it."""
+    if property_type == "Check":
+        if isinstance(value, bool) or value in (0, 1):
+            return int(value)
+        raise ValueError(f"{where}: {property} is a Check property; value must be 0 or 1")
+    if property_type == "Int":
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+        raise ValueError(f"{where}: {property} must be an integer")
+    if not isinstance(value, str):
+        raise ValueError(f"{where}: {property} must be a string")
+    return value
+
+
+def _customize_form(doctype: str) -> dict[str, Any]:
+    """Load Customize Form for `doctype` the way Desk does; GET, so Frappe keeps no writes."""
+    payload = _request(
+        "GET",
+        _RUN_DOC_METHOD,
+        params={
+            "method": "fetch_to_customize",
+            "docs": json.dumps(
+                {"doctype": "Customize Form", "name": "Customize Form", "doc_type": doctype}
+            ),
+        },
+    )
+    docs = payload.get("docs") if isinstance(payload, dict) else None
+    form = docs[0] if isinstance(docs, list) and docs else None
+    if not isinstance(form, dict) or form.get("doc_type") != doctype:
+        raise RuntimeError("Unexpected Customize Form response")
+    if not isinstance(form.get("fields"), list):
+        raise RuntimeError("Customize Form returned no fields")
+    return form
+
+
+def _listed(doctype: str, fields: list[str], filters: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = _request(
+        "GET",
+        _resource(doctype),
+        params={
+            "fields": json.dumps(fields),
+            "filters": _filters(filters),
+            "order_by": "name asc",
+            "limit_page_length": _CUSTOMIZE_LIST_LIMIT + 1,
+        },
+    )
+    rows = rows if isinstance(rows, list) else []
+    if len(rows) > _CUSTOMIZE_LIST_LIMIT:
+        raise ValueError(f"More than {_CUSTOMIZE_LIST_LIMIT} {doctype} rows for this DocType")
+    return rows
+
+
+def _customization_state(doctype: str) -> dict[str, Any]:
+    """Read what a Customize Form save compares with: the form, base fields, setters, fields."""
+    if not isinstance(doctype, str) or not _SAFE_NAME.fullmatch(doctype):
+        raise ValueError("Invalid DocType name")
+    meta = _meta_bundle(doctype)["doctype"]
+    if meta.get("custom"):
+        raise ValueError(
+            f"{doctype} is a site-custom DocType; Customize Form refuses it. Change it with "
+            "update_doctype."
+        )
+    if meta.get("issingle"):
+        raise ValueError("Customize Form refuses Single DocTypes")
+    form = _customize_form(doctype)
+    record = _request("GET", _resource("DocType", doctype))
+    setters = _listed(
+        "Property Setter",
+        ["name", "doctype_or_field", "field_name", "row_name", "property", "value", "modified"],
+        {"doc_type": doctype},
+    )
+    custom_fields = _listed(
+        "Custom Field",
+        ["name", "fieldname", "insert_after", "is_system_generated", "modified"],
+        {"dt": doctype},
+    )
+    return {
+        "form": form,
+        "record": record,
+        "base": {row.get("fieldname"): row for row in record.get("fields") or []},
+        "setters": setters,
+        "custom": {row.get("fieldname"): row for row in custom_fields},
+    }
+
+
+def _is_custom_row(row: dict[str, Any]) -> bool:
+    """Customize Form's test: a Custom Field it saves directly, not through Property Setters."""
+    return bool(row.get("is_custom_field")) and not row.get("is_system_generated")
+
+
+def _plan_customization(form: dict[str, Any], operations: Any) -> dict[str, Any]:
+    """Apply `operations` to a copy of the Customize Form document.
+
+    Returns the new `form`, the `touched` (fieldname or None, property) pairs, and the
+    fieldnames `added`.
+    """
+    if not isinstance(operations, list) or not (
+        1 <= len(operations) <= _UPDATE_DOCTYPE_MAX_OPERATIONS
+    ):
+        raise ValueError(
+            f"operations must be a list of 1 to {_UPDATE_DOCTYPE_MAX_OPERATIONS} operations"
+        )
+    form = copy.deepcopy(form)
+    rows: list[dict[str, Any]] = form["fields"]
+    touched: list[tuple[str | None, str]] = []
+    added: list[str] = []
+    for index, operation in enumerate(operations):
+        where = f"operations[{index}]"
+        if not isinstance(operation, dict) or operation.get("op") not in _CUSTOMIZE_OPERATIONS:
+            raise ValueError(
+                f"{where} must be an object whose op is one of: {', '.join(_CUSTOMIZE_OPERATIONS)}"
+            )
+        op = operation["op"]
+        required, optional = _CUSTOMIZE_OPERATIONS[op]
+        missing = sorted(required - set(operation))
+        extra = sorted(set(operation) - required - optional - {"op"})
+        if missing or extra:
+            raise ValueError(
+                f"{where}: {op} takes {', '.join(sorted(required | optional))}"
+                + (f"; missing {', '.join(missing)}" if missing else "")
+                + (f"; unexpected {', '.join(extra)}" if extra else "")
+            )
+        if op == "set_property":
+            prop, fieldname = operation["property"], operation.get("fieldname")
+            if fieldname is None:
+                if prop not in _CUSTOMIZE_DOCTYPE_PROPERTIES:
+                    raise ValueError(
+                        f"{where}: {prop!r} is not a DocType setting Customize Form sets here: "
+                        + ", ".join(sorted(_CUSTOMIZE_DOCTYPE_PROPERTIES))
+                    )
+                form[prop] = _typed_value(
+                    where, prop, operation["value"], _CUSTOMIZE_DOCTYPE_PROPERTIES[prop]
+                )
+            else:
+                if prop not in _CUSTOMIZE_FIELD_PROPERTIES:
+                    hint = " (use change_fieldtype)" if prop == "fieldtype" else ""
+                    raise ValueError(
+                        f"{where}: {prop!r} is not a field property Customize Form sets here"
+                        f"{hint}: " + ", ".join(sorted(_CUSTOMIZE_FIELD_PROPERTIES))
+                    )
+                row = rows[_field_index(rows, fieldname, where)]
+                row[prop] = _typed_value(
+                    where, prop, operation["value"], _CUSTOMIZE_FIELD_PROPERTIES[prop]
+                )
+                if prop == "options" and row.get("fieldtype") in _CODE_OPTIONS_FIELDTYPES:
+                    raise ValueError(
+                        f"{where}: options of {row.get('fieldtype')} fields are code; not set"
+                    )
+            touched.append((fieldname, prop))
+        elif op == "move_field":
+            if operation["insert_after"] == operation["fieldname"]:
+                raise ValueError(f"{where}: a field cannot be inserted after itself")
+            row = rows.pop(_field_index(rows, operation["fieldname"], where))
+            rows.insert(_insert_position(rows, operation["insert_after"], where), row)
+        elif op == "add_custom_field":
+            values = _field_values(
+                operation["field"],
+                f"{where}.field",
+                frozenset(_CUSTOMIZE_FIELD_PROPERTIES) | {"fieldname", "fieldtype"},
+            )
+            fieldname = values.get("fieldname")
+            if not isinstance(fieldname, str) or not _NEW_FIELDNAME.fullmatch(fieldname):
+                raise ValueError(
+                    f"{where}: fieldname must be lowercase letters, digits, and underscores, "
+                    "starting with a letter, at most 64 characters"
+                )
+            if any(row.get("fieldname") == fieldname for row in rows):
+                raise ValueError(f"{where}: {form['doc_type']} already has a field {fieldname}")
+            for prop, value in values.items():
+                if prop in _CUSTOMIZE_FIELD_PROPERTIES:
+                    kind = _CUSTOMIZE_FIELD_PROPERTIES[prop]
+                    values[prop] = _typed_value(where, prop, value, kind)
+            row = {
+                "doctype": "Customize Form Field",
+                "is_custom_field": 1,
+                "is_system_generated": 0,
+                **values,
+            }
+            if row.get("fieldtype") in _CODE_OPTIONS_FIELDTYPES and row.get("options"):
+                raise ValueError(f"{where}: options of {row['fieldtype']} fields are code; not set")
+            _check_field_row(row, where, values)
+            position = (
+                _insert_position(rows, operation["insert_after"], where)
+                if "insert_after" in operation
+                else len(rows)
+            )
+            rows.insert(position, row)
+            added.append(fieldname)
+        else:
+            row = rows[_field_index(rows, operation["fieldname"], where)]
+            old, new = row.get("fieldtype"), operation["fieldtype"]
+            if new not in _FIELDTYPES:
+                raise ValueError(f"{where}: unsupported fieldtype {new!r}")
+            if row.get("fieldname") not in added and not row.get("is_virtual"):
+                if not any(old in group and new in group for group in _FIELDTYPE_CHANGE_GROUPS):
+                    raise ValueError(
+                        f"{where}: Customize Form does not change {old} to {new}; it allows "
+                        "only changes within these groups: "
+                        + "; ".join(", ".join(sorted(group)) for group in _FIELDTYPE_CHANGE_GROUPS)
+                    )
+            row["fieldtype"] = new
+            touched.append((row["fieldname"], "fieldtype"))
+    return {"form": form, "touched": touched, "added": added}
+
+
+def _setter_key(row: dict[str, Any]) -> tuple[str | None, str | None, str | None]:
+    return (row.get("field_name") or None, row.get("property"), row.get("row_name") or None)
+
+
+def _setter_change(
+    action: str, fieldname: str | None, prop: str, before: Any, after: Any
+) -> dict[str, Any]:
+    change: dict[str, Any] = {"action": action, "property": prop}
+    if fieldname:
+        change["fieldname"] = fieldname
+    if action != "create":
+        change["from"] = before
+    if action != "remove":
+        change["to"] = after
+    return change
+
+
+def _review_field_property(
+    state: dict[str, Any], row: dict[str, Any], prop: str, value: Any, where: str
+) -> None:
+    """Refuse what Customize Form's `allow_property_change` would skip for a standard field."""
+    base = state["base"].get(row["fieldname"]) or {}
+    fieldtype = row.get("fieldtype")
+    if prop == "allow_on_submit" and value and not base.get("allow_on_submit"):
+        raise ValueError(f"{where}: Frappe does not enable Allow on Submit for standard fields")
+    if prop == "reqd" and not value and base.get("reqd") == 1:
+        raise ValueError(f"{where}: Frappe does not make a mandatory standard field optional")
+    if prop == "read_only" and not value and base.get("read_only") == 1:
+        raise ValueError(f"{where}: Frappe does not make a read-only standard field editable")
+    if prop == "in_list_view" and value and fieldtype in _NO_VALUE_FIELDTYPES:
+        raise ValueError(f"{where}: {fieldtype} fields cannot be shown in the list view")
+    if prop == "options" and fieldtype not in _CUSTOMIZE_OPTIONS_FIELDTYPES:
+        raise ValueError(
+            f"{where}: Customize Form changes options only on Data and Read Only standard "
+            f"fields, not {fieldtype}; set_field_property writes a setter without that check"
+        )
+    if prop == "translatable" and value and fieldtype not in _TRANSLATABLE_FIELDTYPES:
+        raise ValueError(f"{where}: {fieldtype} fields cannot be translatable")
+
+
+def _customization_changes(
+    state: dict[str, Any], plan: dict[str, Any]
+) -> tuple[dict[str, list[dict[str, Any]]], list[str]]:
+    """Work out the Property Setters and Custom Fields a save of `plan` writes, as Frappe does."""
+    doctype = state["form"]["doc_type"]
+    old_form, new_form = state["form"], plan["form"]
+    old_rows = {row.get("fieldname"): row for row in old_form["fields"]}
+    new_rows: list[dict[str, Any]] = new_form["fields"]
+    setters = state["setters"]
+    property_setters: list[dict[str, Any]] = []
+    custom_updates: dict[str, dict[str, Any]] = {}
+    warnings: list[str] = []
+    countable = not state["record"].get("issingle") and not state["record"].get("is_virtual")
+
+    seen: set[tuple[str | None, str]] = set()
+    for fieldname, prop in plan["touched"]:
+        if (fieldname, prop) in seen or fieldname in plan["added"]:
+            continue
+        seen.add((fieldname, prop))
+        if fieldname is None:
+            # Customize Form's `make_property_setter` deletes every setter of this property.
+            value, current = new_form.get(prop), old_form.get(prop)
+            if value == current:
+                continue
+            base = state["record"].get(prop)
+            existing = [row for row in setters if row.get("property") == prop]
+            own = next(
+                (row for row in existing if not row.get("field_name") and not row.get("row_name")),
+                None,
+            )
+        else:
+            row = next(row for row in new_rows if row.get("fieldname") == fieldname)
+            value, current = row.get(prop), old_rows[fieldname].get(prop)
+            if (value or "") == (current or ""):
+                continue
+            if _is_custom_row(row):
+                custom_updates.setdefault(fieldname, {})[prop] = {"from": current, "to": value}
+                continue
+            _review_field_property(state, row, prop, value, f"{fieldname}.{prop}")
+            base = (state["base"].get(fieldname) or {}).get(prop)
+            existing = [
+                row
+                for row in setters
+                if row.get("field_name") == fieldname and row.get("property") == prop
+            ]
+            own = next((row for row in existing if not row.get("row_name")), None)
+        for row in existing:
+            if row is not own:
+                property_setters.append(
+                    _setter_change("remove", row.get("field_name"), prop, row.get("value"), None)
+                )
+        if base == value:
+            if own:
+                property_setters.append(
+                    _setter_change("remove", fieldname, prop, own.get("value"), None)
+                )
+        else:
+            action = "update" if own else "create"
+            before = own.get("value") if own else None
+            property_setters.append(_setter_change(action, fieldname, prop, before, value))
+        if fieldname is not None:
+            warnings += _customization_warnings(doctype, fieldname, prop, current, value, countable)
+
+    order = [row.get("fieldname") for row in new_rows]
+    custom_fields: list[dict[str, Any]] = []
+    for position, row in enumerate(new_rows):
+        fieldname = row.get("fieldname")
+        previous = order[position - 1] if position else None
+        if fieldname in plan["added"]:
+            values = {
+                key: row[key]
+                for key in ("fieldtype", *_CUSTOMIZE_FIELD_PROPERTIES)
+                if row.get(key) not in (None, "")
+            }
+            custom_fields.append(
+                {"action": "create", "fieldname": fieldname, "insert_after": previous, **values}
+            )
+        elif _is_custom_row(row) and previous:
+            stored = (state["custom"].get(fieldname) or {}).get("insert_after")
+            if stored != previous:
+                custom_updates.setdefault(fieldname, {})["insert_after"] = {
+                    "from": stored,
+                    "to": previous,
+                }
+    custom_fields += [
+        {"action": "update", "fieldname": fieldname, "set": change}
+        for fieldname, change in custom_updates.items()
+    ]
+
+    # Customize Form's `set_property_setter_for_field_order`: the standard order needs no setter.
+    default_order = [row.get("fieldname") for row in state["record"].get("fields") or []]
+    stored_order = next(
+        (
+            row
+            for row in setters
+            if row.get("property") == "field_order" and not row.get("field_name")
+        ),
+        None,
+    )
+    if order == default_order:
+        if stored_order:
+            property_setters.append(
+                _setter_change("remove", None, "field_order", stored_order.get("value"), None)
+            )
+    elif not stored_order or _json_list(stored_order.get("value")) != order:
+        before = stored_order.get("value") if stored_order else None
+        property_setters.append(
+            _setter_change(
+                "update" if stored_order else "create", None, "field_order", before,
+                json.dumps(order),
+            )
+        )
+    return {"property_setters": property_setters, "custom_fields": custom_fields}, warnings
+
+
+def _customization_warnings(
+    doctype: str, fieldname: str, prop: str, current: Any, value: Any, countable: bool
+) -> list[str]:
+    if prop == "fieldtype":
+        return [
+            f"{fieldname} changes from {current} to {value}; Frappe may change the column type "
+            "and refuses the save if stored values are too long for the new type."
+        ]
+    if prop == "length" and value and (current or 0) > value:
+        return [f"{fieldname} gets shorter; Frappe refuses the save if stored values are longer."]
+    if prop == "reqd" and value:
+        empty = _count_records(doctype, [[fieldname, "is", "not set"]]) if countable else None
+        if empty == 0:
+            return []
+        held = "an unknown number of" if empty is None else str(empty)
+        return [
+            f"{fieldname} becomes mandatory and {held} records leave it empty; saving them "
+            "fails until it is filled."
+        ]
+    if prop == "unique" and value:
+        return [
+            f"{fieldname} becomes unique: Frappe adds a unique index, and the save fails if "
+            "existing values repeat."
+        ]
+    return []
+
+
+def _json_list(value: Any) -> Any:
+    try:
+        return json.loads(value) if isinstance(value, str) else None
+    except ValueError:
+        return None
+
+
+def _customization_preview(doctype: str, operations: Any) -> dict[str, Any]:
+    state = _customization_state(doctype)
+    plan = _plan_customization(state["form"], operations)
+    changes, warnings = _customization_changes(state, plan)
+    moved = [row.get("fieldname") for row in plan["form"]["fields"]] != [
+        row.get("fieldname") for row in state["form"]["fields"]
+    ]
+    if not moved and not changes["custom_fields"] and not any(
+        change["property"] != "field_order" for change in changes["property_setters"]
+    ):
+        raise ValueError("The operations leave the customization unchanged")
+    binding = {
+        "doctype": doctype,
+        "operations": operations,
+        "changes": changes,
+        "doctype_modified": str(state["record"].get("modified")),
+        "setters": sorted(
+            (str(row.get("name")), str(row.get("modified")), str(row.get("value")))
+            for row in state["setters"]
+        ),
+        "custom_fields": sorted(
+            (str(row.get("name")), str(row.get("modified")), str(row.get("insert_after")))
+            for row in state["custom"].values()
+        ),
+    }
+    preview_id = hashlib.sha256(
+        json.dumps(binding, sort_keys=True, default=str).encode()
+    ).hexdigest()
+    return {
+        "state": state,
+        "plan": plan,
+        "changes": changes,
+        "warnings": warnings,
+        "preview_id": preview_id,
+    }
+
+
+def _applied_customization(
+    state: dict[str, Any], changes: dict[str, list[dict[str, Any]]]
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Read the Property Setters after a save and list what changed; also what didn't apply."""
+    doctype = state["form"]["doc_type"]
+    after = _listed(
+        "Property Setter",
+        ["name", "doctype_or_field", "field_name", "row_name", "property", "value", "modified"],
+        {"doc_type": doctype},
+    )
+    old = {_setter_key(row): row.get("value") for row in state["setters"]}
+    new = {_setter_key(row): row.get("value") for row in after}
+    applied = []
+    for key in sorted(set(old) | set(new), key=lambda item: tuple(str(part) for part in item)):
+        fieldname, prop, _ = key
+        if key not in new:
+            applied.append(_setter_change("remove", fieldname, prop, old[key], None))
+        elif key not in old:
+            applied.append(_setter_change("create", fieldname, prop, None, new[key]))
+        elif old[key] != new[key]:
+            applied.append(_setter_change("update", fieldname, prop, old[key], new[key]))
+    done = {(change.get("fieldname"), change["property"]) for change in applied}
+    missing = [
+        f"Property Setter {change.get('fieldname') or doctype}.{change['property']}"
+        for change in changes["property_setters"]
+        if (change.get("fieldname"), change["property"]) not in done
+    ]
+    fields = {
+        row.get("fieldname"): row
+        for row in _listed("Custom Field", ["name", "fieldname"], {"dt": doctype})
+    }
+    for change in changes["custom_fields"]:
+        fieldname = change["fieldname"]
+        if fieldname not in fields:
+            missing.append(f"Custom Field {fieldname}")
+        elif change["action"] == "update":
+            saved = _request("GET", _resource("Custom Field", fields[fieldname]["name"]))
+            missing += [
+                f"Custom Field {fieldname}.{prop}"
+                for prop, delta in change["set"].items()
+                if not _same(saved.get(prop), delta["to"])
+            ]
+    return applied, missing
+
+
+@_tool("customize", "Customize DocType", destructive=True)
+def customize_doctype(
+    doctype: str,
+    operations: list[dict[str, Any]],
+    expected_preview: ExpectedPreview = None,
+    confirm: Confirm = False,
+) -> dict[str, Any]:
+    """Preview or save ordered `operations` on a standard DocType in one Customize Form save.
+
+    Frappe checks each value against the standard one, removes redundant Property Setters, and
+    keeps the field order, as Desk does:
+    - {"op": "set_property", "property": ..., "value": ..., "fieldname": ...} (no fieldname:
+      DocType setting)
+    - {"op": "move_field", "fieldname": ..., "insert_after": fieldname or null}
+    - {"op": "add_custom_field", "field": {fieldname, fieldtype, label, ...}, "insert_after": ...}
+    - {"op": "change_fieldtype", "fieldname": ..., "fieldtype": ...} (related types only)
+    The preview lists `property_setters` and `custom_fields` to create, update, or remove, with
+    `warnings`; confirm with its `preview_id`. System Manager only.
+    """
+    preview = _customization_preview(doctype, operations)
+    if not confirm:
+        return {
+            "preview": True,
+            "action": "customize_doctype",
+            "doctype": doctype,
+            **preview["changes"],
+            "warnings": preview["warnings"],
+            "preview_id": preview["preview_id"],
+            "requires_confirmation": True,
+        }
+    if expected_preview != preview["preview_id"]:
+        raise ValueError("The customization changed since the preview; request a fresh preview")
+    try:
+        payload = _request(
+            "POST",
+            _RUN_DOC_METHOD,
+            json={
+                "method": "save_customization",
+                "docs": json.dumps(preview["plan"]["form"], default=str),
+            },
+        )
+    finally:
+        _forget_meta(doctype)
+    raw = payload.get("_server_messages") if isinstance(payload, dict) else None
+    messages = _server_messages(raw) if raw else []
+    applied, missing = _applied_customization(preview["state"], preview["changes"])
+    warnings = list(preview["warnings"])
+    if missing:
+        warnings.append(
+            "Frappe did not apply every previewed change (see frappe_messages): "
+            + ", ".join(missing)
+        )
+    return {
+        "saved": True,
+        "doctype": doctype,
+        "property_setters": applied,
+        "custom_fields": preview["changes"]["custom_fields"],
+        "warnings": warnings,
+        "frappe_messages": messages,
+    }
+
+
 @_tool("customize", "Export customizations to app")
 def export_customizations(
     app: str,
@@ -5779,37 +7034,7 @@ def export_customizations(
         }
     if expected_preview != preview_id:
         raise ValueError("Export preview is missing or stale")
-    backup_root = _safe_app_file(app_path, app_path / ".mcp-frappe-backups")
-    backup_root.mkdir(parents=True, exist_ok=True)
-    rollback_id = f"export-{preview_id[:32]}.json"
-    manifest: list[dict[str, Any]] = []
-    app_root = app_path.resolve()
-    for path, content in payloads:
-        path = _safe_app_file(app_path, path)
-        backup_name = None
-        if path.exists():
-            backup_name = f"{uuid.uuid4().hex}.bak"
-            _atomic_write(
-                backup_root / backup_name,
-                path.read_text(encoding="utf-8"),
-                mode=0o600,
-            )
-        manifest.append(
-            {
-                "path": str(path.relative_to(app_root)),
-                "backup": backup_name,
-                "exported_sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
-                "created_dirs": _created_dirs(app_root, path),
-            }
-        )
-    manifest_path = backup_root / rollback_id
-    _atomic_write(
-        manifest_path,
-        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
-        mode=0o600,
-    )
-    for path, content in payloads:
-        _atomic_write(_safe_app_file(app_path, path), content)
+    rollback_id, _ = _write_app_files(app_path, payloads, preview_id)
     return {
         "exported": True,
         **summary,
@@ -5846,8 +7071,10 @@ def rollback_export(
     conflicts = []
     for item in manifest:
         target = _safe_app_file(app_path, app_path / item["path"])
-        current = target.read_text(encoding="utf-8") if target.is_file() else ""
-        current_hash = hashlib.sha256(current.encode("utf-8")).hexdigest() if current else None
+        current = target.read_text(encoding="utf-8") if target.is_file() else None
+        current_hash = (
+            hashlib.sha256(current.encode("utf-8")).hexdigest() if current is not None else None
+        )
         if current_hash != item.get("exported_sha256"):
             conflicts.append(str(target))
         backup_name = item.get("backup")

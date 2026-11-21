@@ -103,7 +103,7 @@ To see what one of the app's whitelisted methods returns on the live site:
 Pick the tool by who owns the DocType. Read its `module` from `get_doctype_schema`, and its app from `list_installed_apps`:
 
 - **Your own app's DocType, or a site-custom DocType** (`custom` is set): change it directly with `update_doctype`. A standard DocType needs Developer Mode on the site, and Frappe then rewrites the DocType JSON in the app; commit that file with the app.
-- **A Frappe or ERPNext DocType** (`Customer`, `User`, `Sales Invoice`, ...): `update_doctype` refuses it. Add fields with `create_custom_field` and change properties with `set_field_property` (see below), then export them with `export_customizations`.
+- **A Frappe or ERPNext DocType** (`Customer`, `User`, `Sales Invoice`, ...): `update_doctype` refuses it. Customize it with `customize_doctype`, or with `create_custom_field` and `set_field_property` for a single change (see [Customize a site](#customize-a-site)), then export the result with `export_customizations`.
 
 ### Add a field to my DocType
 
@@ -120,7 +120,18 @@ Things to tell the user before confirming:
 - Removing a field hides its data but doesn't delete it; the column stays until `bench trim-tables`. The preview says how many records have a value.
 - A fieldtype change that could lose data is refused. Suggest a new field instead, or clearing the old values first.
 - Making a field mandatory when records leave it empty means those records fail to save until filled; the preview counts them.
-- Renaming a field is not supported. Don't simulate it with remove plus add: the data stays under the old column.
+- Never rename a field with `update_doctype` remove plus add: the data stays under the old column. Use `rename` ([below](#rename-a-field-a-record-or-a-doctype)).
+
+### Rename a field, a record, or a DocType
+
+Use `rename`; it calls Frappe's own rename code, so references follow:
+
+- `kind="document"`: a record, for example a Customer. Frappe updates every Link field that holds the old name; the preview counts them per field. `merge=True` merges into an existing record; say so plainly, it can't be undone.
+- `kind="custom_field"`: a Custom Field's fieldname. Read the preview's warning to the user: Frappe doesn't update Property Setters, the field order, or expressions that name the field.
+- `kind="field"`: a field of the user's own app DocType. The tool writes a patch file and a `patches.txt` line, then saves the DocType. Show the user the patch diff from the preview. After confirming, the field reads empty until the patch runs: run `run_bench(command="migrate")` if it is available, or ask the user to run `bench migrate`. Then fix what the preview's `warnings` and `code_mentions` list, and commit the patch with the DocType JSON.
+- `kind="doctype"` with `doctype="DocType"`: one of the user's app DocTypes. Frappe moves the folder and renames the class; show the user `code_mentions` (hooks, other DocTypes' JSON) to update afterwards, and run `list_app_drift` to find DocTypes to save again.
+
+Confirm each with the preview's `preview_id`.
 
 `delete_doctype` is only for a DocType created by mistake. It refuses a DocType that other DocTypes link to and lists them. Its preview says what Frappe removes (in Developer Mode, the whole folder with controller code) and what stays (the database table and its records). Ask the user before confirming.
 
@@ -236,13 +247,18 @@ A module is usable once it has a saved report or two and a Workspace in the side
 
 1. Discover the owning app and module on the remote site.
 2. For a standard DocType or an export, verify that the app/module exists below the configured `FRAPPE_APPS_PATH`. Custom Fields and Property Setters don't need a local checkout; pass `module` (and `app`) only if you will export them later.
-3. Preview `create_doctype`, `create_custom_field`, or `set_field_property`.
+3. Preview `create_doctype`, `customize_doctype`, `create_custom_field`, or `set_field_property`.
 4. Confirm only after reviewing names, field types, options, and destination.
 5. To export Customize Form data for one DocType, call `export_form_customizations`, review the source snapshot and destination paths, then confirm with its `preview_id`. This calls Frappe's native exporter and requires the connected user to have the System Manager role. For a combined export of several DocTypes, Client Scripts, or Workflows, use `export_customizations` and review every path and diff before confirming. Tell the user that `bench migrate` applies the exported files.
 6. If the export needs reversal, preview `rollback_export` and confirm with its latest `preview_id`.
 7. Inspect the app's Git diff and use the project's normal deployment process. The MCP does not migrate or deploy.
 
 ### Custom Fields and form properties
+
+Which tool:
+
+- Several changes to one Frappe or ERPNext DocType, a field move, or a fieldtype change: `customize_doctype`. It is one Customize Form save, so the result matches Desk: Frappe drops setters that equal the standard value and keeps the field order. Example: `customize_doctype(doctype="Customer", operations=[{"op": "add_custom_field", "field": {"fieldname": "custom_region", "fieldtype": "Data", "label": "Region"}, "insert_after": "customer_name"}, {"op": "set_property", "fieldname": "customer_group", "property": "reqd", "value": 1}, {"op": "change_fieldtype", "fieldname": "website", "fieldtype": "Small Text"}])`. Show the user `property_setters`, `custom_fields`, and `warnings`, then confirm with `preview_id`. If the result has a "did not apply" warning, read `frappe_messages` to the user. Frappe refuses some changes on standard fields (making a mandatory field optional, Select options, unrelated fieldtypes); the tool says so before saving. Don't route around it with `set_field_property`.
+- One property, or a Custom Field you want tagged with a `module` for export: `set_field_property` or `create_custom_field`, as below.
 
 - Add a field: `create_custom_field(doctype="Customer", field={"fieldname": "custom_region", "fieldtype": "Data", "label": "Region", "insert_after": "customer_name"})`. Don't put `doctype`, `dt`, or `module` inside `field`; they are rejected.
 - Edit a Custom Field: `set_field_property` with its `fieldname`, as for any other field; `update_document` refuses Custom Field records. Remove it with `delete_document` on the `Custom Field` DocType, record name `<DocType>-<fieldname>` (for example `Customer-custom_region`), with the usual preview and `expected_modified` steps. Frappe refuses most field type changes on a field with data; tell the user instead of trying another route.

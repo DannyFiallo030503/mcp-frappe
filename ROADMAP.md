@@ -14,14 +14,14 @@ Frappe MCP is a standalone stdio server for Frappe developers. This page lists w
 8. **Reports**: list reports, read their filters, and run Query and Script Reports with paging.
 9. **Developer diagnostics and app methods**: pending patches, recent errors, and the app's whitelisted methods read from source; calls to app methods only from the user's `FRAPPE_MCP_METHODS` allowlist (mapped drafts such as Sales Order to Sales Invoice, previewed writes, bounded reads), with entries checked against the app source at startup.
 10. **Opt-in Bench commands**: `run_bench` runs `migrate`, `reload-doc`, `export-fixtures`, `clear-cache`, and `run-tests` on a local site when the user sets `FRAPPE_BENCH_PATH`, previewed with drift and pending patches and confirmed with a preview id; the argv is fixed, with no shell and no credentials in its environment.
-11. **Agent ergonomics**: readable Frappe errors with hints, a clear error naming the site when it can't be reached, MCP instructions and annotations, toolsets with a read-only mode (the default for remote targets), and an optional site label.
-12. **Validation**: unit tests against a fake site built from Frappe's source, an in-memory MCP contract test, and opt-in live runners, including the end-to-end developer flow. Every runner has passed on Frappe 15.126 and 16.55 development sites with ERPNext, and the read tools were checked as a Sales User ([matrix](docs/compatibility-and-validation.md#matrix)).
+11. **Customize Form saves and renames**: `customize_doctype` customizes a standard DocType in one previewed Customize Form save, as Desk does; `rename` renames records, Custom Fields, app DocType fields (with a generated `rename_field` patch), and app DocTypes through Frappe's own rename code.
+12. **Agent ergonomics**: readable Frappe errors with hints, a clear error naming the site when it can't be reached, MCP instructions and annotations, toolsets with a read-only mode (the default for remote targets), and an optional site label.
+13. **Validation**: unit tests against a fake site built from Frappe's source, an in-memory MCP contract test, and opt-in live runners, including the end-to-end developer flow. Every runner has passed on Frappe 15.126 and 16.55 development sites with ERPNext, and the read tools were checked as a Sales User ([matrix](docs/compatibility-and-validation.md#matrix)).
 
 ## Next
 
 - **Close the remaining validation gaps**: `set_role_permissions` on a live site, `bench migrate` re-importing an exported Custom Field, and record writes as a user without System Manager ([list](docs/compatibility-and-validation.md#not-yet-checked-on-a-site)).
-- **Stages 19–21** ([work plan](docs/work-plan/README.md#stages)), which focus on the development loop that the native Frappe MCP doesn't cover ([comparison](docs/work-plan/native-mcp-comparison.md)):
-  - full Customize Form saves and renames;
+- **Stages 20–21** ([work plan](docs/work-plan/README.md#stages)), which focus on the development loop that the native Frappe MCP doesn't cover ([comparison](docs/work-plan/native-mcp-comparison.md)):
   - batch inserts and undo;
   - a Claude Code plugin and developer-task evaluations.
 

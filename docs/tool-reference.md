@@ -24,7 +24,7 @@ The server also sends MCP `instructions` in its initialize result: a short workf
 
 ### Tool-list size
 
-A host sends every listed tool's name, title, description, input schema, and annotations to the model in every session, so the list is kept small: each description says what the tool does, its key constraints, its return shape, and how to confirm, and this page holds the details. `tests/test_mcp_contract.py` keeps the whole list, serialized as a client receives it, at or below 34,000 characters (about 8,500 tokens); it was about 61,000 before stage 15, which set the cap at 32,000, and stage 16 raised it to 34,000 for its three diagnostics tools. The three method tools are listed only when `FRAPPE_MCP_METHODS` is set, so the 34,000 cap applies to the list without them; with them the cap is 36,500 (they add about 1,600 characters). `run_bench` is listed only when `FRAPPE_BENCH_PATH` is set: the cap with it is 35,500 (it adds about 1,200 characters), and 38,000 with both opt-in sets. `mcp-frappe check` prints the tools and characters per toolset, and `FRAPPE_MCP_TOOLSETS` turns off what you don't need.
+A host sends every listed tool's name, title, description, input schema, and annotations to the model in every session, so the list is kept small: each description says what the tool does, its key constraints, its return shape, and how to confirm, and this page holds the details. `tests/test_mcp_contract.py` keeps the whole list, serialized as a client receives it, at or below 37,000 characters (about 9,250 tokens); it was about 61,000 before stage 15, which set the cap at 32,000, stage 16 raised it to 34,000 for its three diagnostics tools, and stage 19 to 37,000 for `customize_doctype` and `rename` (about 2,800 characters together). The three method tools are listed only when `FRAPPE_MCP_METHODS` is set, so the 37,000 cap applies to the list without them; with them the cap is 39,500 (they add about 1,600 characters). `run_bench` is listed only when `FRAPPE_BENCH_PATH` is set: the cap with it is 38,500 (it adds about 1,200 characters), and 41,000 with both opt-in sets. `mcp-frappe check` prints the tools and characters per toolset, and `FRAPPE_MCP_TOOLSETS` turns off what you don't need.
 
 The input schemas leave out what carries no meaning: pydantic's generated `title` keywords, `additionalProperties: true`, and the `null` branch and `default: null` of optional arguments (an optional argument is simply not `required`; an explicit `null` is still accepted). Tools have no output schema, because Frappe's results are open-ended JSON: a result is a JSON text block, and a list result (only `list_installed_apps`) is one text block per item.
 
@@ -187,10 +187,12 @@ All conditions are combined with AND. In the four-element form, `doctype` must b
 | `create_doctype` | Create a standard app DocType or a site-custom DocType through Frappe's native controller | `fields`, `is_submittable`, `is_child_table`, `is_single`, `is_tree`, `is_custom`, `properties`, and `permissions`; preview, inspect, then confirm |
 | `update_doctype` | Change an existing DocType of your own app, or a site-custom DocType: add, change, remove, and move fields, and set DocType settings | `doctype`, `operations`; preview, then confirm with the same operations and `expected_modified` |
 | `delete_doctype` | Delete a DocType created by mistake during development | Preview, then confirm with `expected_modified` |
+| `rename` | Rename a record, a Custom Field's fieldname, a field of your app's DocType (with a generated patch), or your app's DocType, through Frappe's own rename code | `kind`, `doctype`, `old`, `new`, optional `merge`; preview, then confirm with `preview_id` |
 | `promote_custom_doctype` | Turn a site-custom DocType into a standard DocType of an app module, so Frappe writes its files into the app | `doctype`, `app`, `module`; preview, then confirm with `expected_modified` |
 | `set_role_permissions` | Add or update role permissions through Frappe's native Permission Manager | `doctype`, `role`, `permissions`, `permlevel`; preview, then confirm |
 | `create_custom_field` | Add a Custom Field | `doctype`, `field`, optional `app`/`module`; preview, then confirm |
 | `set_field_property` | Create or update the Property Setter for an allowlisted form property | `doctype`, `property`, `value`, optional `fieldname`/`property_type`/`app`/`module`; preview, then confirm (with `expected_modified` when the setter exists) |
+| `customize_doctype` | Customize a Frappe or ERPNext DocType in one Customize Form save: properties, field order, new Custom Fields, related fieldtype changes | `doctype`, `operations`; preview, then confirm with `preview_id` |
 | `export_form_customizations` | Preview then call Frappe's native Customize Form exporter for one DocType and its child tables | `app`, destination `module`, `doctype`, optional `sync_on_migrate`/`with_permissions`; preview, then confirm with the current `preview_id` |
 | `export_customizations` | Export site customizations to Frappe's native `custom/` files (and Client Scripts and, with `with_workflows`, Workflows to app fixtures) so `bench migrate` applies them | `app`, `module`, `doctypes`, optional `with_permissions`/`apply_module_filter`/`sync_on_migrate`/`with_workflows`; confirm with the current `preview_id` |
 | `rollback_export` | Restore or remove files from one prior export | Preview, then confirm with the current rollback `preview_id` |
@@ -211,7 +213,7 @@ The record tools are for record data. Their checks come before any request to th
 | `Custom Field` | refused: use `create_custom_field` / `set_field_property` | allowed |
 | `Property Setter` | refused: use `set_field_property` | allowed |
 | `Custom DocPerm` | refused: use `set_role_permissions` | allowed |
-| `Customize Form` | refused: use `create_custom_field`, `set_field_property`, or `set_role_permissions` | refused, same tools |
+| `Customize Form` | refused: use `customize_doctype`, `create_custom_field`, `set_field_property`, or `set_role_permissions` | refused, same tools |
 | `Workflow`, `Notification`, `Report`, `Workspace` | refused: use `upsert_workflow`, `upsert_notification`, `upsert_report`, `upsert_workspace` | allowed |
 | Records that hold code: Address Template, Assignment Rule, Automation Flow, Client Script, Custom HTML Block, Email Template, Letter Head, Navbar Settings, Print Format, Print Format Field Template, Print Style, Scheduled Job Type, Server Script, System Console, Web Form, Web Page, Web Template, Webhook, Website Script, Website Theme | refused | refused |
 
@@ -235,12 +237,12 @@ Set `is_custom: true` to create a site-custom DocType. Frappe stores that defini
 
 ### Editing DocTypes
 
-`update_doctype` changes a DocType of your own app (a standard DocType, which needs Developer Mode) or a site-custom DocType (`custom = 1`). It refuses standard DocTypes of `frappe` and `erpnext`; customize those with `create_custom_field` and `set_field_property`. The tool reads the DocType record, applies `operations` in order to a copy, and saves the whole field list in one request. Fields that are not touched keep their row `name`, so Frappe updates them in place instead of recreating them.
+`update_doctype` changes a DocType of your own app (a standard DocType, which needs Developer Mode) or a site-custom DocType (`custom = 1`). It refuses standard DocTypes of `frappe` and `erpnext`; customize those with [`customize_doctype`](#customize-form-saves), `create_custom_field`, and `set_field_property`. The tool reads the DocType record, applies `operations` in order to a copy, and saves the whole field list in one request. Fields that are not touched keep their row `name`, so Frappe updates them in place instead of recreating them.
 
 | Operation | Shape | Notes |
 |---|---|---|
 | `add_field` | `{"op": "add_field", "field": {...}, "insert_after": "fieldname"}` | `field` needs `fieldname` (lowercase letters, digits, `_`, starting with a letter) and `fieldtype`. Without `insert_after` the field goes last; `null` puts it first. The fieldname may not exist on the DocType, Custom Fields included. |
-| `update_field` | `{"op": "update_field", "fieldname": "...", "set": {...}}` | `fieldname` can't be changed (renames are not supported). |
+| `update_field` | `{"op": "update_field", "fieldname": "...", "set": {...}}` | `fieldname` can't be changed here; use [`rename`](#renames) with `kind: "field"`. |
 | `remove_field` | `{"op": "remove_field", "fieldname": "..."}` | See the data note below. |
 | `move_field` | `{"op": "move_field", "fieldname": "...", "insert_after": "fieldname"}` | `insert_after: null` moves the field to the top. |
 | `set_properties` | `{"op": "set_properties", "set": {...}}` | DocType settings from the same allowlist as `create_doctype`'s `properties`, except the tables `actions`, `links`, and `states`. |
@@ -292,6 +294,64 @@ Confirmation re-reads the DocType, refuses if `modified` moved, and sends `modif
 - One exists: the preview has `mode: "update"`, the setter's `name`, `current_value`, the new `value`, and `modified`. Confirm with `expected_modified` set to that `modified`; the setter is updated in place with the same row-locked timestamp check as `update_document`.
 
 `set_role_permissions` uses Frappe's System Manager-only Permission Manager methods. The connected account must have the System Manager role, and the target DocType and role must already exist. The tool does not create roles or assign roles to users.
+
+### Customize Form saves
+
+`customize_doctype` customizes a standard DocType (Frappe's, ERPNext's, or another app's) the way Desk's Customize Form does, in one save. It loads the form with `fetch_to_customize` and saves it with `save_customization`, both through `/api/method/run_doc_method`, the endpoint Desk uses (checked in Frappe v15.126.0 and v16.55.1, where it takes the same `docs` and `method` arguments). The load is a `GET`, so Frappe keeps no writes from it; the save is a `POST` of the whole Customize Form document with the operations applied. Frappe then compares every value with the DocType's own, creates Property Setters only for the differences, deletes setters that a change makes redundant, keeps the field order, creates and updates Custom Fields, and validates the whole DocType together. Customize Form needs the System Manager role; Frappe checks it. It refuses site-custom DocTypes (use `update_doctype`), Single DocTypes, and Frappe's core DocTypes.
+
+| Operation | Shape | Notes |
+|---|---|---|
+| `set_property` | `{"op": "set_property", "fieldname": "...", "property": "...", "value": ...}` | Without `fieldname` it sets a DocType setting. |
+| `move_field` | `{"op": "move_field", "fieldname": "...", "insert_after": "fieldname"}` | `null` moves the field to the top. |
+| `add_custom_field` | `{"op": "add_custom_field", "field": {"fieldname": "...", "fieldtype": "...", "label": "...", ...}, "insert_after": "..."}` | Without `insert_after` the field goes last. |
+| `change_fieldtype` | `{"op": "change_fieldtype", "fieldname": "...", "fieldtype": "..."}` | Only within Customize Form's `ALLOWED_FIELDTYPE_CHANGE` groups: Currency/Float/Percent, Small Text/Data, Text/Data, Text/Text Editor/Code/Signature/HTML Editor, Data/Select, Text/Small Text/Long Text, Text/Data/Barcode, Code/Geolocation, Table/Table MultiSelect. |
+
+Field properties are Customize Form's `docfield_properties` that `update_doctype` also allows: `label`, `options`, `description`, `default`, `hidden`, `read_only`, `reqd`, `bold`, `collapsible`, `in_list_view`, `in_standard_filter`, `in_global_search`, `in_preview`, `print_hide`, `print_hide_if_no_value`, `report_hide`, `no_copy`, `unique`, `permlevel`, `ignore_user_permissions`, `allow_on_submit`, `translatable`, `depends_on`, `mandatory_depends_on`, `read_only_depends_on`, `fetch_from`, `fetch_if_empty`, `precision`, `length`, `columns`, `width`, `print_width`, `placeholder`, `link_filters`, `sort_options`, `show_dashboard`, `non_negative`, `remember_last_selected_value`, `allow_bulk_edit`, `allow_in_quick_entry`, `hide_border`, `hide_days`, `hide_seconds`, and on v16 `alignment`, `button_color`, `mask`, and `set_only_once`. DocType settings: `title_field`, `search_fields`, `image_field`, `sort_field`, `sort_order`, `default_print_format`, `default_view`, `autoname`, `naming_rule`, `track_changes`, `track_views`, `allow_copy`, `allow_import`, `allow_auto_repeat`, `quick_entry`, `editable_grid`, `queue_in_background`, `max_attachments`, `make_attachments_public`, `protect_attached_files`, `show_name_in_global_search`, `show_preview_popup`, `show_title_field_in_link`, `email_append_to`, `subject_field`, `sender_field`, `default_email_template`, `is_calendar_and_gantt`, `force_re_route_to_default_view`, `translated_doctype`, `grid_page_length`, `rows_threshold_for_grid_search`, and on v16 `hide_toolbar`. Check values are `0`/`1` or booleans, Int values integers, the rest strings. `collapsible_depends_on`, `ignore_xss_filter`, and `options` on HTML and Button fields are refused, as in `update_doctype`.
+
+Before sending anything, the tool refuses what Customize Form would skip with a message on a standard field: enabling Allow on Submit, making a mandatory field optional, making a read-only field editable, showing a no-value field in the list view, `translatable` on a type that can't be translated, and `options` on anything but Data and Read Only fields (Frappe does not let Customize Form change a standard Select field's options; `set_field_property` writes that setter without the check).
+
+The preview simulates the save and returns:
+
+- `property_setters`: each setter the save creates, updates, or removes (`{"action", "fieldname", "property", "from", "to"}`). A value equal to the DocType's own value removes the existing setter instead of writing a new one. A DocType setting replaces every setter of that property, field-level ones included. Whenever the new field order differs from the DocType's own order, Frappe stores it in a `field_order` setter; a DocType with Custom Fields always gets one on its first Customize Form save, as in Desk.
+- `custom_fields`: Custom Fields to create (with `insert_after`) and existing ones to update (`set`, with `from`/`to` per property, `insert_after` included when a move changes it). Customize Form saves non-system Custom Fields directly, not through setters.
+- `warnings`: fieldtype and length changes (Frappe refuses the save if stored values don't fit), `reqd` with the count of empty records, and `unique`.
+- `preview_id`: a hash of the planned changes, the operations, the DocType's `modified`, and every Property Setter and Custom Field of the DocType. Confirmation recomputes it and refuses a mismatch.
+
+The result lists the Property Setters that actually changed (read back after the save), the planned Custom Field changes, Frappe's messages, and a warning naming any previewed change Frappe didn't apply.
+
+Use `set_field_property` for a single Property Setter with no Customize Form checks, and `create_custom_field` for one Custom Field with `module` (for a later `apply_module_filter` export). Use `customize_doctype` for several changes at once, for moves and fieldtype changes, and whenever the result must match a Customize Form save.
+
+### Renames
+
+`rename(kind, doctype, old, new, merge=False)` uses Frappe's own rename code, so references move with the name. Every kind previews first and confirms with `preview_id`, a hash of the preview (which includes the record's or DocType's `modified`).
+
+| `kind` | What | Frappe call | Refused |
+|---|---|---|---|
+| `document` | Record `old` of `doctype` becomes `new`; `merge=true` merges it into an existing `new` | `frappe.model.rename_doc.update_document_title` (v15 and v16) | DocTypes without Allow Rename, Single and child DocTypes, schema DocTypes and records that hold code; `new` already taken (without `merge`) or missing (with `merge`) |
+| `custom_field` | A Custom Field's fieldname on `doctype` | `frappe.custom.doctype.custom_field.custom_field.rename_fieldname` (System Manager; v15 and v16) | standard fields, system-generated Custom Fields, a taken fieldname |
+| `field` | A field of your app's standard DocType | saves the DocType with the new fieldname, after writing a patch (below) | `frappe`/`erpnext` DocTypes, site-custom DocTypes (no app holds the patch), a taken fieldname, no checkout under `FRAPPE_APPS_PATH` |
+| `doctype` | Your app's DocType `old` becomes `new` (pass `doctype: "DocType"`) | `update_document_title` on the DocType record | `frappe`/`erpnext` DocTypes, an existing `new`, `merge` |
+
+The `document` preview counts, per Link field that points to the DocType (Custom Fields included, up to 50 fields), the records that hold `old`; `linked_records` is the total. Frappe also updates Dynamic Links, child rows, attachments, versions, and assignments, and may adjust the new name through naming rules or a `before_rename` hook; the result's `name` is the name Frappe kept.
+
+The `custom_field` preview counts the records with a value and lists what Frappe's `rename_fieldname` does not update: Property Setters on the field, a `field_order` setter that names it, DocType settings such as `title_field`, and other fields' expressions. Frappe renames the column, updates other Custom Fields' `insert_after`, and keeps the Custom Field's record name (`<DocType>-<old fieldname>`).
+
+A DocType save never renames a column: Frappe adds a column for the new fieldname and leaves the data in the old one. So `kind: "field"` also writes a patch that calls Frappe's `rename_field`, which copies the values and updates Property Setters, reports, and user settings. The patch comes from a fixed template; only the DocType, its module folder, and the two fieldnames are filled in, each checked first:
+
+```python
+# Generated by mcp-frappe: renames the Lab Sample field batch_no to lot_no.
+import frappe
+from frappe.model.utils.rename_field import rename_field
+
+
+def execute():
+	frappe.reload_doc('lab', "doctype", 'lab_sample')
+	rename_field('Lab Sample', 'batch_no', 'lot_no')
+```
+
+It goes to `<app>/<app>/patches/rename_<doctype>_<old>_to_<new>.py` (with an empty `patches/__init__.py` if there is none), and its dotted path is added to the end of the `[post_model_sync]` section of `patches.txt` (a new section if the file has none; the end of a file without sections; a new file with both sections). The preview shows each file's diff, the DocType settings that named the field and are renamed with it (`title_field`, `search_fields`, `sort_field`, ...), the record count, other fields' expressions that still name the old field, and lines in the DocType folder's code that do. Confirmation writes the files first, with a backup and a rollback manifest, then saves the DocType with its `modified`; if Frappe refuses the save, the files are restored. The result has the `rollback_id` (undo the file changes with `rollback_export`), and `next_step`: until `bench migrate` (or `run_bench(command="migrate")` when it is enabled) runs the patch, the field reads empty on this site. A developer-mode reload during the save is reconciled like `update_doctype`.
+
+The `doctype` preview gives the record count, the Link and Table fields of other DocTypes that use it (Frappe updates their options), the Custom Field and Property Setter counts (Frappe moves them), and for a standard DocType the folder Frappe moves (`app_files`) plus `code_mentions`: files elsewhere in the app that name the DocType, such as `hooks.py` or other DocTypes' JSON, which Frappe doesn't change. A standard DocType rename needs Developer Mode and the Administrator user; Frappe checks both. A reload during the rename is reconciled by checking that `new` exists and `old` doesn't.
 
 ## Site and app sync
 
