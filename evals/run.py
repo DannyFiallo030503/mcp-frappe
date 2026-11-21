@@ -601,6 +601,18 @@ def _version(argv: list[str]) -> str | None:
         return None
 
 
+def save_transcript(folder: Path | None, task: str, config: str, lines: list[str]) -> Path | None:
+    """Keep a run's raw stream-json for debugging (mode 0600). It holds site data: not evidence."""
+    if folder is None:
+        return None
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"{task}-{config}.jsonl"
+    path.touch(mode=0o600)
+    path.chmod(0o600)
+    path.write_text("".join(f"{line}\n" for line in lines))
+    return path
+
+
 async def run_task(
     harness: Harness, task: Task, config: str, args: argparse.Namespace, names: dict[str, str],
     environ: dict[str, str], baseline_drift: set[str],
@@ -632,6 +644,7 @@ async def run_task(
             )
         finally:
             shutil.rmtree(folder, ignore_errors=True)
+        save_transcript(args.transcripts, task.id, config, lines)
         summary = parse_stream(lines)
         answer = summary.pop("answer", "")
         failed_servers = sorted(
@@ -739,6 +752,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="run dev and both without the frappe-development skill")
     parser.add_argument("--claude", default="claude", help="the Claude Code executable")
     parser.add_argument("--out", type=Path, help="also write the JSON result to this file")
+    parser.add_argument("--transcripts", type=Path,
+                        help="save each run's raw stream-json here (holds site data; not evidence)")
     parser.add_argument("--dry-run", action="store_true",
                         help="list the tasks and runs; touch nothing")
     return parser.parse_args(argv)

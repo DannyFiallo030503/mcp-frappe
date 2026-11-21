@@ -26,8 +26,8 @@ All notable changes to this project are listed here. The format follows
   from its options, and adds the `frappe-development` skill.
 - Developer-task evaluations: `evals/run.py` runs the twelve tasks in `evals/tasks/` with
   `claude -p` against this server, Frappe's built-in MCP, or both, and checks the site and the
-  app checkout afterwards. It needs `FRAPPE_ALLOW_EVALS=YES` and a local site. Not run yet; see
-  `docs/evaluations.md`. PyYAML joins the `dev` extra.
+  app checkout afterwards. It needs `FRAPPE_ALLOW_EVALS=YES` and a local site. Results of
+  the first run (v16) are in `docs/evaluations.md`. PyYAML joins the `dev` extra.
 - `list_pending_patches(app)`: the app's `patches.txt` entries that `Patch Log` doesn't show
   as run, in file order with section and line, plus logged patches no longer in the file.
 - `get_recent_errors(since, method, reference_doctype, limit, offset)`: `Error Log` newest
@@ -90,6 +90,15 @@ All notable changes to this project are listed here. The format follows
 ### Fixed
 
 - `rollback_export` no longer reports an exported empty file as changed since the export.
+- `rename(kind="field")` no longer reuses a patch name the site's `Patch Log` already holds.
+  A field renamed, undone, and renamed again got a patch that `bench migrate` skipped, so its
+  values never reached the new column; the patch now gets a `_2`, `_3`, ... suffix. Found by
+  the stage 21 evaluations.
+- `diff_doctype` reports `in_sync`, not `diverged`, when the site's `migration_hash` and
+  `modified` match the file: what still differs is what Frappe filled in on import (`engine`,
+  `row_format`, `sort_field`, `sort_order` for a hand-written JSON), now flagged
+  `filled_on_import`. Found by the stage 21 evaluations.
+- `evals/run.py --transcripts DIR` saves each run's raw stream-json (mode 0600) for debugging.
 
 ## [0.3.0] - 2026-11-20
 
