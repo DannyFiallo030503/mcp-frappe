@@ -59,7 +59,7 @@ def test_custom_field_needs_no_local_checkout(site) -> None:
     result = standalone.create_custom_field(doctype="Customer", field=FIELD, confirm=True)
 
     assert preview["requires_confirmation"] is True
-    assert result == {"name": "Customer-custom_x"}
+    assert result == {"name": "Customer-custom_x", "mcp_change": result["mcp_change"]}
     (call,) = site.calls_to("POST", standalone._resource("Custom Field"))
     assert call.json == {"data": {**FIELD, "doctype": "Custom Field", "dt": "Customer"}}
     assert not site.calls_to("GET", standalone._resource("Module Def"))

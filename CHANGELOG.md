@@ -60,6 +60,24 @@ All notable changes to this project are listed here. The format follows
 - `FRAPPE_MCP_TOOLSETS` accepts `bench`; the default selection includes it, and it has no
   tool unless `FRAPPE_BENCH_PATH` is set. `mcp-frappe check` lists only toolsets with tools.
 
+- `create_documents(doctype, rows, expected_preview, confirm)`: create 1-100 records of one
+  DocType in one all-or-nothing request (`frappe.client.insert_many`). Every row is checked
+  like `create_document`; the preview lists per-row `problems` and confirms with `preview_id`.
+- A change journal: every confirmed write is recorded in
+  `FRAPPE_APPS_PATH/.mcp-frappe-journal/<site>.json` (in memory without `FRAPPE_APPS_PATH`),
+  newest 200 entries, and confirmed results carry the entry id as `mcp_change`. Writes of
+  business records are journaled only with the new `FRAPPE_MCP_JOURNAL_RECORDS=YES`.
+- `list_mcp_changes(limit)` lists the journal, and `undo_mcp_change(entry_id,
+  expected_preview, confirm)` undoes created records, Custom Fields, Property Setters, and
+  DocTypes, updates, and DocType edits, after a preview, and only while the target is
+  unchanged since.
+- `create_document` checks child-table rows: each must be an object whose keys are fields of
+  the child DocType (standard columns such as `parent` are refused).
+- The tool-list budget test allows 40,000 characters (was 37,000), and the opt-in caps grow
+  by the same 3,000.
+- `e2e/run_standalone_batch_undo.py`: batch inserts and undo on ToDos, opt-in with
+  `FRAPPE_ALLOW_MUTATION_TEST=YES`.
+
 ### Fixed
 
 - `rollback_export` no longer reports an exported empty file as changed since the export.
