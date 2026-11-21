@@ -10,13 +10,13 @@ Read `AGENTS.md` first; its rules (no SQL/Python eval/unrestricted method dispat
 uv sync --extra dev                                   # install with pytest + ruff
 uv run pytest -q                                      # unit tests (testpaths = tests/)
 uv run pytest -q tests/test_standalone.py::test_name  # single test
-uv run ruff check frappe_mcp tests e2e/run_standalone_*.py
+uv run ruff check frappe_mcp tests evals e2e/run_standalone_*.py
 uv run mcp-frappe                                     # run the stdio server (or: uv run python -m frappe_mcp.standalone)
 uv run mcp-frappe check                               # check FRAPPE_* settings and the login; --version prints the version
 uv build                                              # sdist + wheel in dist/ (CI installs the wheel and runs it)
 ```
 
-Ruff: line length 100, target py310, rules `E,F,I,B,UP`; `legacy/` is excluded. `frappe_mcp` and `tests` are lint-clean and CI (`.github/workflows/ci.yml`, Python 3.10 and 3.12) keeps them that way; `e2e/` still has pre-existing E501/I001 hits, so there check only that your changes add no new errors.
+Ruff: line length 100, target py310, rules `E,F,I,B,UP`; `legacy/` is excluded. `frappe_mcp`, `tests`, and `evals` are lint-clean and CI (`.github/workflows/ci.yml`, Python 3.10 and 3.12) keeps them that way; `e2e/` still has pre-existing E501/I001 hits, so there check only that your changes add no new errors.
 
 The e2e runners in `e2e/run_standalone_*.py` launch a real MCP stdio session against a live site configured with `FRAPPE_*` env vars (see `docs/installation-and-configuration.md`). `run_standalone_smoke.py` is read-only; the mutation, customization, DocType-matrix, and developer-flow runners write temporary data, refuse non-loopback targets, and need opt-in env vars (`FRAPPE_ALLOW_MUTATION_TEST`, `FRAPPE_ALLOW_CUSTOMIZATION_TEST`, `FRAPPE_ALLOW_DOCTYPE_MATRIX`, `FRAPPE_ALLOW_DEVELOPER_FLOW_TEST`, `FRAPPE_ALLOW_BENCH_TEST` (plus `FRAPPE_BENCH_PATH`), each `=YES`; `run_standalone_batch_undo.py` also uses `FRAPPE_ALLOW_MUTATION_TEST`). The writing runners target the disposable app in `FRAPPE_TEST_APP`/`FRAPPE_TEST_MODULE`. Run them only on a disposable dev site, and only when asked. Their output is evidence for the matrix in `docs/compatibility-and-validation.md` (saved under `e2e/evidence/`; older runs are in `e2e/history/`). `tests/test_docs_links.py` fails on any broken relative link or heading anchor in the docs; README links must be absolute GitHub URLs (it is also the PyPI page).
 
@@ -43,6 +43,10 @@ A standalone MCP server (FastMCP over stdio) that runs outside Frappe and talks 
 - **Bench reload tolerance**: standard DocType creation, DocType edits, deletion, and promotion, and exports can make a developer-mode Bench reload its web worker mid-request. Code such as `_wait_for_doctype`, `_wait_for_server_ready`, `_doctype_matches`, and `_wait_for_document_deleted` reconciles the remote state after an `httpx.TransportError` instead of assuming failure. Keep this pattern for new write paths that can trigger a reload.
 
 Unit tests isolate the remote site with the `fake_site` fixture in `tests/conftest.py` (or by monkeypatching `standalone._request`, `standalone._meta_bundle`, etc.; `fake_site.add_doctype()` answers `getdoctype` and the fixture clears the metadata cache), and use `tmp_path` with `FRAPPE_APPS_PATH` for filesystem cases. They never need a live site. `tests/test_mcp_contract.py` drives the server through a real in-memory MCP client session.
+
+The Claude Code plugin lives in `plugins/frappe-dev/` (`.claude-plugin/plugin.json`, `.mcp.json` mapping `userConfig` options to `FRAPPE_*` variables, and the `frappe-development` skill with its `references/`); `.claude-plugin/marketplace.json` at the root lists it. Keep the plugin and marketplace versions equal to `__version__`, and keep the skill's tool names real (`tests/test_plugin.py` checks all three). `claude plugin validate --strict plugins/frappe-dev` checks the format.
+
+`evals/run.py` runs the developer-task evaluations in `evals/tasks/*.yaml` with `claude -p` in three configurations (`dev`, `native`, `both`) and checks the site afterwards through a harness MCP session; it needs `FRAPPE_ALLOW_EVALS=YES` and a local site, costs API usage, and resets the test app's checkout with Git, so run it only when asked. `tests/test_evals.py` covers it without a site.
 
 `legacy/` holds the old implementation that ran as an installed Frappe app. It is not packaged, linted, or tested; don't import from it or assume its tools exist. `UPSTREAM.md` describes that legacy vendored transport.
 

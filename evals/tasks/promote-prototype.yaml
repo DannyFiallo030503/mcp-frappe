@@ -1,0 +1,22 @@
+id: promote-prototype
+title: Move a site-custom prototype DocType into the app
+prompt: |
+  I prototyped "MCP Eval Proto" as a custom DocType on the site. Move it into the app ${app},
+  module ${module}, so it ships with the app.
+setup:
+  - write: create_doctype
+    args:
+      app: ${app}
+      module: ${module}
+      name: MCP Eval Proto
+      is_custom: true
+      fields: [{fieldname: title, fieldtype: Data, label: Title}]
+check:
+  - call: diff_doctype
+    args: {doctype: MCP Eval Proto}
+    expect: [{path: verdict, equals: in_sync}]
+  - file: ${app}/${module_dir}/doctype/mcp_eval_proto/mcp_eval_proto.json
+    contains: MCP Eval Proto
+cleanup:
+  - write: delete_doctype
+    args: {doctype: MCP Eval Proto}

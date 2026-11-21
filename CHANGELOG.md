@@ -19,6 +19,15 @@ All notable changes to this project are listed here. The format follows
 
 ### Added
 
+- A Claude Code plugin, `frappe-dev`, in `plugins/frappe-dev`, listed by the repository's
+  marketplace (`claude plugin marketplace add DannyFiallo030503/mcp-frappe`, then
+  `claude plugin install frappe-dev@mcp-frappe`). It runs `uvx mcp-frappe` with the site URL,
+  API key and secret (kept in the credential store), apps folder, Bench folder, and toolsets
+  from its options, and adds the `frappe-development` skill.
+- Developer-task evaluations: `evals/run.py` runs the twelve tasks in `evals/tasks/` with
+  `claude -p` against this server, Frappe's built-in MCP, or both, and checks the site and the
+  app checkout afterwards. It needs `FRAPPE_ALLOW_EVALS=YES` and a local site. Not run yet; see
+  `docs/evaluations.md`. PyYAML joins the `dev` extra.
 - `list_pending_patches(app)`: the app's `patches.txt` entries that `Patch Log` doesn't show
   as run, in file order with section and line, plus logged patches no longer in the file.
 - `get_recent_errors(since, method, reference_doctype, limit, offset)`: `Error Log` newest

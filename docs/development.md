@@ -4,6 +4,8 @@
 
 - `frappe_mcp/standalone.py`: MCP stdio server, Frappe HTTP client, tools, and confined app exports.
 - `tests/`: isolated tests for standalone validation and path safety. `tests/conftest.py` provides a `fake_site` fixture that stands in for the Frappe HTTP API, and `tests/test_mcp_contract.py` drives the server through a real MCP client session.
+- `plugins/frappe-dev/` and `.claude-plugin/marketplace.json`: the Claude Code plugin and the marketplace that lists it.
+- `evals/`: the developer-task evaluations (`run.py` and `tasks/*.yaml`).
 - `e2e/`: MCP stdio acceptance runners. `e2e/history/` keeps the reports and evidence of earlier runs; new evidence goes in `e2e/evidence/` (see [compatibility and validation](compatibility-and-validation.md#filling-in-a-cell)).
 - `legacy/`: previous Frappe-hosted app and transport, excluded from the installable standalone package.
 
@@ -12,10 +14,10 @@
 ```bash
 uv sync --extra dev
 uv run pytest -q
-uv run ruff check frappe_mcp tests e2e/run_standalone_*.py
+uv run ruff check frappe_mcp tests evals e2e/run_standalone_*.py
 ```
 
-CI (`.github/workflows/ci.yml`) runs `uv run pytest -q` and `uv run ruff check frappe_mcp tests` on Python 3.10 and 3.12. Its `package` job runs `uv build`, installs the wheel into a clean environment with `uvx --isolated`, runs `mcp-frappe --version`, `mcp-frappe check` (which must fail without a site), and the server with stdin at EOF (stdout must stay empty), and checks that `legacy/`, `e2e/`, and `docs/` stay out of the archives. The `e2e/` runners are not lint-clean yet, so CI does not lint them; make sure your changes add no new errors there.
+CI (`.github/workflows/ci.yml`) runs `uv run pytest -q` and `uv run ruff check frappe_mcp tests evals` on Python 3.10 and 3.12. Its `package` job runs `uv build`, installs the wheel into a clean environment with `uvx --isolated`, runs `mcp-frappe --version`, `mcp-frappe check` (which must fail without a site), and the server with stdin at EOF (stdout must stay empty), and checks that `legacy/`, `e2e/`, and `docs/` stay out of the archives. The `e2e/` runners are not lint-clean yet, so CI does not lint them; make sure your changes add no new errors there.
 
 The normal test configuration runs only standalone tests; the historical Frappe app tests require their Bench environment and are not part of this package test run.
 
@@ -97,6 +99,21 @@ FRAPPE_ALLOW_DEVELOPER_FLOW_TEST=YES uv run python e2e/run_standalone_developer_
 ```
 
 `FRAPPE_TEST_CUSTOMIZE_DOCTYPE` picks a `frappe` DocType other than `ToDo` to customize. Every object it creates carries a random suffix; after cleanup it removes leftover folders with that suffix, and empty scaffold folders the run created, from the test module only. The exit code is non-zero when any area failed.
+
+## Claude Code plugin
+
+`plugins/frappe-dev/` is the plugin (manifest, `.mcp.json`, the `frappe-development` skill), and `.claude-plugin/marketplace.json` lists it. `tests/test_plugin.py` checks that both versions follow `__version__`, that every server variable comes from a plugin option, and that the skill names only real tools. With Claude Code installed, also run:
+
+```bash
+claude plugin validate --strict plugins/frappe-dev
+claude plugin validate --strict .
+```
+
+To try an install without touching your own configuration, point `CLAUDE_CONFIG_DIR` at an empty folder, then `claude plugin marketplace add <checkout>` and `claude plugin install frappe-dev@mcp-frappe`. Bump the plugin's `version` with each release.
+
+## Developer-task evaluations
+
+`evals/run.py` runs the tasks in `evals/tasks/` with Claude Code headless and checks the site afterwards; see [its README](../evals/README.md). It costs API usage and writes to the site and the test app, so run it only when asked, with `FRAPPE_ALLOW_EVALS=YES`, on a disposable site. `uv run python evals/run.py --dry-run` lists the runs without touching anything. Results go in [evaluations](evaluations.md).
 
 ## Secrets and evidence
 

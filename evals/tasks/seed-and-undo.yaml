@@ -1,0 +1,20 @@
+id: seed-and-undo
+title: Seed 20 test records, then undo them
+prompt: |
+  Create 20 ToDo records for testing, with the descriptions "MCP Eval seed ${run} 1" through
+  "MCP Eval seed ${run} 20". Check that all 20 exist. Then take the whole batch back, so none of
+  them are left on the site.
+check:
+  - call: count_documents
+    args:
+      doctype: ToDo
+      filters: [[description, like, "%MCP Eval seed ${run}%"]]
+    expect: [{path: count, equals: 0}]
+  - call: count_documents
+    args:
+      doctype: Deleted Document
+      filters: [[deleted_doctype, "=", ToDo], [data, like, "%MCP Eval seed ${run} %"]]
+    expect: [{path: count, equals: 20}]
+cleanup:
+  - delete_matching: ToDo
+    filters: [[description, like, "%MCP Eval seed ${run}%"]]

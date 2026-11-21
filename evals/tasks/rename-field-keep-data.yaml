@@ -1,0 +1,39 @@
+id: rename-field-keep-data
+title: Rename a field without losing data
+needs: [bench]
+prompt: |
+  On the DocType "MCP Eval Item" of the app ${app}, rename the field `old_code` to `item_code`.
+  The three existing records must keep their values under the new field. Finish the job so the
+  site already uses the new field.
+setup:
+  - write: create_doctype
+    args:
+      app: ${app}
+      module: ${module}
+      name: MCP Eval Item
+      fields:
+        - {fieldname: title, fieldtype: Data, label: Title}
+        - {fieldname: old_code, fieldtype: Data, label: Code}
+  - write: create_documents
+    args:
+      doctype: MCP Eval Item
+      rows:
+        - {title: One, old_code: "E${run}-1"}
+        - {title: Two, old_code: "E${run}-2"}
+        - {title: Three, old_code: "E${run}-3"}
+check:
+  - call: get_doctype_schema
+    args: {doctype: MCP Eval Item}
+    expect:
+      - {path: fields.fieldname, contains: item_code}
+      - {path: fields.fieldname, not_contains: old_code}
+  - call: list_documents
+    args:
+      doctype: MCP Eval Item
+      filters: [[item_code, like, "E${run}-%"]]
+      fields: [item_code]
+    expect: [{path: rows, count: 3}]
+cleanup:
+  - delete_matching: MCP Eval Item
+  - write: delete_doctype
+    args: {doctype: MCP Eval Item}

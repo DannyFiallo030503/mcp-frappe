@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "frappe-dev": {
+      "command": "uvx",
+      "args": ["mcp-frappe"],
+      "env": {
+        "FRAPPE_URL": "${user_config.frappe_url}",
+        "FRAPPE_SITE": "${user_config.frappe_site}",
+        "FRAPPE_API_KEY": "${user_config.api_key}",
+        "FRAPPE_API_SECRET": "${user_config.api_secret}",
+        "FRAPPE_APPS_PATH": "${user_config.apps_path}",
+        "FRAPPE_BENCH_PATH": "${user_config.bench_path}",
+        "FRAPPE_MCP_TOOLSETS": "${user_config.toolsets}"
+      }
+    }
+  }
+}

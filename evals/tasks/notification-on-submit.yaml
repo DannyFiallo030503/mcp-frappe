@@ -1,0 +1,26 @@
+id: notification-on-submit
+title: Notify a role when a document is submitted
+prompt: |
+  When an "MCP Eval Order" is submitted, users with the System Manager role should get a
+  System Notification (not an email) saying which order it was. Name the rule
+  "MCP Eval Submitted".
+setup:
+  - write: create_doctype
+    args:
+      app: ${app}
+      module: ${module}
+      name: MCP Eval Order
+      is_submittable: true
+      fields: [{fieldname: title, fieldtype: Data, label: Title}]
+check:
+  - call: list_notifications
+    args: {document_type: MCP Eval Order}
+    expect:
+      - {path: "notifications[name=MCP Eval Submitted].event", equals: Submit}
+      - {path: "notifications[name=MCP Eval Submitted].channel", equals: System Notification}
+      - {path: "notifications[name=MCP Eval Submitted].enabled", equals: 1}
+cleanup:
+  - write: delete_document
+    args: {doctype: Notification, name: MCP Eval Submitted}
+  - write: delete_doctype
+    args: {doctype: MCP Eval Order}

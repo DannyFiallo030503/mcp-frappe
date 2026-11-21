@@ -1,0 +1,26 @@
+id: drift-report
+title: Report which DocTypes differ between the site and the app files
+prompt: |
+  Which DocTypes of the app ${app} differ between this site and the app's files? Name each one.
+  Don't change anything.
+setup:
+  - write: create_doctype
+    args:
+      app: ${app}
+      module: ${module}
+      name: MCP Eval Drift
+      fields: [{fieldname: title, fieldtype: Data, label: Title}]
+  - replace_in_file: ${app}/${module_dir}/doctype/mcp_eval_drift/mcp_eval_drift.json
+    old: '"label": "Title"'
+    new: '"label": "Drifted Title"'
+  - call: diff_doctype
+    args: {doctype: MCP Eval Drift}
+    expect: [{path: verdict, not_equals: in_sync}]
+check:
+  - answer: [MCP Eval Drift]
+  - call: get_doctype_schema
+    args: {doctype: MCP Eval Drift}
+    expect: [{path: "fields[fieldname=title].label", equals: Title}]
+cleanup:
+  - write: delete_doctype
+    args: {doctype: MCP Eval Drift}

@@ -1,0 +1,35 @@
+id: child-table-export
+title: Add a child table to a DocType of the test app and keep the app files in sync
+prompt: |
+  In the app ${app}, the DocType "MCP Eval Sample" needs readings. Create a child table DocType
+  "MCP Eval Reading" in module ${module} with two fields: `value` (Float) and `unit` (Data).
+  Then add a table field `readings` to MCP Eval Sample that uses it. Make sure the app's files
+  match the site when you are done.
+setup:
+  - write: create_doctype
+    args:
+      app: ${app}
+      module: ${module}
+      name: MCP Eval Sample
+      fields: [{fieldname: title, fieldtype: Data, label: Title}]
+check:
+  - call: get_doctype_schema
+    args: {doctype: MCP Eval Sample}
+    expect:
+      - {path: "fields[fieldname=readings].fieldtype", equals: Table}
+      - {path: "fields[fieldname=readings].options", equals: MCP Eval Reading}
+      - {path: "child_tables.MCP Eval Reading.fieldname", contains: value}
+      - {path: "child_tables.MCP Eval Reading.fieldname", contains: unit}
+  - call: diff_doctype
+    args: {doctype: MCP Eval Sample}
+    expect: [{path: verdict, equals: in_sync}]
+  - call: diff_doctype
+    args: {doctype: MCP Eval Reading}
+    expect: [{path: verdict, equals: in_sync}]
+  - file: ${app}/${module_dir}/doctype/mcp_eval_sample/mcp_eval_sample.json
+    contains: '"readings"'
+cleanup:
+  - write: delete_doctype
+    args: {doctype: MCP Eval Sample}
+  - write: delete_doctype
+    args: {doctype: MCP Eval Reading}

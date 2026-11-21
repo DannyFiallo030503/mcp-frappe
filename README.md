@@ -42,7 +42,20 @@ uvx mcp-frappe check
 
 `check` logs in and prints the user, app versions, toolsets, how many characters each toolset adds to the host's context, and whether `FRAPPE_APPS_PATH` holds the site's apps. It never prints a secret. HTTPS is required except for loopback and `.localhost` hosts.
 
-Then add the server to your host. The examples name it `frappe-dev`, so it doesn't clash with Frappe's built-in MCP server, whose guide suggests `frappe`. **Claude Code:**
+### Claude Code plugin
+
+The quickest setup in Claude Code is the plugin. It adds the server as `frappe-dev` and a `frappe-development` skill that tells Claude which tool fits which DocType and how to run the change, compare, export, migrate, and check loop:
+
+```bash
+claude plugin marketplace add DannyFiallo030503/mcp-frappe
+claude plugin install frappe-dev@mcp-frappe
+```
+
+Claude Code asks for the site URL, the API key and secret (kept in the system's credential store), and optionally the Bench `apps` folder. See the [plugin's README](https://github.com/DannyFiallo030503/mcp-frappe/tree/main/plugins/frappe-dev) for every option.
+
+### By hand
+
+Add the server to your host. The examples name it `frappe-dev`, so it doesn't clash with Frappe's built-in MCP server, whose guide suggests `frappe`. **Claude Code:**
 
 ```bash
 claude mcp add frappe-dev \
@@ -105,6 +118,7 @@ Use an Administrator key only on a development site. See the [security model](ht
 - [Tool reference](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/docs/tool-reference.md): every tool, its arguments, and its limits
 - [AI agent guide](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/docs/ai-agent-guide.md): the workflows an agent should follow
 - [Using both servers](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/docs/native-frappe-mcp.md): this server next to Frappe's built-in MCP
+- [Developer-task evaluations](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/docs/evaluations.md): twelve development tasks run with this server, Frappe's built-in MCP, and both
 - [Compatibility and validation](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/docs/compatibility-and-validation.md): what has been run on v15 and v16 sites
 - [Field feedback](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/docs/field-feedback/README.md): sanitized task usage, missing capabilities, and bugs reported from real MCP use
 - [Architecture](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/docs/architecture.md), [security](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/docs/security.md), [development](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/docs/development.md)

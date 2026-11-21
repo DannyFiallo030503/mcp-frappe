@@ -99,6 +99,28 @@ FRAPPE_BENCH_COMMAND='["docker", "compose", "exec", "-T", "backend", "bench"]'
 
 `-T` keeps Docker from allocating a terminal, which the server can't give it. `run-tests` needs `bench --site <site> set-config allow_tests true` once. The command gets a minimal environment (no `FRAPPE_*` credentials and no `CI`); set `DOCKER_HOST` or `DOCKER_CONTEXT` in the server's environment if your Docker setup needs them.
 
+## Claude Code plugin
+
+The repository is also a Claude Code plugin marketplace. Its `frappe-dev` plugin runs `uvx mcp-frappe` as the `frappe-dev` server and adds the `frappe-development` skill:
+
+```bash
+claude plugin marketplace add DannyFiallo030503/mcp-frappe
+claude plugin install frappe-dev@mcp-frappe
+```
+
+Inside Claude Code, the same is `/plugin marketplace add DannyFiallo030503/mcp-frappe` and `/plugin install frappe-dev@mcp-frappe`. Claude Code asks for the plugin's options when it is enabled; `claude plugin configure frappe-dev@mcp-frappe` shows them and which are unset.
+
+| Option | Variable | |
+|---|---|---|
+| Site URL | `FRAPPE_URL` | Required |
+| Site name | `FRAPPE_SITE` | Multi-site Bench |
+| API key, API secret | `FRAPPE_API_KEY`, `FRAPPE_API_SECRET` | Required; stored in the system's secure credential store, not in `settings.json` |
+| Bench apps folder | `FRAPPE_APPS_PATH` | Standard DocTypes, drift checks, exports |
+| Bench folder | `FRAPPE_BENCH_PATH` | Only to turn on [Bench commands](#bench-commands) |
+| Toolsets | `FRAPPE_MCP_TOOLSETS` | Empty for all |
+
+An option left empty is passed as an empty value, which the server treats as unset. The plugin supports API-key login only; for a password login or any other variable from the [Environment](#environment) table, add the server with `claude mcp add` instead and disable the plugin's server in `/mcp`, keeping the skill. Remove the plugin with `claude plugin uninstall frappe-dev@mcp-frappe`. The plugin's files are in [plugins/frappe-dev](../plugins/frappe-dev/README.md).
+
 ## MCP host configuration
 
 The host launches `uvx mcp-frappe` with the settings in its environment. The [README](../README.md#configure) has ready snippets for Claude Code (`claude mcp add frappe-dev -e FRAPPE_URL=... -- uvx mcp-frappe`) and Claude Desktop. The suggested server name is `frappe-dev`, because Frappe's built-in MCP server suggests `frappe`; to run both, see [using both servers](native-frappe-mcp.md). A generic local server declaration:
@@ -134,4 +156,4 @@ Run `mcp-frappe check` (above) with the host's environment first. Then, in the M
 
 ## Removal
 
-Remove the `frappe-dev` server entry (or whatever you named it) from the MCP host configuration (`claude mcp remove frappe-dev` in Claude Code). `uv cache clean mcp-frappe` drops the cached `uvx` environment; delete the checkout if you used one. No app uninstall, site migration, or Bench change is required.
+Remove the `frappe-dev` server entry (or whatever you named it) from the MCP host configuration (`claude mcp remove frappe-dev` in Claude Code, or `claude plugin uninstall frappe-dev@mcp-frappe` for the plugin). `uv cache clean mcp-frappe` drops the cached `uvx` environment; delete the checkout if you used one. No app uninstall, site migration, or Bench change is required.

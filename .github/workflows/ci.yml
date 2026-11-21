@@ -23,8 +23,8 @@ jobs:
           enable-cache: true
       - run: uv sync --extra dev --locked
       - run: uv run pytest -q
-      # e2e/ and legacy/ are not lint-clean yet; lint only the package and its tests.
-      - run: uv run ruff check frappe_mcp tests
+      # e2e/ and legacy/ are not lint-clean yet; lint the package, its tests, and the evals.
+      - run: uv run ruff check frappe_mcp tests evals
 
   package:
     # Build the sdist and wheel, then install the wheel into a clean environment and run it.

@@ -1,0 +1,60 @@
+{
+  "name": "frappe-dev",
+  "displayName": "Frappe development",
+  "version": "0.3.0",
+  "description": "The mcp-frappe server and a skill for Frappe app development: DocTypes, customizations, site and app sync, with a preview before every write.",
+  "author": {
+    "name": "Dennis Fiallo and Danny Fiallo",
+    "url": "https://github.com/DannyFiallo030503"
+  },
+  "homepage": "https://github.com/DannyFiallo030503/mcp-frappe/tree/main/plugins/frappe-dev",
+  "repository": "https://github.com/DannyFiallo030503/mcp-frappe",
+  "license": "MIT",
+  "keywords": ["frappe", "erpnext", "doctype", "mcp", "bench"],
+  "userConfig": {
+    "frappe_url": {
+      "type": "string",
+      "title": "Site URL",
+      "description": "Base URL of the development site, such as http://127.0.0.1:8000. HTTPS is required unless the host is loopback or a .localhost name.",
+      "required": true
+    },
+    "frappe_site": {
+      "type": "string",
+      "title": "Site name",
+      "description": "The site's name on a multi-site Bench, such as site1.localhost (sent as the Host header). Leave empty for a single-site Bench.",
+      "default": ""
+    },
+    "api_key": {
+      "type": "string",
+      "title": "API key",
+      "description": "API key of the Frappe user the server acts as (User > Settings > API Access).",
+      "sensitive": true,
+      "required": true
+    },
+    "api_secret": {
+      "type": "string",
+      "title": "API secret",
+      "description": "API secret of the same user.",
+      "sensitive": true,
+      "required": true
+    },
+    "apps_path": {
+      "type": "directory",
+      "title": "Bench apps folder",
+      "description": "The Bench's apps folder (absolute path), needed for standard DocTypes, drift checks, and exports. Leave empty to work on the site only.",
+      "default": ""
+    },
+    "bench_path": {
+      "type": "directory",
+      "title": "Bench folder",
+      "description": "Set it to let the server run migrate, reload-doc, export-fixtures, clear-cache, and run-tests after a preview. Local sites only. Leave empty to keep Bench commands off.",
+      "default": ""
+    },
+    "toolsets": {
+      "type": "string",
+      "title": "Toolsets",
+      "description": "Comma-separated toolsets: read, data, customize, developer, bench. Empty for all. Next to Frappe's built-in MCP server, use read,customize,developer,bench.",
+      "default": ""
+    }
+  }
+}
