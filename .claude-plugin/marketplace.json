@@ -10,7 +10,7 @@
       "name": "frappe-dev",
       "source": "./plugins/frappe-dev",
       "description": "The mcp-frappe server and a skill for Frappe app development: DocTypes, customizations, site and app sync, with a preview before every write.",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "category": "development",
       "tags": ["frappe", "erpnext", "mcp"]
     }
