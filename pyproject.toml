@@ -43,7 +43,11 @@ Changelog = "https://github.com/DannyFiallo030503/mcp-frappe/blob/main/CHANGELOG
 mcp-frappe = "frappe_mcp.standalone:main"
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0,<9.0", "ruff>=0.11,<1.0"]
+dev = [
+    "pytest>=8.0,<9.0",
+    "pyyaml>=6.0,<7.0",
+    "ruff>=0.11,<1.0",
+]
 
 [tool.hatch.version]
 path = "frappe_mcp/__init__.py"

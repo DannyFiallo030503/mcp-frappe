@@ -1,0 +1,25 @@
+id: report-builder
+title: Create a Report Builder report
+prompt: |
+  Create a report named "MCP Eval Open ToDos" on ToDo that lists the description, status, and
+  date columns and shows only ToDos whose status is Open. It is a site report, not part of an app.
+check:
+  - call: list_reports
+    args: {search: MCP Eval Open ToDos}
+    expect:
+      - {path: "rows[name=MCP Eval Open ToDos].ref_doctype", equals: ToDo}
+      - {path: "rows[name=MCP Eval Open ToDos].report_type", equals: Report Builder}
+  - call: get_document
+    args:
+      doctype: Report
+      name: MCP Eval Open ToDos
+      fields: [report_type, ref_doctype, is_standard, json]
+    expect:
+      - {path: is_standard, equals: "No"}
+      - {path: json, contains: description}
+      - {path: json, contains: status}
+      - {path: json, contains: '"date"'}
+      - {path: json, contains: Open}
+cleanup:
+  - write: delete_document
+    args: {doctype: Report, name: MCP Eval Open ToDos}

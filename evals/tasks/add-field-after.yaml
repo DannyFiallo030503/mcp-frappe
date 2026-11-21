@@ -1,0 +1,29 @@
+id: add-field-after
+title: Add a required Select field at a given position and show it in the list view
+prompt: |
+  On the DocType "MCP Eval Task" of the app ${app}, add a required Select field `priority` with
+  the options Low, Medium, and High, right after the `title` field. Show it in the list view.
+setup:
+  - write: create_doctype
+    args:
+      app: ${app}
+      module: ${module}
+      name: MCP Eval Task
+      fields:
+        - {fieldname: title, fieldtype: Data, label: Title}
+        - {fieldname: notes, fieldtype: Small Text, label: Notes}
+check:
+  - call: get_doctype_schema
+    args: {doctype: MCP Eval Task, detail: full}
+    expect:
+      - {path: "doctype.fields[fieldname=priority].fieldtype", equals: Select}
+      - {path: "doctype.fields[fieldname=priority].reqd", equals: 1}
+      - {path: "doctype.fields[fieldname=priority].in_list_view", equals: 1}
+      - {path: "doctype.fields[fieldname=priority].options", contains: Medium}
+      - {path: doctype.fields.fieldname, adjacent: [title, priority]}
+  - call: diff_doctype
+    args: {doctype: MCP Eval Task}
+    expect: [{path: verdict, equals: in_sync}]
+cleanup:
+  - write: delete_doctype
+    args: {doctype: MCP Eval Task}

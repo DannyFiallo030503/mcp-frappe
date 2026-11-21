@@ -1,0 +1,33 @@
+id: workflow-three-states
+title: Create an approval Workflow with three states
+prompt: |
+  Add an approval workflow named "MCP Eval Approval" to the DocType "MCP Eval Request" with
+  three states: Draft, Pending, and Approved. A System Manager can send a Draft for review,
+  which moves it to Pending, and can approve a Pending request, which moves it to Approved.
+  Nothing is submitted.
+setup:
+  - write: create_doctype
+    args:
+      app: ${app}
+      module: ${module}
+      name: MCP Eval Request
+      fields: [{fieldname: title, fieldtype: Data, label: Title}]
+check:
+  - call: get_workflow
+    args: {doctype: MCP Eval Request}
+    expect:
+      - {path: workflow.name, equals: MCP Eval Approval}
+      - {path: workflow.is_active, equals: true}
+      - {path: workflow.states, count: 3}
+      - {path: workflow.states.state, contains: Draft}
+      - {path: workflow.states.state, contains: Pending}
+      - {path: workflow.states.state, contains: Approved}
+      - {path: "workflow.transitions[state=Draft].next_state", equals: Pending}
+      - {path: "workflow.transitions[state=Pending].next_state", equals: Approved}
+cleanup:
+  - write: delete_document
+    args: {doctype: Workflow, name: MCP Eval Approval}
+  - write: delete_document
+    args: {doctype: Custom Field, name: MCP Eval Request-workflow_state}
+  - write: delete_doctype
+    args: {doctype: MCP Eval Request}

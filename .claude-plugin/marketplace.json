@@ -1,0 +1,18 @@
+{
+  "name": "mcp-frappe",
+  "description": "Claude Code plugins from the mcp-frappe repository.",
+  "owner": {
+    "name": "Dennis Fiallo and Danny Fiallo",
+    "url": "https://github.com/DannyFiallo030503"
+  },
+  "plugins": [
+    {
+      "name": "frappe-dev",
+      "source": "./plugins/frappe-dev",
+      "description": "The mcp-frappe server and a skill for Frappe app development: DocTypes, customizations, site and app sync, with a preview before every write.",
+      "version": "0.3.0",
+      "category": "development",
+      "tags": ["frappe", "erpnext", "mcp"]
+    }
+  ]
+}

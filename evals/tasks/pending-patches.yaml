@@ -1,0 +1,13 @@
+id: pending-patches
+title: Report which patches are pending
+prompt: |
+  Which patches of the app ${app} haven't run on this site yet? List them by their dotted path.
+setup:
+  - append_file: ${app}/patches.txt
+    content: |
+      ${app}.patches.mcp_eval_${run}
+  - call: list_pending_patches
+    args: {app: "${app}"}
+    expect: [{path: pending.patch, contains: "${app}.patches.mcp_eval_${run}"}]
+check:
+  - answer: ["${app}.patches.mcp_eval_${run}"]

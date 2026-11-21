@@ -52,6 +52,8 @@ Give the two servers different names. The Frappe guide uses `frappe` for the nat
      -- uvx mcp-frappe
    ```
 
+   With the [Claude Code plugin](installation-and-configuration.md#claude-code-plugin), set its **Toolsets** option to `read,customize,developer` instead.
+
    The `read` toolset still includes `list_documents`, `get_document`, `count_documents`, and `search_records`, which the developer workflows use to check their result. Leaving out `data` drops only the record writes: create, update, delete, submit, and cancel go through the native server.
 
 3. Run `uvx mcp-frappe check` with the same environment. It prints how many tools and characters each toolset adds to the session, so you can see what switching a toolset off saves.
@@ -64,4 +66,4 @@ Both servers have tools named `list_documents`, `get_document`, `count_documents
 
 ## Checked so far
 
-The side-by-side setup has not yet been run on a site; see [not yet checked on a site](compatibility-and-validation.md#not-yet-checked-on-a-site). The configuration above follows the Frappe MCP guide as of 2026-11-19.
+The [developer-task evaluations](evaluations.md) compare this server, the native one, and both on the same tasks; they haven't been run yet. The side-by-side setup has not yet been run on a site; see [not yet checked on a site](compatibility-and-validation.md#not-yet-checked-on-a-site). The configuration above follows the Frappe MCP guide as of 2026-11-19.

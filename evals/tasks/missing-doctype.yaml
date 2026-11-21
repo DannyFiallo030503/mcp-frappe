@@ -1,0 +1,41 @@
+id: missing-doctype
+title: Find and fix a DocType that is in the app but missing from the site
+needs: [bench]
+prompt: |
+  A teammate added a DocType to the app ${app}, but it doesn't show up on this site. Find which
+  DocType of ${app} is missing from the site and fix it, without editing its files.
+setup:
+  - write_file: ${app}/${module_dir}/doctype/mcp_eval_missing/__init__.py
+    content: ""
+  - write_file: ${app}/${module_dir}/doctype/mcp_eval_missing/mcp_eval_missing.py
+    content: |
+      from frappe.model.document import Document
+
+
+      class MCPEvalMissing(Document):
+          pass
+  - write_file: ${app}/${module_dir}/doctype/mcp_eval_missing/mcp_eval_missing.json
+    content: |
+      {
+       "doctype": "DocType",
+       "name": "MCP Eval Missing",
+       "module": "${module}",
+       "custom": 0,
+       "autoname": "hash",
+       "creation": "2026-01-01 00:00:00.000000",
+       "modified": "2026-01-01 00:00:00.000000",
+       "fields": [{"fieldname": "title", "fieldtype": "Data", "label": "Title"}],
+       "permissions": [
+        {"role": "System Manager", "read": 1, "write": 1, "create": 1, "delete": 1}
+       ]
+      }
+  - call: list_app_drift
+    args: {app: "${app}", limit: 200}
+    expect: [{path: "items[doctype=MCP Eval Missing].verdict", equals: missing_on_site}]
+check:
+  - call: diff_doctype
+    args: {doctype: MCP Eval Missing}
+    expect: [{path: verdict, equals: in_sync}]
+cleanup:
+  - write: delete_doctype
+    args: {doctype: MCP Eval Missing}

@@ -1,0 +1,24 @@
+id: custom-field-export
+title: Customize a standard DocType with a Custom Field and a Property Setter, then export
+prompt: |
+  On Frappe's standard ToDo DocType, add a field `mcp_eval_reviewer` labelled "Reviewer" that
+  links to User, placed after `description`, and make the `status` field bold. Then export
+  ToDo's customizations into the app ${app}, module ${module}, so `bench migrate` applies them
+  on other sites.
+setup: []
+check:
+  - call: get_doctype_schema
+    args: {doctype: ToDo, detail: full}
+    expect:
+      - {path: "doctype.fields[fieldname=mcp_eval_reviewer].fieldtype", equals: Link}
+      - {path: "doctype.fields[fieldname=mcp_eval_reviewer].options", equals: User}
+      - {path: "doctype.fields[fieldname=status].bold", equals: 1}
+  - file: ${app}/${module_dir}/custom/todo.json
+    contains: mcp_eval_reviewer
+  - file: ${app}/${module_dir}/custom/todo.json
+    contains: '"bold"'
+cleanup:
+  - write: delete_document
+    args: {doctype: Custom Field, name: ToDo-mcp_eval_reviewer}
+  - write: delete_document
+    args: {doctype: Property Setter, name: ToDo-status-bold}
