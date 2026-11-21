@@ -45,6 +45,7 @@ FRAPPE_ALLOW_MUTATION_TEST=YES uv run python e2e/run_standalone_mutation_accepta
 FRAPPE_ALLOW_CUSTOMIZATION_TEST=YES uv run python e2e/run_standalone_customization_acceptance.py
 FRAPPE_ALLOW_DOCTYPE_MATRIX=YES uv run python e2e/run_standalone_doctype_matrix.py
 FRAPPE_ALLOW_DEVELOPER_FLOW_TEST=YES uv run python e2e/run_standalone_developer_flow.py
+FRAPPE_ALLOW_BENCH_TEST=YES FRAPPE_BENCH_PATH=<the Bench folder> uv run python e2e/run_standalone_bench_flow.py
 ```
 
 For the limited-user column, log in as a temporary user without System Manager, unset `FRAPPE_TEST_APP`, and run `FRAPPE_SMOKE_LIMITED_USER=YES uv run python e2e/run_standalone_smoke.py`.
@@ -56,6 +57,7 @@ For the limited-user column, log in as a temporary user without System Manager, 
 | `run_standalone_customization_acceptance.py` | Custom Fields and Property Setters, customization export and rollback |
 | `run_standalone_doctype_matrix.py` | DocType creation, Custom Fields and Property Setters (every field type and variant) |
 | `run_standalone_developer_flow.py` | DocType creation, edits and deletion, site and app sync, customization export and rollback, submit and cancel, Workflows and Notifications, reports and Workspaces |
+| `run_standalone_bench_flow.py` | Bench commands (not in the matrix yet: it hasn't been run on a site) |
 
 The developer flow creates a child table and a submittable DocType in the test app and checks that `diff_doctype` reports `in_sync`. It then edits the DocType with `update_doctype` and checks the app JSON and `diff_doctype` again. Next it adds a Custom Field to `ToDo` (`FRAPPE_TEST_CUSTOMIZE_DOCTYPE` picks another `frappe` DocType), exports it, and rolls the export back. It promotes a site-custom DocType into the app, then creates, submits, cancels, and deletes a document. Finally it adds a Workflow, a Notification, a Report Builder report, and a Workspace (and checks Frappe wrote the Workspace to the module), removes everything, and checks that the test module's files and `list_app_drift` match their state before the run. It needs Administrator (deleting standard DocTypes requires it). It prints JSON with the MCP version and commit, the site's app versions, whether Frappe wrote standard files (which shows developer mode was on), and `pass`, `fail`, or `skipped` per area, and exits non-zero when anything failed.
 
@@ -97,6 +99,7 @@ The [manual report](../e2e/history/manual_functional_report.md) found these on v
 - This server next to Frappe's built-in MCP in one Claude Code session ([setup](native-frappe-mcp.md)): both configured, one record task through the native server and one DocType task through this one. Needs a v16 site with MCP enabled; skipped in stage 15 (unit tests only).
 - `list_pending_patches`, `get_recent_errors`, and `list_app_methods` (stage 16) on a live v15 or v16 site; unit tests only. The `patches.txt` parser was compared with Frappe's own `configparser` reading on the `frappe` and `erpnext` files of v15.126.0 and v16.55.1 (same entries, same order), and `list_app_methods` found the same 803 decorated methods in an ERPNext v16 checkout as a `grep`. The `Error Log` and `Patch Log` fields it reads are the same in both versions' DocType JSON.
 - `list_allowed_methods`, `make_mapped_document`, `call_allowed_method`, and `list_app_methods(as_config=True)` (stage 17) on a live site; unit tests only. The ERPNext example config's seven methods were checked by the startup loader against the ERPNext v15.124.4 and v16.53.0 checkouts (all whitelisted module functions with every HTTP method, mappers taking `source_name`, `get_payment_entry` taking `dt`, `dn`, `party_amount`, and `bank_account` in both). Mapping a submitted Sales Order and creating the draft with `create_document` hasn't been run against ERPNext.
+- `run_bench` (stage 18) on a live site; unit tests only. `e2e/run_standalone_bench_flow.py` writes a DocType's files into the test module without a site record, checks `missing_on_site`, runs `reload-doc` and checks `in_sync`, runs `run-tests` for it (skipped without `allow_tests`), runs `clear-cache`, and deletes the DocType. It needs `FRAPPE_ALLOW_BENCH_TEST=YES` and `FRAPPE_BENCH_PATH`. The command arguments were checked against the Frappe v15.126.0 and v16.55.1 sources (`frappe/commands/site.py`, `utils.py`, `testing.py`), including that v15's `run-tests` exits 0 on failures unless `CI` is set.
 - The remote read-only default (FR-2026-003) against a remote HTTPS site: only read tools listed, and the record-tool refusals of schema, configuration, and code records (unit-tested only).
 
 ## Boundaries

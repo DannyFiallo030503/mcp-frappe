@@ -26,6 +26,26 @@ def methods_on(monkeypatch, tmp_path):
     standalone._method_config.clear()
 
 
+@pytest.fixture
+def bench_on(monkeypatch, tmp_path):
+    """Configure a local Bench and register run_bench, undone after the test."""
+    monkeypatch.setattr(
+        standalone.server._tool_manager, "_tools", dict(standalone.server._tool_manager._tools)
+    )
+    monkeypatch.setattr(standalone, "_TOOLSETS", copy.deepcopy(standalone._TOOLSETS))
+    (tmp_path / "sites" / "lab.localhost").mkdir(parents=True)
+    (tmp_path / "sites" / "lab.localhost" / "site_config.json").write_text("{}")
+    monkeypatch.setenv("FRAPPE_URL", "http://lab.localhost:8000")
+    monkeypatch.setenv("FRAPPE_BENCH_PATH", str(tmp_path))
+    monkeypatch.setenv("FRAPPE_BENCH_SITE", "lab.localhost")
+    for name in ("FRAPPE_BENCH_COMMAND", "FRAPPE_BENCH_TIMEOUT"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(standalone.shutil, "which", lambda name: f"/usr/bin/{name}")
+    standalone._bench_settings()
+    yield
+    standalone._bench_config.clear()
+
+
 def test_every_tool_has_a_description_and_an_object_schema() -> None:
     async def list_tools():
         async with create_connected_server_and_client_session(
@@ -324,6 +344,48 @@ def test_the_tool_list_with_the_method_tools_fits_its_budget(methods_on) -> None
     assert set(standalone._METHOD_TOOLS) <= {tool.name for tool in tools}
     total = sum(_chars(tool) for tool in tools)
     assert total <= TOOL_LIST_WITH_METHODS_BUDGET, f"tool list is {total} characters"
+
+
+# run_bench exists only when FRAPPE_BENCH_PATH is set, so it has its own cap too.
+TOOL_LIST_WITH_BENCH_BUDGET = 35_500
+TOOL_LIST_WITH_EVERY_OPT_IN_BUDGET = 38_000
+
+
+def test_the_tool_list_with_the_bench_tool_fits_its_budget(bench_on) -> None:
+    tools = _listed_tools()
+
+    assert "run_bench" in {tool.name for tool in tools}
+    total = sum(_chars(tool) for tool in tools)
+    assert total <= TOOL_LIST_WITH_BENCH_BUDGET, f"tool list is {total} characters"
+
+
+def test_the_tool_list_with_every_opt_in_tool_fits_its_budget(methods_on, bench_on) -> None:
+    total = sum(_chars(tool) for tool in _listed_tools())
+
+    assert total <= TOOL_LIST_WITH_EVERY_OPT_IN_BUDGET, f"tool list is {total} characters"
+
+
+def test_run_bench_previews_and_refuses_other_commands_through_an_mcp_session(
+    bench_on, fake_site, monkeypatch
+) -> None:
+    ran: list = []
+    monkeypatch.setattr(standalone.subprocess, "run", lambda *args, **kwargs: ran.append(args))
+
+    async def call_tools():
+        async with create_connected_server_and_client_session(
+            standalone.server._mcp_server
+        ) as client:
+            refused = await client.call_tool("run_bench", {"command": "console"})
+            preview = await client.call_tool("run_bench", {"command": "clear-cache"})
+            return refused, preview
+
+    refused, preview = anyio.run(call_tools)
+
+    assert refused.isError
+    body = json.loads(preview.content[0].text)
+    assert body["argv"] == ["bench", "--site", "lab.localhost", "clear-cache"]
+    assert body["requires_confirmation"] is True
+    assert ran == [] and fake_site.calls == []
 
 
 def test_an_allowlisted_write_previews_through_an_mcp_session(methods_on, fake_site) -> None:

@@ -18,6 +18,7 @@ import re
 import shutil
 import socket
 import stat
+import subprocess
 import sys
 import tempfile
 import time
@@ -67,7 +68,7 @@ data and method calls, and this one for DocTypes, customizations, and app files.
 server = FastMCP("frappe", instructions=_INSTRUCTIONS)
 # Tool names per toolset; `_tool()` fills it and `_apply_toolsets()` removes unselected ones.
 _TOOLSETS: dict[str, set[str]] = {
-    name: set() for name in ("read", "data", "customize", "developer")
+    name: set() for name in ("read", "data", "customize", "developer", "bench")
 }
 
 
@@ -4205,7 +4206,7 @@ def list_app_drift(
     counts: dict[str, int] = {}
     for item in items:
         counts[item["verdict"]] = counts.get(item["verdict"], 0) + 1
-    return {
+    result = {
         "app": app,
         "modules": names,
         "modules_missing_locally": missing_modules,
@@ -4216,6 +4217,9 @@ def list_app_drift(
         "counts": counts,
         "items": items,
     }
+    if counts.get("missing_on_site"):
+        result["hint"] = _missing_on_site_hint()
+    return result
 
 
 # Developer diagnostics: pending patches, recent errors, and the app's whitelisted methods.
@@ -4335,6 +4339,7 @@ def list_pending_patches(app: str) -> dict[str, Any]:
         "unknown_in_log_count": len(unknown),
         "unknown_in_log": unknown[:_PATCH_LIST_MAX],
         "warnings": warnings[:20],
+        **({"hint": _pending_patches_hint()} if pending else {}),
     }
 
 
@@ -7632,6 +7637,516 @@ def upsert_workspace(
     }
 
 
+# Opt-in Bench commands: a fixed command list, run on a local Bench only when the user sets
+# FRAPPE_BENCH_PATH. The argv is built from validated values; there is no shell.
+
+_BENCH_PATH_ENV = "FRAPPE_BENCH_PATH"
+_BENCH_COMMANDS = ("migrate", "reload-doc", "export-fixtures", "clear-cache", "run-tests")
+BenchCommand = Literal["migrate", "reload-doc", "export-fixtures", "clear-cache", "run-tests"]
+_BENCH_COMMAND_EXAMPLE = '["docker", "compose", "exec", "-T", "backend", "bench"]'
+_BENCH_COMMAND_MAX_PARTS = 20
+_BENCH_TIMEOUT_DEFAULT = 900
+_BENCH_TIMEOUT_RANGE = (10, 7200)
+_BENCH_OUTPUT_LINES = 200
+_BENCH_LINE_CHARS = 500
+_BENCH_OUTPUT_CHARS = 20_000
+_BENCH_PREFLIGHT_ITEMS = 50
+_BENCH_PREFLIGHT_PATCHES = 20
+_BENCH_FIXTURE_FILES = 200
+# The child process gets these variables and nothing else: no FRAPPE_* credentials, and no
+# `CI`, which makes `run-tests` skip the site's allow_tests check.
+_BENCH_ENV_KEEP = (
+    "PATH", "HOME", "USER", "LOGNAME", "LANG", "LANGUAGE", "TZ", "TMPDIR", "TEMP", "TMP",
+    "SHELL", "TERM", "PYENV_ROOT", "NVM_DIR", "NVM_BIN", "XDG_RUNTIME_DIR", "SSL_CERT_FILE",
+    "SSL_CERT_DIR", "DOCKER_HOST", "DOCKER_CONFIG", "DOCKER_CONTEXT", "CONTAINER_HOST",
+)
+_BENCH_WARNINGS = {
+    "migrate": (
+        "migrate runs the app's patches, which can change data, then syncs every DocType, "
+        "fixture, and customization file into the site"
+    ),
+    "reload-doc": (
+        "reload-doc overwrites the site's DocType record with the app's file; changes made on "
+        "the site since the file was written are lost"
+    ),
+    "export-fixtures": "export-fixtures rewrites the app's fixtures/ files from the site",
+    "run-tests": "run-tests runs the app's test code, which writes test records to the site",
+}
+_ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+_TESTS_RAN = re.compile(r"^Ran (\d+) tests? in ")
+_TESTS_STATUS = re.compile(r"^(OK|FAILED)\b(?:\s*\((.*)\))?")
+_TESTS_DISABLED = "Testing is disabled for the site"
+_bench_config: dict[str, Any] = {}
+
+
+def _bench_command() -> list[str]:
+    """Return FRAPPE_BENCH_COMMAND as a list (default `["bench"]`); its program must be found."""
+    raw = (os.environ.get("FRAPPE_BENCH_COMMAND") or "").strip()
+    parts: Any = ["bench"]
+    if raw:
+        try:
+            parts = json.loads(raw)
+        except ValueError:
+            parts = None
+    if (
+        not isinstance(parts, list)
+        or not 1 <= len(parts) <= _BENCH_COMMAND_MAX_PARTS
+        or any(not isinstance(part, str) or not part or "\x00" in part for part in parts)
+    ):
+        raise RuntimeError(
+            "FRAPPE_BENCH_COMMAND must be a JSON list of strings, for example "
+            + _BENCH_COMMAND_EXAMPLE
+        )
+    if shutil.which(parts[0]) is None:
+        raise RuntimeError(f"{parts[0]} is not on PATH; set FRAPPE_BENCH_COMMAND")
+    return parts
+
+
+def _bench_timeout() -> int:
+    raw = (os.environ.get("FRAPPE_BENCH_TIMEOUT") or "").strip()
+    low, high = _BENCH_TIMEOUT_RANGE
+    if not raw:
+        return _BENCH_TIMEOUT_DEFAULT
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 0
+    if not low <= value <= high:
+        raise RuntimeError(f"FRAPPE_BENCH_TIMEOUT must be a whole number of seconds, {low}-{high}")
+    return value
+
+
+def _load_bench_config() -> dict[str, Any] | None:
+    """Read the FRAPPE_BENCH_* settings; None when FRAPPE_BENCH_PATH is unset.
+
+    Raises RuntimeError for a remote site or any bad setting.
+    """
+    value = (os.environ.get(_BENCH_PATH_ENV) or "").strip()
+    if not value:
+        return None
+    if not _is_local_target(os.environ.get("FRAPPE_URL", "")):
+        raise RuntimeError(
+            "FRAPPE_BENCH_PATH works only with a local site: FRAPPE_URL must be a loopback "
+            "or .localhost address"
+        )
+    try:
+        path = Path(value).expanduser().resolve(strict=True)
+    except (OSError, RuntimeError):
+        raise RuntimeError("FRAPPE_BENCH_PATH does not exist") from None
+    if not path.is_dir():
+        raise RuntimeError("FRAPPE_BENCH_PATH must be the Bench folder")
+    site = (os.environ.get("FRAPPE_BENCH_SITE") or os.environ.get("FRAPPE_SITE") or "").strip()
+    if not site:
+        raise RuntimeError("Set FRAPPE_BENCH_SITE (or FRAPPE_SITE) to the Bench site name")
+    if not _SAFE_NAME.fullmatch(site) or ".." in site or " " in site:
+        raise RuntimeError(f"FRAPPE_BENCH_SITE {site!r} is not a valid site name")
+    # A containerized Bench may have no sites/ folder here; then the site isn't checked locally.
+    local_sites = (path / "sites").is_dir()
+    if local_sites and not (path / "sites" / site / "site_config.json").is_file():
+        raise RuntimeError(
+            f"Site {site} has no sites/{site}/site_config.json in FRAPPE_BENCH_PATH"
+        )
+    return {
+        "path": path,
+        "site": site,
+        "command": _bench_command(),
+        "timeout": _bench_timeout(),
+        "local_sites": local_sites,
+    }
+
+
+def _register_bench_tool() -> None:
+    if "run_bench" not in server._tool_manager._tools:
+        _tool("bench", "Run Bench command", destructive=True)(run_bench)
+
+
+def _bench_settings() -> None:
+    """Load the FRAPPE_BENCH_* settings and register run_bench when they are set."""
+    _bench_config.clear()
+    config = _load_bench_config()
+    if config is not None:
+        _bench_config.update(config)
+        _register_bench_tool()
+
+
+def _read_site_config(path: Path) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _bench_allows_tests(config: dict[str, Any]) -> bool | None:
+    """Read allow_tests the way frappe.conf does (site over common); None if not readable."""
+    if not config.get("local_sites"):
+        return None
+    sites = config["path"] / "sites"
+    merged = {
+        **_read_site_config(sites / "common_site_config.json"),
+        **_read_site_config(sites / config["site"] / "site_config.json"),
+    }
+    return bool(merged.get("allow_tests"))
+
+
+def _missing_on_site_hint() -> str:
+    if _bench_config:
+        return (
+            "Sync a missing_on_site DocType with run_bench(command='reload-doc', app=..., "
+            "module=..., doctype=...), or every change with run_bench(command='migrate')"
+        )
+    return "missing_on_site DocTypes reach the site with `bench migrate`"
+
+
+def _pending_patches_hint() -> str:
+    if _bench_config:
+        return "run_bench(command='migrate') runs pending patches"
+    return "`bench migrate` runs pending patches"
+
+
+def _bench_argv_tail(
+    command: str,
+    app: str | None,
+    module: str | None,
+    doctype: str | None,
+    test_module: str | None,
+) -> list[str]:
+    """Check the arguments of one command against the site and build its argv after --site."""
+    given = [
+        name
+        for name, value in (
+            ("app", app), ("module", module), ("doctype", doctype), ("test_module", test_module)
+        )
+        if value is not None
+    ]
+    if app is not None and (not isinstance(app, str) or not _SAFE_NAME.fullmatch(app)):
+        raise ValueError("Invalid app name")
+    if command == "clear-cache":
+        if given:
+            raise ValueError("clear-cache takes no arguments")
+        return ["clear-cache"]
+    if command == "migrate":
+        if set(given) - {"app"}:
+            raise ValueError("migrate takes only app (to show its drift and patches)")
+        if app is not None:
+            _app_modules(app)
+        return ["migrate"]
+    if command == "export-fixtures":
+        if app is None:
+            raise ValueError("export-fixtures needs app")
+        if set(given) - {"app"}:
+            raise ValueError("export-fixtures takes only app")
+        _assert_writable_app(app)
+        _app_modules(app)
+        return ["export-fixtures", "--app", app]
+    if command == "reload-doc":
+        if set(given) != {"app", "module", "doctype"}:
+            raise ValueError("reload-doc needs app, module, and doctype, and nothing else")
+        if not isinstance(doctype, str) or not _SAFE_NAME.fullmatch(doctype):
+            raise ValueError("Invalid DocType name")
+        _assert_remote_module(app, module)  # type: ignore[arg-type]
+        _, package_path = _app_root(app)  # type: ignore[arg-type]
+        module_path = _module_dir(package_path, module)  # type: ignore[arg-type]
+        slug = _scrub(doctype)
+        path = (
+            _app_file(module_path, "doctype", slug, f"{slug}.json") if module_path else None
+        )
+        if path is None:
+            raise ValueError(f"The {app} checkout has no DocType file for {doctype} in {module}")
+        doc, _ = _read_app_json(path)
+        if not isinstance(doc, dict) or doc.get("name") != doctype:
+            raise ValueError(f"{slug}.json does not hold the DocType {doctype}")
+        # The same call frappe.reload_doctype makes: scrubbed module, "doctype", scrubbed name.
+        return ["reload-doc", _scrub(module), "doctype", slug]  # type: ignore[arg-type]
+    if command == "run-tests":
+        if app is None:
+            raise ValueError("run-tests needs app, plus one of module, doctype, test_module")
+        selectors = [name for name in given if name != "app"]
+        if len(selectors) != 1:
+            raise ValueError("run-tests takes app and exactly one of module, doctype, test_module")
+        _app_modules(app)
+        if _bench_allows_tests(_bench_config) is False:
+            raise ValueError(
+                f"Tests are off for {_bench_config['site']}: set allow_tests in its site config "
+                f"(bench --site {_bench_config['site']} set-config allow_tests true)"
+            )
+        if module is not None:
+            _assert_remote_module(app, module)
+            return ["run-tests", "--app", app, "--module-def", module]
+        if doctype is not None:
+            if not isinstance(doctype, str) or not _SAFE_NAME.fullmatch(doctype):
+                raise ValueError("Invalid DocType name")
+            rows = _request(
+                "GET",
+                _resource("DocType"),
+                params={
+                    "fields": '["name","module"]',
+                    "filters": _filters({"name": doctype}),
+                    "limit_page_length": 1,
+                },
+            )
+            if not rows:
+                raise ValueError(f"DocType {doctype} does not exist on the site")
+            owner = _module_app(rows[0].get("module"))
+            if owner != app:
+                raise ValueError(f"{doctype} belongs to {owner}, not {app}")
+            return ["run-tests", "--app", app, "--doctype", doctype]
+        if (
+            not isinstance(test_module, str)
+            or len(test_module) > _METHOD_PATH_MAX
+            or not _METHOD_PATH.fullmatch(test_module)
+            or not test_module.startswith(f"{app}.")
+        ):
+            raise ValueError(f"test_module must be a module of {app}, as a dotted path")
+        return ["run-tests", "--app", app, "--module", test_module]
+    raise ValueError(f"command must be one of {', '.join(_BENCH_COMMANDS)}")
+
+
+def _fixture_files(app: str) -> dict[str, Any]:
+    """List the app's fixtures/*.json files with their SHA-256, to see what export changes."""
+    _, package_path = _app_root(app)
+    folder = package_path / "fixtures"
+    files = []
+    if folder.is_dir():
+        for child in sorted(folder.iterdir()):
+            if child.suffix != ".json" or child.name.startswith("."):
+                continue
+            path = _app_file(package_path, "fixtures", child.name)
+            if path is None:
+                continue
+            files.append(
+                {
+                    "file": f"fixtures/{child.name}",
+                    "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                }
+            )
+            if len(files) >= _BENCH_FIXTURE_FILES:
+                break
+    return {"files": files}
+
+
+def _bench_drift(app: str, module: str | None) -> dict[str, Any]:
+    drift = list_app_drift(app, module=module, limit=_DRIFT_PAGE_LIMIT)
+    differing = [item for item in drift["items"] if item.get("verdict") != "in_sync"]
+    result = {
+        "total": drift["total"],
+        "counts": drift["counts"],
+        "items": differing[:_BENCH_PREFLIGHT_ITEMS],
+    }
+    if drift.get("next_offset") is not None:
+        result["partial"] = f"only the first {_DRIFT_PAGE_LIMIT} DocTypes were compared"
+    return result
+
+
+def _bench_patches(app: str) -> dict[str, Any]:
+    patches = list_pending_patches(app)
+    return {
+        "pending_count": patches["pending_count"],
+        "pending": [row.get("patch") for row in patches["pending"][:_BENCH_PREFLIGHT_PATCHES]],
+    }
+
+
+def _bench_state(command: str, app: str | None, module: str | None) -> dict[str, Any]:
+    """Read what the command is about to change: drift, pending patches, fixture files.
+
+    A part that can't be read (no checkout, no access) says why instead of failing the call.
+    """
+    if app is None or command == "clear-cache":
+        return {}
+    parts: dict[str, Callable[[], dict[str, Any]]] = {}
+    if command in ("migrate", "reload-doc"):
+        parts["drift"] = lambda: _bench_drift(app, module if command == "reload-doc" else None)
+    if command == "migrate":
+        parts["pending_patches"] = lambda: _bench_patches(app)
+    if command == "export-fixtures":
+        parts["fixture_files"] = lambda: _fixture_files(app)
+    state: dict[str, Any] = {}
+    for name, read in parts.items():
+        try:
+            state[name] = read()
+        except (RuntimeError, ValueError, OSError) as error:
+            state[name] = {"unavailable": _redact(str(error)) or type(error).__name__}
+    return state
+
+
+def _bench_env() -> dict[str, str]:
+    env = {
+        name: value
+        for name, value in os.environ.items()
+        if name in _BENCH_ENV_KEEP or name.startswith("LC_")
+    }
+    env["PYTHONUNBUFFERED"] = "1"
+    return env
+
+
+def _bench_output(raw: bytes | str | None) -> dict[str, Any]:
+    """Return the output's last lines: plain text, secrets and the Bench folder replaced."""
+    text = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else raw or ""
+    text = _ANSI_ESCAPE.sub("", text).replace("\r\n", "\n").replace("\r", "\n")
+    text = _redact(text.replace(str(_bench_config["path"]), "<bench>"))
+    lines = text.splitlines()
+    kept = [
+        line if len(line) <= _BENCH_LINE_CHARS else line[:_BENCH_LINE_CHARS] + " [cut]"
+        for line in lines[-_BENCH_OUTPUT_LINES:]
+    ]
+    output = "\n".join(kept)
+    truncated = len(kept) < len(lines) or kept != lines[-_BENCH_OUTPUT_LINES:]
+    if len(output) > _BENCH_OUTPUT_CHARS:
+        output = output[-_BENCH_OUTPUT_CHARS:].split("\n", 1)[-1]
+        truncated = True
+    return {"output": output, "output_lines": len(lines), "output_truncated": truncated}
+
+
+def _test_summary(output: str) -> dict[str, Any]:
+    """Read unittest's summary lines; Frappe v15 exits 0 even when tests fail."""
+    if _TESTS_DISABLED in output:
+        return {"status": "disabled"}
+    summary: dict[str, Any] = {}
+    for line in output.splitlines():
+        ran = _TESTS_RAN.match(line)
+        if ran:
+            summary["ran"] = summary.get("ran", 0) + int(ran.group(1))
+        status = _TESTS_STATUS.match(line)
+        if status and (status.group(1) == "FAILED" or summary.get("status") != "FAILED"):
+            summary["status"] = status.group(1)
+            if status.group(2):
+                summary["detail"] = status.group(2)
+    return summary or {"status": "unknown"}
+
+
+def _file_changes(before: dict[str, Any], after: dict[str, Any]) -> dict[str, list[str]]:
+    old = {row["file"]: row["sha256"] for row in before.get("files", [])}
+    new = {row["file"]: row["sha256"] for row in after.get("files", [])}
+    return {
+        "added": sorted(set(new) - set(old)),
+        "changed": sorted(name for name in set(old) & set(new) if old[name] != new[name]),
+        "removed": sorted(set(old) - set(new)),
+    }
+
+
+def run_bench(
+    command: BenchCommand,
+    app: str | None = None,
+    module: str | None = None,
+    doctype: str | None = None,
+    test_module: str | None = None,
+    confirm: Confirm = False,
+    expected_preview: ExpectedPreview = None,
+) -> dict[str, Any]:
+    """Run one Bench command on the configured local site; preview first.
+
+    migrate (app optional, for its drift and patches); reload-doc (app, module, doctype: sync a
+    DocType file to the site); export-fixtures (app); clear-cache; run-tests (app and one of
+    module, doctype, test_module; needs allow_tests). migrate runs patches that change data.
+    Returns exit_code, ok, the output's tail, and drift and patches after the run.
+    """
+    if not _is_local_target(os.environ.get("FRAPPE_URL", "")):
+        raise ValueError("Bench commands work only with a local site")
+    if not _bench_config:
+        raise ValueError("Bench commands are off: FRAPPE_BENCH_PATH is not set")
+    if command not in _BENCH_COMMANDS:
+        raise ValueError(f"command must be one of {', '.join(_BENCH_COMMANDS)}")
+    tail = _bench_argv_tail(command, app, module, doctype, test_module)
+    argv = [*_bench_config["command"], "--site", _bench_config["site"], *tail]
+    before = _bench_state(command, app, module)
+    preview: dict[str, Any] = {
+        "command": command,
+        "site": _bench_config["site"],
+        "argv": argv,
+        "preflight": before,
+    }
+    if command in _BENCH_WARNINGS:
+        preview["warning"] = _BENCH_WARNINGS[command]
+    preview_id = hashlib.sha256(
+        json.dumps(preview, sort_keys=True, default=str).encode()
+    ).hexdigest()
+    if not confirm:
+        return {
+            "preview": True,
+            **preview,
+            "preview_id": preview_id,
+            "requires_confirmation": True,
+        }
+    if expected_preview != preview_id:
+        raise ValueError("Bench preview is missing or stale; preview again")
+    started = time.monotonic()
+    try:
+        completed = subprocess.run(
+            argv,
+            cwd=_bench_config["path"],
+            env=_bench_env(),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=_bench_config["timeout"],
+            check=False,
+        )
+        exit_code: int | None = completed.returncode
+        raw = completed.stdout
+        timed_out = False
+    except subprocess.TimeoutExpired as error:
+        exit_code, raw, timed_out = None, error.output, True
+    except OSError as error:
+        raise RuntimeError(
+            f"Could not start {argv[0]}: {error.strerror or type(error).__name__}"
+        ) from None
+    result: dict[str, Any] = {
+        "command": command,
+        "site": _bench_config["site"],
+        "argv": argv,
+        "exit_code": exit_code,
+        "timed_out": timed_out,
+        "seconds": round(time.monotonic() - started, 1),
+        **_bench_output(raw),
+    }
+    ok = exit_code == 0
+    if command == "run-tests":
+        result["tests"] = _test_summary(result["output"])
+        ok = ok and result["tests"]["status"] in ("OK", "unknown")
+    result["ok"] = ok
+    if timed_out:
+        result["note"] = (
+            f"Stopped after {_bench_config['timeout']} s (FRAPPE_BENCH_TIMEOUT); a command run "
+            "inside a container may still be running there"
+        )
+    # Migrate and reload-doc can restart the web worker; wait for it before reading again.
+    try:
+        _wait_for_server_ready()
+        result["server_ready"] = True
+    except RuntimeError:
+        result["server_ready"] = False
+    _forget_meta()
+    after = _bench_state(command, app, module)
+    result["after"] = after
+    if command == "export-fixtures":
+        result["changed_files"] = _file_changes(
+            before.get("fixture_files", {}), after.get("fixture_files", {})
+        )
+    return result
+
+
+def _bench_check_rows(toolsets: set[str]) -> list[tuple[str, str, str]]:
+    """The `check` rows for FRAPPE_BENCH_PATH (registering run_bench); never prints the folder."""
+    if not (os.environ.get(_BENCH_PATH_ENV) or "").strip():
+        return []
+    try:
+        _bench_settings()
+    except RuntimeError as error:
+        return [("FAIL", "bench", str(error))]
+    config = _bench_config
+    command = config["command"]
+    detail = f"site {config['site']}, command {command[0]}"
+    if len(command) > 1:
+        detail += f" (+{len(command) - 1} arguments)"
+    detail += f", timeout {config['timeout']} s"
+    tests = _bench_allows_tests(config)
+    if tests is not None:
+        detail += "; run-tests allowed" if tests else "; run-tests off (no allow_tests)"
+    if "bench" not in toolsets:
+        detail += "; the bench toolset is off"
+    return [("ok", "bench", detail)]
+
+
 def _read_only_setting() -> str:
     """Return FRAPPE_MCP_READ_ONLY as "", "YES", or "NO"."""
     read_only = (os.environ.get("FRAPPE_MCP_READ_ONLY") or "").strip().upper()
@@ -7775,7 +8290,7 @@ def _apps_path_check(site_apps: list[str]) -> tuple[bool, str]:
 
 def _tool_list_summary(selected: set[str]) -> str:
     """Describe what each toolset adds to the host's context, for `check`."""
-    cost = _tool_list_cost()
+    cost = {name: value for name, value in _tool_list_cost().items() if value[0]}
     parts = [f"{name} {count} tools ~{chars:,} chars" for name, (count, chars) in cost.items()]
     listed = sum(chars for name, (_, chars) in cost.items() if name in selected)
     summary = f"{', '.join(parts)}; listed ~{listed:,} chars"
@@ -7848,7 +8363,9 @@ def _setup_check() -> list[tuple[str, str, str]]:
                 detail += "; the method tools are off with the data toolset"
             rows.append(("ok", "methods", detail))
             rows.extend(("warn", "methods", warning) for warning in method_warnings)
-    selected = ", ".join(name for name in _TOOLSETS if name in toolsets)
+    rows.extend(_bench_check_rows(toolsets))
+    # A toolset whose tools are registered only on request (bench) is listed only when it has some.
+    selected = ", ".join(name for name in _TOOLSETS if name in toolsets and _TOOLSETS[name])
     reason = _read_only_reason()
     if reason == "remote target":
         selected += " (read-only: remote target; set FRAPPE_MCP_READ_ONLY=NO to enable writes)"
@@ -7912,6 +8429,7 @@ def main(argv: list[str] | None = None) -> None:
     try:
         selected = _startup_settings()
         method_warnings = _method_settings()
+        _bench_settings()
         _apply_toolsets(selected)
     except RuntimeError as error:
         raise SystemExit(str(error)) from None
@@ -7920,6 +8438,8 @@ def main(argv: list[str] | None = None) -> None:
     if _method_config and "data" not in selected:
         _log.warning("FRAPPE_MCP_METHODS is set, but the method tools are in the data toolset, "
                      "which is off")
+    if _bench_config and "bench" not in selected:
+        _log.warning("FRAPPE_BENCH_PATH is set, but the bench toolset is off")
     if _insecure_http_allowed():
         _log.warning(_INSECURE_HTTP_WARNING)
     notice = _remote_mode_notice()

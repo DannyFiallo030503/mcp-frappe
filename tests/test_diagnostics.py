@@ -102,6 +102,7 @@ def test_pending_patches_read_the_old_plain_format_as_pre_model_sync(
         {"patch": "lab_app.patches.one", "section": "pre_model_sync", "line": 1},
         {"patch": "execute:print(1)", "section": "pre_model_sync", "line": 4},
     ]
+    assert result["hint"] == "`bench migrate` runs pending patches"
 
 
 def test_pending_patches_page_through_the_whole_patch_log(fake_site, tmp_path, monkeypatch) -> None:
@@ -157,6 +158,7 @@ def test_pending_patches_without_a_patches_file_report_it(fake_site, tmp_path, m
     assert result["format"] == "missing"
     assert result["pending"] == [] and result["applied_count"] == 0
     assert result["unknown_in_log"] == ["lab_app.patches.old"]
+    assert "hint" not in result
 
 
 def test_pending_patches_report_duplicate_lines(fake_site, tmp_path, monkeypatch) -> None:

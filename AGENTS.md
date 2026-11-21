@@ -1,6 +1,6 @@
 # Instructions for AI coding agents
 
-This repository builds a generic, standalone Frappe MCP server. The MCP process runs outside Frappe and connects over standard HTTP APIs. Do not change target sites, install a Frappe app, run migrations, or deploy unless the user explicitly asks.
+This repository builds a generic, standalone Frappe MCP server. The MCP process runs outside Frappe and connects over standard HTTP APIs. Do not change target sites, install a Frappe app, run migrations, or deploy unless the user explicitly asks. Exception: the opt-in `bench` toolset (`run_bench`, registered only when the user sets `FRAPPE_BENCH_PATH`, local sites only) may run `migrate` and its other fixed Bench commands after a preview and confirmation; keep that tool's command list fixed, its argv built from validated values with no shell, and its environment free of credentials.
 
 ## Required behavior
 

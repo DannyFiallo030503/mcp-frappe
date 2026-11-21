@@ -131,16 +131,33 @@ Things to tell the user before confirming:
 1. Start broad: `list_app_drift(app="my_app")`. Each item has a verdict; page with `offset=next_offset` when `next_offset` is set.
 2. For each DocType that isn't `in_sync`, call `diff_doctype(doctype=...)` and read `summary`, `doctype_file.changes`, and `warnings`. `changes` reads from the site (`from`) to the app file (`to`): `added` fields exist only in the file, `removed` only on the site.
 3. Tell the user what to do for each verdict:
-   - `app_ahead` or `missing_on_site`: run `bench migrate`.
+   - `app_ahead` or `missing_on_site`: run `bench migrate` (with `run_bench`, see below).
    - `site_ahead`: the site has the newer DocType. With developer mode on, save it once (any `update_doctype` change, or Desk) so Frappe rewrites the file, then commit it. If the result warns that migrate would re-import the file, do this before anyone migrates.
    - `diverged`: both sides changed. Show the user the changes and let them decide; don't migrate or export until they have.
    - `missing_in_app` on customizations: export them with `export_customizations`.
    - `site_custom`: see the next recipe.
-4. Never run Bench commands yourself; the MCP doesn't, and the user's site may hold work that `bench migrate` would replace.
+4. Don't run Bench commands outside the MCP. When `run_bench` is listed (the user set `FRAPPE_BENCH_PATH`), use it as in the next recipe; otherwise tell the user what to run, because the site may hold work that `bench migrate` would replace.
+
+### Close the loop with `run_bench`
+
+`run_bench` is listed only when the user turned it on for a local site. It runs five commands, each previewed first. The complete loop for a change to `my_app`:
+
+1. **Change**: `update_doctype`, `create_doctype`, or edit the app's files with the user.
+2. **Export**: `export_customizations` for Custom Fields and Property Setters; `run_bench(command="export-fixtures", app="my_app")` for the fixtures the app's own `hooks.py` lists. Its result's `changed_files` says which files Bench rewrote.
+3. **Sync**: for one DocType that is `missing_on_site` (its file exists but the site never imported it), `run_bench(command="reload-doc", app="my_app", module="My Module", doctype="My DocType")`. For everything, including pending patches, `run_bench(command="migrate", app="my_app")`.
+4. **Test**: `run_bench(command="run-tests", app="my_app", doctype="My DocType")` (or `module=` a Module Def, or `test_module=` a dotted test module). Read `tests.status`, not only `exit_code`: Frappe v15 exits 0 when tests fail. `clear-cache` when the user sees stale Desk forms.
+5. **Check**: the result's `after` holds drift and pending patches read again; `list_app_drift` and `get_recent_errors` give the rest.
+
+Rules:
+
+- Show the user the preview's `argv`, `warning`, and `preflight` before confirming. A `migrate` preview with `site_ahead` or `diverged` DocTypes means migrate will overwrite site changes: stop and ask. Confirm with `confirm=true` and `expected_preview`; a stale id means the site changed, so preview again.
+- `ok: false` with output: read the end of `output` (the traceback's last lines) and `get_recent_errors`, explain, and don't retry the same command blindly. `timed_out: true` means the command was stopped; ask before running it again.
+- `run-tests` refused for `allow_tests`: tell the user to run `bench --site <site> set-config allow_tests true`; don't work around it.
+- Nothing else can run: no flags, no other commands. If the user needs `bench build` or `--skip-failing`, they run it themselves.
 
 ### After a change, check
 
-After the user migrates, restarts, or tries the change, check three things before saying it worked:
+After a migrate (by the user or `run_bench`), a restart, or a try of the change, check three things before saying it worked:
 
 1. **Drift**: `list_app_drift(app="my_app")` should show the DocTypes you touched as `in_sync`.
 2. **Pending patches**: `list_pending_patches(app="my_app")`. Anything in `pending` hasn't run on this site; `skipped: true` means a migrate skipped it after a failure. Show the user `execute:` lines as text; never run them another way. `unknown_in_log` lists logged patches no longer in the file, often a line whose `#` re-run marker changed.

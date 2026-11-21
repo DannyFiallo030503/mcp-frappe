@@ -36,6 +36,18 @@ All notable changes to this project are listed here. The format follows
   `mcp-frappe check` reports it. Example: `examples/erpnext-methods.json`.
 - `list_app_methods(..., as_config=True)` suggests `FRAPPE_MCP_METHODS` entries.
 - `mcp-frappe check` and the startup log report the method allowlist.
+- Opt-in Bench commands: with `FRAPPE_BENCH_PATH` set (local sites only), the new `bench`
+  toolset adds `run_bench(command, app, module, doctype, test_module, confirm,
+  expected_preview)` for `migrate`, `reload-doc`, `export-fixtures`, `clear-cache`, and
+  `run-tests`. Each run is previewed (argv, drift, pending patches, fixture files) and
+  confirmed with a `preview_id`; the argv is built from checked values with no shell, the
+  child process gets no credentials, and the output is redacted and capped. Settings:
+  `FRAPPE_BENCH_SITE`, `FRAPPE_BENCH_COMMAND` (a JSON list, for Docker), and
+  `FRAPPE_BENCH_TIMEOUT`. `mcp-frappe check` prints a `bench` row.
+- `list_app_drift` and `list_pending_patches` return a `hint` naming what syncs a
+  `missing_on_site` DocType or runs pending patches.
+- `FRAPPE_MCP_TOOLSETS` accepts `bench`; the default selection includes it, and it has no
+  tool unless `FRAPPE_BENCH_PATH` is set. `mcp-frappe check` lists only toolsets with tools.
 
 ## [0.3.0] - 2026-11-20
 
