@@ -326,6 +326,9 @@ def test_get_site_info_trims_versions(info_site) -> None:
 
     assert result["user"] == "dev@example.localhost"
     assert result["frappe_major_version"] == 16
+    assert "native Frappe MCP" in result["mcp_guidance"]
+    assert "read,customize,developer" in result["mcp_guidance"]
+    assert "FRAPPE_BENCH_PATH" in result["mcp_guidance"]
     assert result["apps"] == [
         {"app": "frappe", "title": "Frappe Framework", "version": "16.33.1"},
         {"app": "lab_app", "title": "Lab App", "version": "0.0.1"},
@@ -370,7 +373,20 @@ def test_get_site_info_handles_an_unparsable_frappe_version(fake_site, monkeypat
     fake_site.add("GET", LOGGED_USER, "Administrator")
     fake_site.add("GET", VERSIONS, {"frappe": {"title": "Frappe", "version": "develop"}})
 
-    assert standalone.get_site_info()["frappe_major_version"] is None
+    result = standalone.get_site_info()
+    assert result["frappe_major_version"] is None
+    assert "version is unknown" in result["mcp_guidance"]
+
+
+def test_get_site_info_recommends_standalone_for_v15(fake_site, monkeypatch) -> None:
+    monkeypatch.delenv("FRAPPE_APPS_PATH", raising=False)
+    fake_site.add("GET", LOGGED_USER, "Administrator")
+    fake_site.add("GET", VERSIONS, {"frappe": {"version": "15.96.0"}})
+
+    result = standalone.get_site_info()
+
+    assert result["frappe_major_version"] == 15
+    assert "standalone mcp-frappe for data and development" in result["mcp_guidance"]
 
 
 def test_get_site_info_has_no_label_by_default(info_site) -> None:

@@ -90,7 +90,7 @@ Standard DocTypes, DocType edits, and file exports need **developer mode** on th
 
 ## Next to Frappe's built-in MCP
 
-Frappe v16 ships its own MCP server for record data and whitelisted method calls. This server covers the development side: DocTypes, customizations, app files, and configuration records, with a preview before every write. To run both, keep the native server as `frappe`, add this one as `frappe-dev`, and set `FRAPPE_MCP_TOOLSETS=read,customize,developer` here so the record tools aren't listed twice. See [using both servers](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/docs/native-frappe-mcp.md).
+Frappe v16 ships its own MCP server for record data and whitelisted method calls. This server covers the development side: DocTypes, customizations, app files, and configuration records, with a preview before every write. To run both, keep the native server as `frappe`, add this one as `frappe-dev`, and set `FRAPPE_MCP_TOOLSETS=read,customize,developer` here so record writes are not duplicated; add `bench` when `FRAPPE_BENCH_PATH` is configured. See [using both servers](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/docs/native-frappe-mcp.md).
 
 ## Toolsets
 

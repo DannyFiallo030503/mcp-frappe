@@ -22,11 +22,13 @@ Both servers act as the logged-in Frappe user, and Frappe's permission checks ap
 
 ## Which one to use for what
 
-- **Record data and method calls:** the native server. It covers every document method and whitelisted method, and it is already on the site.
+`get_site_info` and `mcp-frappe check` report a version-based recommendation. On v15, use standalone mcp-frappe for data and development. On v16+, the native MCP can handle data when configured; keep standalone for customization, developer, and Bench tools. If both are connected, configure standalone with `FRAPPE_MCP_TOOLSETS=read,customize,developer` to avoid duplicate data writes; include `bench` when `FRAPPE_BENCH_PATH` is configured. For an unknown version, use standalone and consult the [compatibility matrix](compatibility-and-validation.md); do not assume native MCP is available. The server reports guidance only and cannot configure or call another MCP server.
+
+- **Record data and method calls on v16+:** use the native server when it is configured. On v15, use standalone mcp-frappe. For an unknown version, use standalone and consult the compatibility matrix.
 - **Development:** this server. Changing DocTypes, customizing Frappe and ERPNext forms, keeping the site and the app's files in sync, and setting up Workflows, Notifications, reports, and Workspaces need the app checkout and a preview before each write, which the native server doesn't offer.
 - **Reading schemas:** either. This server's `get_doctype_schema` returns a compact form by default and says which Workflow is active.
 
-The server's own instructions tell the model the same: when another Frappe MCP server is connected, use it for record data and method calls, and this one for DocTypes, customizations, and app files.
+The server's own instructions route by the detected Frappe major: v15 uses this standalone server; v16+ uses the native MCP for data only when the native endpoint is enabled and connected; unknown versions stay on standalone until checked. This server reports guidance but cannot configure or call another MCP.
 
 ## Configure both in Claude Code
 
@@ -41,20 +43,20 @@ Give the two servers different names. The Frappe guide uses `frappe` for the nat
 
    `claude mcp login` signs in through the site's OAuth 2; set up OAuth on the site first, as the Frappe guide explains. Without OAuth, send an API key instead: `--header "Authorization: token <api key>:<api secret>"`.
 
-2. Add this server with the record toolset switched off, so `list_documents`, `get_document`, and the other record tools aren't listed twice:
+2. Add this server with the record toolset switched off and Bench enabled, so record writes are not duplicated and Bench tools remain available:
 
    ```bash
    claude mcp add frappe-dev \
      -e FRAPPE_URL=http://127.0.0.1:8000 -e FRAPPE_SITE=site1.localhost \
      -e FRAPPE_API_KEY="$FRAPPE_API_KEY" -e FRAPPE_API_SECRET="$FRAPPE_API_SECRET" \
      -e FRAPPE_APPS_PATH=/absolute/path/to/frappe-bench/apps \
-     -e FRAPPE_MCP_TOOLSETS=read,customize,developer \
+     -e FRAPPE_MCP_TOOLSETS=read,customize,developer,bench \
      -- uvx mcp-frappe
    ```
 
-   With the [Claude Code plugin](installation-and-configuration.md#claude-code-plugin), set its **Toolsets** option to `read,customize,developer` instead.
+   With the [Claude Code plugin](installation-and-configuration.md#claude-code-plugin), set its **Toolsets** option to `read,customize,developer,bench` instead.
 
-   The `read` toolset still includes `list_documents`, `get_document`, `count_documents`, and `search_records`, which the developer workflows use to check their result. Leaving out `data` drops only the record writes: create, update, delete, submit, and cancel go through the native server.
+   `read` still includes `list_documents`, `get_document`, `count_documents`, and `search_records`, which developer workflows use to inspect results. `bench` exposes the opt-in Bench tools when `FRAPPE_BENCH_PATH` is configured. Leaving out `data` drops record writes, which go through native MCP on v16+.
 
 3. Run `uvx mcp-frappe check` with the same environment. It prints how many tools and characters each toolset adds to the session, so you can see what switching a toolset off saves.
 
@@ -62,7 +64,7 @@ Both servers can use the same Frappe user. A developer account on a development 
 
 ## Tool names
 
-Both servers have tools named `list_documents`, `get_document`, `count_documents`, `create_document`, `update_document`, `delete_document`, and `get_doctype_schema`. Claude Code prefixes each tool with its server name (`mcp__frappe__list_documents`, `mcp__frappe-dev__list_documents`), so they don't collide, but the model still has to choose between them. With `FRAPPE_MCP_TOOLSETS=read,customize,developer` only the read tools overlap, and the instruction above settles which server handles writes.
+Both servers have tools named `list_documents`, `get_document`, `count_documents`, `create_document`, `update_document`, `delete_document`, and `get_doctype_schema`. Claude Code prefixes each tool with its server name (`mcp__frappe__list_documents`, `mcp__frappe-dev__list_documents`), so they don't collide, but the model still has to choose between them. With `FRAPPE_MCP_TOOLSETS=read,customize,developer` only read tools overlap; add `bench` when the local Bench tools are configured.
 
 ## Checked so far
 

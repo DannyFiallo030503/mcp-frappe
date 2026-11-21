@@ -216,6 +216,7 @@ def test_check_shows_the_selected_toolsets(fake_site, clean_env, capsys) -> None
 
     assert code == 0
     assert "toolsets" in output and "read (read-only mode)" in output
+    assert "MCP version guidance" in output and "native Frappe MCP" in output
 
 
 def test_check_reports_the_tool_list_cost_per_toolset(fake_site, clean_env, capsys) -> None:

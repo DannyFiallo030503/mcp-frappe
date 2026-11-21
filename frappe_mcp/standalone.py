@@ -61,8 +61,8 @@ list_reports and their filters with get_report_filters.
 the preview returned (expected_modified or expected_preview). Show the preview to the user \
 first. A stale token means: preview again.
 - A PermissionError is final: tell the user which access is missing; never work around it.
-- If another Frappe MCP server (such as Frappe's built-in one) is connected, use it for record \
-data and method calls, and this one for DocTypes, customizations, and app files.
+- Route by get_site_info: v15 uses this server; v16+ may use native MCP for data and this one for \
+development; unknown stays here. It cannot configure another Frappe MCP server.
 """
 
 server = FastMCP("frappe", instructions=_INSTRUCTIONS)
@@ -2348,7 +2348,8 @@ def _local_apps(apps: list[str]) -> dict[str, Any]:
 def get_site_info() -> dict[str, Any]:
     """Say who is connected and what the site runs.
 
-    Returns `user`, `apps` with versions, `frappe_major_version`, `site_label`, and `apps_path`
+    Returns `user`, `apps` with versions, `frappe_major_version`, `mcp_guidance`, `site_label`,
+    and `apps_path`
     (which apps have a checkout under FRAPPE_APPS_PATH; never a path). Developer mode can't be read
     through the API.
     """
@@ -2367,11 +2368,26 @@ def get_site_info() -> dict[str, Any]:
             }
         )
     major = str((versions.get("frappe") or {}).get("version") or "").split(".")[0]
+    guidance = (
+        "Frappe v15: use standalone mcp-frappe for data and development tools."
+        if major.isdigit() and int(major) == 15
+        else (
+            "Frappe v16+: if enabled on the site and configured in the MCP host, native Frappe "
+            "MCP may handle data; use standalone mcp-frappe for customize and developer tools "
+            "with read,customize,developer; add bench if FRAPPE_BENCH_PATH is configured."
+        )
+        if major.isdigit() and int(major) >= 16
+        else (
+            "Frappe version is unknown: use standalone mcp-frappe and consult the compatibility "
+            "matrix; do not infer native MCP availability."
+        )
+    )
     return {
         "site_label": label,
         "user": user,
         "apps": apps,
         "frappe_major_version": int(major) if major.isdigit() else None,
+        "mcp_guidance": guidance,
         "apps_path": _local_apps([row["app"] for row in apps]),
         "notes": [_DEVELOPER_MODE_NOTE],
     }
@@ -4946,6 +4962,27 @@ def rename(
     return _apply_doctype_rename(old, new, summary)
 
 
+def _field_rename_recovery_message(
+    old: str, new: str, app: str, module: str, rollback_id: str, *, confirmed: bool
+) -> str:
+    """Explain how to inspect an uncertain remote save without repeating the write."""
+    state = (
+        "The readback did not confirm the save."
+        if confirmed
+        else "The save could not be read back."
+    )
+    return (
+        f"Frappe disconnected while saving the DocType. {state} Patch files were preserved "
+        f"(rollback_id={rollback_id}). Do not retry the rename yet. Inspect the DocType schema "
+        f"for {old!r} and {new!r}. If the schema is unchanged, preview `rollback_export` with "
+        f"app={app!r}, module={module!r}, rollback_id={rollback_id!r}, then confirm it to remove "
+        "only these generated files. `rollback_export` needs the `customize` toolset; enable it "
+        "in `FRAPPE_MCP_TOOLSETS` and reconnect if it is not listed. If the new field is present "
+        "and the old one is absent, keep "
+        "the patch. If the state is ambiguous, stop and investigate before running `bench migrate`."
+    )
+
+
 def _apply_field_rename(
     doctype: str,
     old: str,
@@ -4954,7 +4991,7 @@ def _apply_field_rename(
     summary: dict[str, Any],
     preview_id: str,
 ) -> dict[str, Any]:
-    """Write the patch files, then save the DocType; undo the files if the save fails."""
+    """Write patch files, then save the DocType; retain them if remote save is uncertain."""
     rollback_id, undo = _write_app_files(plan["_app_path"], plan["_payloads"], preview_id)
     expected = str(plan["modified"])
     target = {
@@ -4976,14 +5013,34 @@ def _apply_field_rename(
             raise ValueError(_STALE_DOCUMENT) from error
         raise
     except httpx.TransportError as error:
-        _wait_for_server_ready()
-        saved = _request("GET", _resource("DocType", doctype))
-        if not _doctype_matches(saved, target, expected):
-            undo()
+        try:
+            _wait_for_server_ready()
+            saved = _request("GET", _resource("DocType", doctype))
+        except (httpx.TransportError, FrappeError, RuntimeError, ValueError) as read_error:
             raise RuntimeError(
-                "Frappe disconnected while saving the DocType and the saved DocType does not "
-                "hold the rename; the patch files were removed. Request a fresh preview."
+                _field_rename_recovery_message(
+                    old, new, plan["app"], plan["_doc"]["module"], rollback_id, confirmed=False
+                )
+            ) from read_error
+        if not isinstance(saved, dict):
+            raise RuntimeError(
+                _field_rename_recovery_message(
+                    old, new, plan["app"], plan["_doc"]["module"], rollback_id, confirmed=False
+                )
             ) from error
+        fields = saved.get("fields") or []
+        fieldnames = [row.get("fieldname") for row in fields if isinstance(row, dict)]
+        if new not in fieldnames or old in fieldnames:
+            raise RuntimeError(
+                _field_rename_recovery_message(
+                    old, new, plan["app"], plan["_doc"]["module"], rollback_id, confirmed=True
+                )
+            ) from error
+        if not _doctype_matches(saved, target, expected):
+            plan["warnings"].append(
+                "The field rename was confirmed after disconnect, but the saved DocType differs "
+                "from the preview; review the DocType and patch before running bench migrate."
+            )
         reconciled = True
     finally:
         _forget_meta(doctype)
@@ -10335,6 +10392,7 @@ def _setup_check() -> list[tuple[str, str, str]]:
         rows.append(("FAIL", "connection", "the site answered as Guest; check the credentials"))
         return rows
     rows.append(("ok", "connection", f"logged in as {info['user']}"))
+    rows.append(("info", "MCP version guidance", info["mcp_guidance"]))
     versions = ", ".join(f"{app['app']} {app['version']}" for app in info["apps"])
     rows.append(("ok", "versions", versions or "the site reported no app versions"))
     rows.append(("info", "developer mode", "not reported: Frappe has no API for it"))

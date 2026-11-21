@@ -449,6 +449,93 @@ def test_a_reload_during_the_save_is_reconciled(fake_site, tmp_path, monkeypatch
     assert result["reconciled_after_server_reload"] is True
 
 
+def test_transport_disconnect_accepts_remote_normalization_and_keeps_patch(
+    fake_site, tmp_path, monkeypatch
+) -> None:
+    package = _field_site(fake_site, tmp_path, monkeypatch)
+    preview = standalone.rename("field", DOCTYPE, "batch_no", "lot_no")
+    record = standalone._request("GET", RECORD_PATH)
+    record["fields"][1]["fieldname"] = "lot_no"
+    record["modified"] = "after reload"
+
+    def put(call):
+        fake_site.add("GET", RECORD_PATH, record)
+        raise httpx.ReadError("worker reloaded")
+
+    fake_site.add("PUT", RECORD_PATH, put)
+    monkeypatch.setattr(standalone, "_wait_for_server_ready", lambda: None)
+    result = standalone.rename(
+        "field", DOCTYPE, "batch_no", "lot_no", expected_preview=preview["preview_id"], confirm=True
+    )
+
+    assert result["renamed"] is True
+    assert any("differs from the preview" in warning for warning in result["warnings"])
+    assert (package / "patches.txt").exists()
+
+
+def test_transport_disconnect_with_unconfirmed_readback_preserves_patch(
+    fake_site, tmp_path, monkeypatch
+) -> None:
+    package = _field_site(fake_site, tmp_path, monkeypatch)
+    preview = standalone.rename("field", DOCTYPE, "batch_no", "lot_no")
+
+    def put(call):
+        fake_site.add("GET", RECORD_PATH, httpx.ReadError("readback unavailable"))
+        raise httpx.ReadError("worker reloaded")
+
+    fake_site.add("PUT", RECORD_PATH, put)
+    monkeypatch.setattr(standalone, "_wait_for_server_ready", lambda: None)
+    rollback_id = f"export-{preview['preview_id'][:32]}.json"
+    with pytest.raises(
+        RuntimeError,
+        match=rf"rollback_id={rollback_id}.*rollback_export.*customize.*FRAPPE_MCP_TOOLSETS",
+    ):
+        standalone.rename(
+            "field",
+            DOCTYPE,
+            "batch_no",
+            "lot_no",
+            expected_preview=preview["preview_id"],
+            confirm=True,
+        )
+
+    assert (package / "patches.txt").exists()
+    assert (package / "patches" / "rename_lab_sample_batch_no_to_lot_no.py").exists()
+    assert len(fake_site.calls_to("PUT", RECORD_PATH)) == 1
+
+
+def test_transport_disconnect_unchanged_schema_returns_rollback_path(
+    fake_site, tmp_path, monkeypatch
+) -> None:
+    package = _field_site(fake_site, tmp_path, monkeypatch)
+    preview = standalone.rename("field", DOCTYPE, "batch_no", "lot_no")
+    existing = standalone._request("GET", RECORD_PATH)
+
+    def put(call):
+        fake_site.add("GET", RECORD_PATH, existing)
+        raise httpx.ReadError("worker reloaded")
+
+    fake_site.add("PUT", RECORD_PATH, put)
+    monkeypatch.setattr(standalone, "_wait_for_server_ready", lambda: None)
+    rollback_id = f"export-{preview['preview_id'][:32]}.json"
+
+    with pytest.raises(
+        RuntimeError,
+        match=rf"rollback_id={rollback_id}.*rollback_export.*customize.*FRAPPE_MCP_TOOLSETS",
+    ):
+        standalone.rename(
+            "field",
+            DOCTYPE,
+            "batch_no",
+            "lot_no",
+            expected_preview=preview["preview_id"],
+            confirm=True,
+        )
+
+    assert (package / "patches.txt").exists()
+    assert len(fake_site.calls_to("PUT", RECORD_PATH)) == 1
+
+
 def test_field_rename_refusals(fake_site, tmp_path, monkeypatch) -> None:
     _field_site(fake_site, tmp_path, monkeypatch, custom=1)
     with pytest.raises(ValueError, match="site-custom"):
