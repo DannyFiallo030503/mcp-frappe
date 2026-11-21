@@ -243,7 +243,7 @@ def test_custom_doctype_preview_has_no_app_files(fake_site) -> None:
 def test_fieldname_change_is_refused(fake_site) -> None:
     _site(fake_site)
 
-    with pytest.raises(ValueError, match="renaming fields is not supported"):
+    with pytest.raises(ValueError, match="rename it with rename"):
         standalone.update_doctype(
             DOCTYPE,
             [{"op": "update_field", "fieldname": "title", "set": {"fieldname": "headline"}}],

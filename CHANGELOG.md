@@ -46,8 +46,23 @@ All notable changes to this project are listed here. The format follows
   `FRAPPE_BENCH_TIMEOUT`. `mcp-frappe check` prints a `bench` row.
 - `list_app_drift` and `list_pending_patches` return a `hint` naming what syncs a
   `missing_on_site` DocType or runs pending patches.
+- `customize_doctype(doctype, operations, expected_preview, confirm)`: customize a standard
+  DocType in one Customize Form save (`set_property`, `move_field`, `add_custom_field`,
+  `change_fieldtype` within Customize Form's related-type groups). The preview lists the
+  Property Setters and Custom Fields the save creates, updates, or removes, redundant setters
+  included; confirm with `preview_id`.
+- `rename(kind, doctype, old, new, merge, expected_preview, confirm)`: rename a record, a
+  Custom Field's fieldname, a field of your app's DocType, or your app's DocType through
+  Frappe's own rename code. A field rename also writes a `rename_field` patch from a fixed
+  template and lists it in `patches.txt`; `rollback_export` undoes those files.
+- The tool-list budget test allows 37,000 characters (was 34,000), and the opt-in caps grow
+  by the same 3,000.
 - `FRAPPE_MCP_TOOLSETS` accepts `bench`; the default selection includes it, and it has no
   tool unless `FRAPPE_BENCH_PATH` is set. `mcp-frappe check` lists only toolsets with tools.
+
+### Fixed
+
+- `rollback_export` no longer reports an exported empty file as changed since the export.
 
 ## [0.3.0] - 2026-11-20
 

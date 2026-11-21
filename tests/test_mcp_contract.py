@@ -309,7 +309,7 @@ def test_an_unreachable_site_reaches_the_client_as_a_clear_error(fake_site, monk
 
 # Tool-list budget: hosts send the whole list to the model in every session.
 
-TOOL_LIST_BUDGET = 34_000
+TOOL_LIST_BUDGET = 37_000
 
 
 def _listed_tools():
@@ -335,7 +335,7 @@ def test_the_tool_list_fits_its_character_budget() -> None:
 
 
 # The method tools exist only when FRAPPE_MCP_METHODS is set, so they have their own cap.
-TOOL_LIST_WITH_METHODS_BUDGET = 36_500
+TOOL_LIST_WITH_METHODS_BUDGET = 39_500
 
 
 def test_the_tool_list_with_the_method_tools_fits_its_budget(methods_on) -> None:
@@ -347,8 +347,8 @@ def test_the_tool_list_with_the_method_tools_fits_its_budget(methods_on) -> None
 
 
 # run_bench exists only when FRAPPE_BENCH_PATH is set, so it has its own cap too.
-TOOL_LIST_WITH_BENCH_BUDGET = 35_500
-TOOL_LIST_WITH_EVERY_OPT_IN_BUDGET = 38_000
+TOOL_LIST_WITH_BENCH_BUDGET = 38_500
+TOOL_LIST_WITH_EVERY_OPT_IN_BUDGET = 41_000
 
 
 def test_the_tool_list_with_the_bench_tool_fits_its_budget(bench_on) -> None:
