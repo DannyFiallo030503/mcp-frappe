@@ -6,21 +6,6 @@ Each entry has a **Source**: `field` when a task needed the operation, or `requi
 
 ## Open requests
 
-### FR-2026-004 — Safely sync an app DocType that is missing from the site
-
-- **Status:** open
-- **Source:** field
-- **Reported:** 2026-11-09
-- **Task reference:** product-line-as-item-group
-- **Frappe version / apps:** Frappe 15.96.0, ERPNext 15.96.1, a custom app 0.0.1
-- **Needed operation:** preview and synchronize an existing standard DocType from an app checkout when its JSON/controller files exist but the DocType metadata is absent on the configured site.
-- **Why existing tools are insufficient:** `list_app_drift` identified an app DocType as `missing_on_site`; `create_doctype` refused to overwrite the existing app file; `update_doctype` requires a DocType already present on the site. No MCP operation safely syncs that existing app definition into site metadata.
-- **Expected behavior:** offer a preview of the existing app definition and dependency/metadata changes, then apply with an expected preview token and verify with `get_doctype_schema` and `list_app_drift`.
-- **Permissions and safety:** require app/module ownership and normal Frappe permissions; refuse to overwrite differing files; never run migrations implicitly; make the affected DocType and dependencies explicit.
-- **Evidence:** [sanitized task report](reports/product-line-as-item-group.md); app drift showed missing DocTypes and `create_doctype` refused overwrite.
-- **Acceptance:** a missing-on-site DocType with matching checked-in app files can be synchronized through preview/confirm without replacing files, with schema and drift verification; mismatched definitions are refused.
-- **Implementation:** planned in [stage 18](../work-plan/stage-18-bench-runner.md) (`reload-doc` / `migrate`). Meanwhile, since [stage 14](../work-plan/stage-14-field-feedback-fixes.md) `create_doctype`'s refusal says to run `bench migrate` when the app already has the DocType's file, as `list_app_drift` already did.
-
 ### FR-2026-005 — Call an app's whitelisted method to check its response
 
 - **Status:** open
@@ -37,6 +22,21 @@ Each entry has a **Source**: `field` when a task needed the operation, or `requi
 - **Implementation:** planned in [stage 16](../work-plan/stage-16-dev-diagnostics.md) (list an app's whitelisted methods) and [stage 17](../work-plan/stage-17-method-allowlist.md) (allowlisted method calls).
 
 ## Resolved and closed
+
+### FR-2026-004 — Safely sync an app DocType that is missing from the site
+
+- **Status:** resolved
+- **Source:** field
+- **Reported:** 2026-11-09
+- **Task reference:** product-line-as-item-group
+- **Frappe version / apps:** Frappe 15.96.0, ERPNext 15.96.1, a custom app 0.0.1
+- **Needed operation:** preview and synchronize an existing standard DocType from an app checkout when its JSON/controller files exist but the DocType metadata is absent on the configured site.
+- **Why existing tools are insufficient:** `list_app_drift` identified an app DocType as `missing_on_site`; `create_doctype` refused to overwrite the existing app file; `update_doctype` requires a DocType already present on the site. No MCP operation safely syncs that existing app definition into site metadata.
+- **Expected behavior:** offer a preview of the existing app definition and dependency/metadata changes, then apply with an expected preview token and verify with `get_doctype_schema` and `list_app_drift`.
+- **Permissions and safety:** require app/module ownership and normal Frappe permissions; refuse to overwrite differing files; never run migrations implicitly; make the affected DocType and dependencies explicit.
+- **Evidence:** [sanitized task report](reports/product-line-as-item-group.md); app drift showed missing DocTypes and `create_doctype` refused overwrite.
+- **Acceptance:** a missing-on-site DocType with matching checked-in app files can be synchronized through preview/confirm without replacing files, with schema and drift verification; mismatched definitions are refused.
+- **Implementation:** [stage 18](../work-plan/stage-18-bench-runner.md), 2026-11-20: with Bench commands turned on (`FRAPPE_BENCH_PATH`, local sites only), `run_bench(command="reload-doc", app, module, doctype)` previews the argv and the module's drift, then runs `bench --site <site> reload-doc <module> doctype <doctype>` on confirmation with the preview id; it refuses unless the checkout holds that DocType's file, never writes app files, and returns the drift read again so the DocType shows `in_sync`. `run_bench(command="migrate")` syncs everything. `list_app_drift` names the tool in its `hint`. Without the opt-in, the refusal and drift still say to run `bench migrate`. Unit-tested; `e2e/run_standalone_bench_flow.py` covers it live but hasn't been run yet.
 
 ### FR-2026-001 — Expose a safe configured site label in site info
 

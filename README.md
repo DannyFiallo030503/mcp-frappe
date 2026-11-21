@@ -87,15 +87,16 @@ Frappe v16 ships its own MCP server for record data and whitelisted method calls
 | `data` | Create, update, delete, submit, and cancel records; with `FRAPPE_MCP_METHODS`, call the app methods you allowlist (mapped drafts such as Sales Order to Sales Invoice, reads, previewed writes) |
 | `customize` | Custom Fields, Property Setters, role permissions, export to app files, rollback |
 | `developer` | Create, edit, delete, and promote DocTypes; Workflows, Notifications, Report Builder reports, Workspaces |
+| `bench` | Only with `FRAPPE_BENCH_PATH` on a local site: run `migrate`, `reload-doc`, `export-fixtures`, `clear-cache`, or `run-tests`, each previewed first |
 
-All four are on by default for a local (loopback or `.localhost`) site; a remote site gets only `read` unless `FRAPPE_MCP_READ_ONLY=NO`. `FRAPPE_MCP_TOOLSETS=read,customize` narrows them, and `FRAPPE_MCP_READ_ONLY=YES` exposes only `read`. Every tool carries MCP annotations, so a host can run reads freely and ask before writes.
+All toolsets are on by default for a local (loopback or `.localhost`) site; a remote site gets only `read` unless `FRAPPE_MCP_READ_ONLY=NO`. `FRAPPE_MCP_TOOLSETS=read,customize` narrows them, and `FRAPPE_MCP_READ_ONLY=YES` exposes only `read`. Every tool carries MCP annotations, so a host can run reads freely and ask before writes.
 
 ## Safety
 
 - Writes return a preview first. Updates and deletes are bound to the record's `modified` timestamp, and exports to a hash of the preview, so nothing changes if the site moved in between.
 - File writes stay inside the configured app, refuse `frappe` and `erpnext`, back up what they overwrite, and can be rolled back.
 - Fields Frappe evaluates as code (Python conditions, Query and Script Reports, custom HTML blocks, `Code` fields) are refused, and the record tools don't write schema, configuration, or code records such as Server Scripts.
-- The server never runs `bench migrate`, restarts Bench, or deploys. Review and commit the generated files yourself.
+- The server runs Bench commands only when you opt in with `FRAPPE_BENCH_PATH` on a local site, and then only five fixed commands, each previewed. It never restarts Bench or deploys. Review and commit the generated files yourself.
 
 Use an Administrator key only on a development site. See the [security model](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/docs/security.md).
 

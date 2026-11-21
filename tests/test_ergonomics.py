@@ -262,7 +262,7 @@ def tool_registry(monkeypatch):
 
 
 def test_every_toolset_is_on_by_default(tool_registry) -> None:
-    assert standalone._selected_toolsets() == {"read", "data", "customize", "developer"}
+    assert standalone._selected_toolsets() == {"read", "data", "customize", "developer", "bench"}
 
 
 def test_toolsets_narrow_the_tool_list(tool_registry) -> None:
@@ -312,7 +312,7 @@ def test_bad_toolset_settings_fail_at_startup(tool_registry, env, message) -> No
     )
 
 
-ALL = {"read", "data", "customize", "developer"}
+ALL = {"read", "data", "customize", "developer", "bench"}
 LOCAL = "http://site1.localhost:8000"
 REMOTE = "https://erp.example.com"
 

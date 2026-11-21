@@ -416,6 +416,7 @@ def test_list_app_drift_reports_every_verdict(fake_site, apps) -> None:
     }
     assert result["total"] == 5
     assert result["next_offset"] is None
+    assert "bench migrate" in result["hint"]
     # The in-sync DocType matched by hash and timestamp, so its record was never read.
     assert not fake_site.calls_to("GET", RECORD_PATH)
 

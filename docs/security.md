@@ -80,6 +80,21 @@ Error text returned to the model is decoded from Frappe's messages and never inc
 
 **The user is responsible for what they list.** A whitelisted method can do anything its code does, including writes a `read` entry's `GET` won't roll back if the method commits, and some accept arguments that widen what they touch. List only methods you have read, prefer `params` to the scalar default, and list anything that changes data as `write` so it is previewed. A `write` confirmation is the model's own `confirm=true`; rely on the host's approval prompt (`call_allowed_method` has `destructiveHint: true`) for a human checkpoint.
 
+## Bench commands
+
+Until stage 18 the server only sent HTTP requests to the site and wrote files below `FRAPPE_APPS_PATH`. `run_bench` widens that boundary on purpose, with the project owner's approval (2026-11-20): it starts a `bench` process, and Bench runs the app's own code (patches, hooks, tests). AGENTS.md allows it only as this opt-in toolset. The limits:
+
+- **Off by default.** The tool is registered only when the user sets `FRAPPE_BENCH_PATH`, and the model can't set or change that, the site, the command, or the timeout.
+- **Local sites only.** With `FRAPPE_BENCH_PATH` set, the server refuses to start unless `FRAPPE_URL` is loopback or `.localhost`, and the tool checks again on every call. Read-only mode leaves the `bench` toolset out.
+- **A fixed command list.** `migrate`, `reload-doc`, `export-fixtures`, `clear-cache`, and `run-tests`, each with its own argument rules. The argv is the configured command, `--site <site>`, fixed words, and names that match the safe-name pattern (which can't start with `-`) or, for `test_module`, a dotted path inside the app. There is no flag (`--force`, `--skip-failing`), no free text, and no shell. `bench build`, `install-app`, `get-app`, `backup`, `restore`, `drop-site`, `console`, `execute`, and anything on another site are out of scope.
+- **Checked against the site and the checkout.** Apps and modules must exist on the site and belong together; `reload-doc` needs the DocType's file in the checkout, naming that DocType; `export-fixtures` refuses `frappe` and `erpnext`; `run-tests` needs `allow_tests` in the site config when it can be read.
+- **Preview and confirm.** The preview shows the exact argv, the site, a warning, and what the command is about to change (drift, pending patches, fixture files). Confirmation needs its `preview_id`, recomputed just before running, so a site that changed in between is refused. `run_bench` has `destructiveHint: true`, so hosts ask a person before it runs.
+- **No secrets in the child process.** The environment is an allowlist (`PATH`, `HOME`, locale, temporary folders, Docker host settings, and similar). `FRAPPE_API_KEY`, `FRAPPE_API_SECRET`, `FRAPPE_PASSWORD`, every other `FRAPPE_*` variable, and `CI` are not passed. To check `allow_tests`, the server reads `site_config.json` and `common_site_config.json`, which hold the database password; it keeps only that one flag.
+- **Bounded output.** The result has the last 200 lines (at most 20,000 characters) with configured secrets replaced by `***` and the Bench folder by `<bench>`. Tracebacks can still hold record values or other data the app prints.
+- **Time limit.** `FRAPPE_BENCH_TIMEOUT` (default 900 s) kills the process; a command inside a container may keep running there.
+
+**What the user takes on.** `migrate` runs every pending patch and re-imports every changed DocType, fixture, and customization file, so it can change or delete data, and it replaces site changes that the files don't hold (the preview's drift shows `site_ahead` and `diverged` DocTypes). `reload-doc` replaces the site's DocType record with the file. `run-tests` runs test code that writes records. Enable the toolset only on a disposable development site whose Bench and app code you trust.
+
 ## Code fields and templates
 
 AGENTS.md forbids adding Python evaluation, and a field Frappe evaluates is Python evaluation by another route, so the configuration tools never write one:
@@ -95,7 +110,7 @@ AGENTS.md forbids adding Python evaluation, and a field Frappe evaluates is Pyth
 
 Filesystem output is optional and local to the MCP process. `FRAPPE_APPS_PATH` is the only writable root. The app and module must exist beneath it, and the selected remote Module Def must belong to that app. Resolved paths are checked against traversal and symlink escapes. Export previews expose paths and content hashes; overwritten files receive a backup before replacement. Exports write only the module's `custom/` folder, the app's `fixtures/client_script.json` (and, with `with_workflows`, `fixtures/workflow.json`, `workflow_state.json`, and `workflow_action_master.json`), and the managed block of `hooks.py`. The configuration tools write no local files; for a standard Notification, Report, or Workspace, Frappe itself writes the module's `notification/`, `report/`, or `workspace/` folder in developer mode. `promote_custom_doctype` writes Frappe's controller templates only into a new `<module>/doctype/<doctype>/` folder and removes them again if the DocType is still custom after a failed save. The comparison tools only read: DocType JSON and `custom/` files, resolved with the same traversal and symlink checks, each at most 5 MB.
 
-Mount only the intended app tree when running the MCP host in a container. Review exported source and fixtures through Git before migration or deployment. The MCP does not run Bench commands, migrations, or deployments.
+Mount only the intended app tree when running the MCP host in a container. Review exported source and fixtures through Git before migration or deployment. The MCP runs Bench commands only through the opt-in `run_bench` ([above](#bench-commands)); `export-fixtures` writes the app's `fixtures/` files through Bench itself, outside these path checks. It never deploys.
 
 ## Data handling
 

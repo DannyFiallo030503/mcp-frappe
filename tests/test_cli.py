@@ -229,7 +229,10 @@ def test_check_reports_the_tool_list_cost_per_toolset(fake_site, clean_env, caps
     cost = standalone._tool_list_cost()
     (line,) = [line for line in output.splitlines() if "tool list" in line]
     for toolset, (count, chars) in cost.items():
-        assert f"{toolset} {count} tools ~{chars:,} chars" in line
+        if count:
+            assert f"{toolset} {count} tools ~{chars:,} chars" in line
+    # The bench toolset has no tools without FRAPPE_BENCH_PATH, so it isn't listed.
+    assert "bench" not in line
     assert "off: data, customize" in line
     listed = cost["read"][1] + cost["developer"][1]
     assert f"listed ~{listed:,} chars" in line

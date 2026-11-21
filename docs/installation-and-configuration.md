@@ -2,7 +2,7 @@
 
 ## Deployment model
 
-Frappe MCP is a standalone MCP process launched by the AI host over `stdio`. It connects to the target Frappe site over HTTP. Do not run `bench get-app`, `bench install-app`, `bench migrate`, or restart the target site for this integration.
+Frappe MCP is a standalone MCP process launched by the AI host over `stdio`. It connects to the target Frappe site over HTTP. Do not run `bench get-app`, `bench install-app`, `bench migrate`, or restart the target site for this integration. The server itself runs Bench commands only when you opt in with `FRAPPE_BENCH_PATH` ([Bench commands](#bench-commands)).
 
 ### One site per MCP process
 
@@ -63,13 +63,40 @@ Run `check` with the same environment the host will use before adding the server
 | `FRAPPE_TIMEOUT` | No | HTTP timeout in seconds; a positive number, defaults to `30`. Connecting gives up after 5 seconds (or `FRAPPE_TIMEOUT`, if smaller), so a site that is down fails fast. The server refuses to start with any other value |
 | `FRAPPE_META_TTL` | No | Seconds to cache DocType metadata; zero or a positive number, defaults to `300`. `0` turns the cache off. The server refuses to start with any other value |
 | `FRAPPE_ALLOW_INSECURE_HTTP` | No | Set to `YES` to allow plain HTTP to non-local hosts on a trusted development network; logs a warning at startup |
-| `FRAPPE_MCP_TOOLSETS` | No | Comma-separated toolsets to expose: `read`, `data`, `customize`, `developer`. Defaults to all four. The server refuses to start with an unknown name. See [tool-reference.md](tool-reference.md#toolsets-read-only-mode-and-annotations) |
+| `FRAPPE_MCP_TOOLSETS` | No | Comma-separated toolsets to expose: `read`, `data`, `customize`, `developer`, `bench`. Defaults to all five (`bench` has a tool only with `FRAPPE_BENCH_PATH`). The server refuses to start with an unknown name. See [tool-reference.md](tool-reference.md#toolsets-read-only-mode-and-annotations) |
 | `FRAPPE_MCP_METHODS` | No | Path to a JSON file listing the only app methods the server may call (`mapper`, `read`, or `write` entries). Unset: the method tools aren't registered. The server refuses to start when the file has a problem, naming its line; see [allowlisted method calls](tool-reference.md#allowlisted-method-calls) and the [ERPNext example](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/examples/erpnext-methods.json) |
+| `FRAPPE_BENCH_PATH` | No | The Bench folder (the one holding `apps/` and `sites/`, or the folder a container command runs from). Set: `run_bench` is registered, for a local `FRAPPE_URL` only. Unset: no Bench command can run. See [Bench commands](#bench-commands) |
+| `FRAPPE_BENCH_SITE` | With `FRAPPE_BENCH_PATH` | The site name passed to `bench --site`; defaults to `FRAPPE_SITE` |
+| `FRAPPE_BENCH_COMMAND` | No | A JSON list that runs `bench`, for a containerized Bench, such as `["docker", "compose", "exec", "-T", "backend", "bench"]`. Defaults to `["bench"]` from `PATH` |
+| `FRAPPE_BENCH_TIMEOUT` | No | Seconds before a Bench command is stopped, 10–7200; defaults to `900` |
 | `FRAPPE_MCP_READ_ONLY` | No | `YES` exposes only the `read` toolset, for checking a site that must not change. Unset: read-only for a remote target (see [Remote sites](#remote-sites)), no change for a local one. `NO` enables the write toolsets on a remote target too. The server refuses to start with any other value, or when read-only and `FRAPPE_MCP_TOOLSETS` names a non-`read` toolset |
 
 Use either both API token variables or a username/password. Token auth is preferred for remote sites. Password login uses Frappe's `/api/method/login`.
 
 Both auth modes require HTTPS unless `FRAPPE_URL` points at a loopback host (`localhost`, `127.0.0.1`, `::1`) or a `.localhost` name. If the site is only reachable over plain HTTP by another name, for example a Docker service such as `http://frontend:8080`, set `FRAPPE_ALLOW_INSECURE_HTTP=YES`; do this only on a development network you trust. With password auth, a failed login is not cached, and an expired session is renewed automatically: the server logs in again and retries the rejected request once. A real permission denial is never retried. See [security.md](security.md#sessions). Every request runs as the configured Frappe user. This setup uses `Administrator`; Frappe grants that user all DocType permissions independently of Developer Mode. An Administrator password is highly privileged; use it only in a trusted development environment, and supply it through the MCP host's secret store/environment.
+
+### Bench commands
+
+`run_bench` runs `migrate`, `reload-doc`, `export-fixtures`, `clear-cache`, or `run-tests` on the site after a preview and confirmation ([tool reference](tool-reference.md#bench-commands)). It runs the app's own code, so it is off until you set `FRAPPE_BENCH_PATH`, and the server refuses to start with it when `FRAPPE_URL` isn't a loopback or `.localhost` address. At startup the server checks that the folder exists, that the site name is valid, that `sites/<site>/site_config.json` exists when the folder has a `sites/` directory, that the command is found on `PATH`, and the timeout; a bad value stops it with the reason. `mcp-frappe check` prints a `bench` row with the site, the command, the timeout, and whether the site allows tests, never the folder.
+
+A Bench on this machine:
+
+```bash
+FRAPPE_URL=http://dev.localhost:8000
+FRAPPE_SITE=dev.localhost
+FRAPPE_BENCH_PATH=~/frappe-bench
+```
+
+A Bench in Docker Compose (the folder is where `docker compose` finds the project; with no `sites/` folder there, the site isn't checked locally and `run-tests` relies on the container's `allow_tests`):
+
+```bash
+FRAPPE_URL=http://dev.localhost:8080
+FRAPPE_SITE=dev.localhost
+FRAPPE_BENCH_PATH=~/projects/frappe-docker
+FRAPPE_BENCH_COMMAND='["docker", "compose", "exec", "-T", "backend", "bench"]'
+```
+
+`-T` keeps Docker from allocating a terminal, which the server can't give it. `run-tests` needs `bench --site <site> set-config allow_tests true` once. The command gets a minimal environment (no `FRAPPE_*` credentials and no `CI`); set `DOCKER_HOST` or `DOCKER_CONTEXT` in the server's environment if your Docker setup needs them.
 
 ## MCP host configuration
 
