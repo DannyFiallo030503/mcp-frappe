@@ -23,7 +23,7 @@ Frappe MCP is a standalone stdio server for Frappe developers. This page lists w
 ## Next
 
 - **Close the remaining validation gaps**: `set_role_permissions` on a live site, `bench migrate` re-importing an exported Custom Field, and record writes as a user without System Manager ([list](docs/compatibility-and-validation.md#not-yet-checked-on-a-site)).
-- **Run the developer-task evaluations** on a v16 site with the built-in MCP enabled, and publish the [results](docs/evaluations.md).
+- **Repeat the developer-task evaluations** ([first results](docs/evaluations.md)) several times per cell to turn single passes into rates, and on v15 with `--config dev`.
 
 ## Backlog
 

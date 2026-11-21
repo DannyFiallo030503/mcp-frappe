@@ -53,7 +53,7 @@ FRAPPE_ALLOW_EVALS=YES uv run python evals/run.py \
   --model <model> --max-budget-usd 2 --out e2e/evidence/<date>-v16-evals.json
 ```
 
-Options: `--config dev|native|both` and `--task <id>` (repeat either), `--no-skill`, `--tools`, `--claude <path>`. The native endpoint defaults to `<scheme>://<FRAPPE_SITE or host>:<port>/api/v2/mcp`; set `FRAPPE_NATIVE_MCP_URL` to override it (it must be loopback or `.localhost` too).
+Options: `--config dev|native|both` and `--task <id>` (repeat either), `--no-skill`, `--tools`, `--claude <path>`, and `--transcripts <dir>`, which saves each run's raw stream-json (tool arguments and results, the final answer) as `<task>-<config>.jsonl` with mode 0600. Transcripts hold site data and local paths: use them to debug a failure, never as evidence. The native endpoint defaults to `<scheme>://<FRAPPE_SITE or host>:<port>/api/v2/mcp`; set `FRAPPE_NATIVE_MCP_URL` to override it (it must be loopback or `.localhost` too).
 
 The runner refuses to start without `FRAPPE_ALLOW_EVALS=YES`, with a URL that isn't loopback or `.localhost`, with `frappe` or `erpnext` as the test app, or with uncommitted changes in the test app. It writes the `--mcp-config` file, which holds the API key for both servers, with mode 0600 in the run's temporary folder and deletes the folder after the run; Claude Code itself gets no `FRAPPE_*` variable. Your `~/.claude/CLAUDE.md` may still be loaded; note it with the results if it says anything about Frappe.
 

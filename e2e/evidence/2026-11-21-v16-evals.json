@@ -1,0 +1,1225 @@
+{
+  "date": "2026-11-21",
+  "mcp_frappe": "0.3.0",
+  "commit": "05da805",
+  "claude_code": "2.1.329 (Claude Code)",
+  "model": "claude-sonnet-5-5",
+  "skill": true,
+  "tools": "Read,Glob,Grep,Skill,ToolSearch",
+  "site": "loopback .localhost development site; URL, site name, and credentials omitted",
+  "apps": {
+    "frappe": "16.55.1",
+    "erpnext": "16.53.0"
+  },
+  "results": [
+    {
+      "task": "add-field-after",
+      "config": "dev",
+      "status": "pass",
+      "problems": [],
+      "wall_seconds": 15.9,
+      "timed_out": false,
+      "tool_calls": {
+        "Skill": 1,
+        "ToolSearch": 1,
+        "mcp__frappe-dev__get_doctype_schema": 1,
+        "mcp__frappe-dev__update_doctype": 2,
+        "Grep": 1
+      },
+      "mcp_servers": {
+        "frappe-dev": "connected"
+      },
+      "model": "claude-sonnet-5-5",
+      "claude_code": "2.1.329",
+      "is_error": false,
+      "stop": "success",
+      "num_turns": 8,
+      "cost_usd": 0.06422620000000001,
+      "tokens": {
+        "input_tokens": 12,
+        "output_tokens": 1206,
+        "cache_creation_input_tokens": 11242,
+        "cache_read_input_tokens": 71742
+      },
+      "tool_call_count": 6,
+      "mcp_tool_calls": 3,
+      "app_files_restored": 0
+    },
+    {
+      "task": "add-field-after",
+      "config": "native",
+      "status": "pass",
+      "problems": [],
+      "wall_seconds": 22.2,
+      "timed_out": false,
+      "tool_calls": {
+        "Glob": 1,
+        "Read": 1,
+        "Edit": 2,
+        "ToolSearch": 2,
+        "mcp__frappe__get_document": 1,
+        "mcp__frappe__update_document": 1,
+        "Grep": 1
+      },
+      "mcp_servers": {
+        "frappe": "connected"
+      },
+      "model": "claude-sonnet-5-5",
+      "claude_code": "2.1.329",
+      "is_error": false,
+      "stop": "success",
+      "num_turns": 10,
+      "cost_usd": 0.08681590000000003,
+      "tokens": {
+        "input_tokens": 18,
+        "output_tokens": 1995,
+        "cache_creation_input_tokens": 14133,
+        "cache_read_input_tokens": 102979
+      },
+      "tool_call_count": 9,
+      "mcp_tool_calls": 2,
+      "app_files_restored": 0
+    },
+    {
+      "task": "add-field-after",
+      "config": "both",
+      "status": "pass",
+      "problems": [],
+      "wall_seconds": 27.4,
+      "timed_out": false,
+      "tool_calls": {
+        "Skill": 1,
+        "ToolSearch": 1,
+        "mcp__frappe-dev__get_doctype_schema": 2,
+        "mcp__frappe-dev__update_doctype": 2,
+        "Grep": 1,
+        "Read": 1
+      },
+      "mcp_servers": {
+        "frappe": "connected",
+        "frappe-dev": "connected"
+      },
+      "model": "claude-sonnet-5-5",
+      "claude_code": "2.1.329",
+      "is_error": false,
+      "stop": "success",
+      "num_turns": 10,
+      "cost_usd": 0.0772853,
+      "tokens": {
+        "input_tokens": 16,
+        "output_tokens": 1684,
+        "cache_creation_input_tokens": 12497,
+        "cache_read_input_tokens": 104253
+      },
+      "tool_call_count": 8,
+      "mcp_tool_calls": 4,
+      "app_files_restored": 0
+    },
+    {
+      "task": "child-table-export",
+      "config": "dev",
+      "status": "pass",
+      "problems": [],
+      "wall_seconds": 38.4,
+      "timed_out": false,
+      "tool_calls": {
+        "Skill": 1,
+        "ToolSearch": 1,
+        "mcp__frappe-dev__get_site_info": 1,
+        "mcp__frappe-dev__get_doctype_schema": 1,
+        "mcp__frappe-dev__create_doctype": 2,
+        "mcp__frappe-dev__update_doctype": 2,
+        "mcp__frappe-dev__list_app_drift": 1
+      },
+      "mcp_servers": {
+        "frappe-dev": "connected"
+      },
+      "model": "claude-sonnet-5-5",
+      "claude_code": "2.1.329",
+      "is_error": false,
+      "stop": "success",
+      "num_turns": 11,
+      "cost_usd": 0.0846489,
+      "tokens": {
+        "input_tokens": 16,
+        "output_tokens": 1844,
+        "cache_creation_input_tokens": 13754,
+        "cache_read_input_tokens": 111609
+      },
+      "tool_call_count": 9,
+      "mcp_tool_calls": 7,
+      "app_files_restored": 0
+    },
+    {
+      "task": "child-table-export",
+      "config": "native",
+      "status": "pass",
+      "problems": [],
+      "wall_seconds": 31.3,
+      "timed_out": false,
+      "tool_calls": {
+        "ToolSearch": 1,
+        "Glob": 2,
+        "Read": 1,
+        "mcp__frappe__get_doctype_schema": 1,
+        "mcp__frappe__create_document": 1,
+        "mcp__frappe__update_document": 1,
+        "Grep": 1
+      },
+      "mcp_servers": {
+        "frappe": "connected"
+      },
+      "model": "claude-sonnet-5-5",
+      "claude_code": "2.1.329",
+      "is_error": false,
+      "stop": "success",
+      "num_turns": 9,
+      "cost_usd": 0.0759392,
+      "tokens": {
+        "input_tokens": 12,
+        "output_tokens": 1397,
+        "cache_creation_input_tokens": 13786,
+        "cache_read_input_tokens": 68012
+      },
+      "tool_call_count": 8,
+      "mcp_tool_calls": 3,
+      "app_files_restored": 0
+    },
+    {
+      "task": "child-table-export",
+      "config": "both",
+      "status": "pass",
+      "problems": [],
+      "wall_seconds": 27.3,
+      "timed_out": false,
+      "tool_calls": {
+        "Skill": 1,
+        "ToolSearch": 1,
+        "mcp__frappe-dev__get_site_info": 1,
+        "mcp__frappe-dev__get_doctype_schema": 1,
+        "mcp__frappe-dev__create_doctype": 2,
+        "mcp__frappe-dev__update_doctype": 2,
+        "mcp__frappe-dev__list_app_drift": 1
+      },
+      "mcp_servers": {
+        "frappe": "connected",
+        "frappe-dev": "connected"
+      },
+      "model": "claude-sonnet-5-5",
+      "claude_code": "2.1.329",
+      "is_error": false,
+      "stop": "success",
+      "num_turns": 11,
+      "cost_usd": 0.0823249,
+      "tokens": {
+        "input_tokens": 14,
+        "output_tokens": 1718,
+        "cache_creation_input_tokens": 13875,
+        "cache_read_input_tokens": 96169
+      },
+      "tool_call_count": 9,
+      "mcp_tool_calls": 7,
+      "app_files_restored": 0
+    },
+    {
+      "task": "custom-field-export",
+      "config": "dev",
+      "status": "pass",
+      "problems": [],
+      "wall_seconds": 22.9,
+      "timed_out": false,
+      "tool_calls": {
+        "Skill": 1,
+        "ToolSearch": 1,
+        "mcp__frappe-dev__get_site_info": 1,
+        "mcp__frappe-dev__get_doctype_schema": 1,
+        "mcp__frappe-dev__create_custom_field": 2,
+        "mcp__frappe-dev__set_field_property": 2,
+        "mcp__frappe-dev__export_customizations": 2,
+        "mcp__frappe-dev__diff_doctype": 1
+      },
+      "mcp_servers": {
+        "frappe-dev": "connected"
+      },
+      "model": "claude-sonnet-5-5",
+      "claude_code": "2.1.329",
+      "is_error": false,
+      "stop": "success",
+      "num_turns": 13,
+      "cost_usd": 0.10083149999999999,
+      "tokens": {
+        "input_tokens": 14,
+        "output_tokens": 2141,
+        "cache_creation_input_tokens": 17287,
+        "cache_read_input_tokens": 102455
+      },
+      "tool_call_count": 11,
+      "mcp_tool_calls": 9,
+      "app_files_restored": 2
+    },
+    {
+      "task": "custom-field-export",
+      "config": "native",
+      "status": "pass",
+      "problems": [],
+      "wall_seconds": 14.6,
+      "timed_out": false,
+      "tool_calls": {
+        "ToolSearch": 1,
+        "Glob": 1,
+        "mcp__frappe__list_documents": 2,
+        "mcp__frappe__create_document": 2,
+        "mcp__frappe__call_method": 1,
+        "Read": 1
+      },
+      "mcp_servers": {
+        "frappe": "connected"
+      },
+      "model": "claude-sonnet-5-5",
+      "claude_code": "2.1.329",
+      "is_error": false,
+      "stop": "success",
+      "num_turns": 9,
+      "cost_usd": 0.0804742,
+      "tokens": {
+        "input_tokens": 12,
+        "output_tokens": 1493,
+        "cache_creation_input_tokens": 14396,
+        "cache_read_input_tokens": 79362
+      },
+      "tool_call_count": 8,
+      "mcp_tool_calls": 5,
+      "app_files_restored": 1
+    },
+    {
+      "task": "custom-field-export",
+      "config": "both",
+      "status": "pass",
+      "problems": [],
+      "wall_seconds": 20.7,
+      "timed_out": false,
+      "tool_calls": {
+        "Skill": 1,
+        "ToolSearch": 1,
+        "mcp__frappe-dev__get_doctype_schema": 1,
+        "mcp__frappe-dev__create_custom_field": 2,
+        "mcp__frappe-dev__set_field_property": 2,
+        "mcp__frappe-dev__export_customizations": 2,
+        "mcp__frappe-dev__diff_doctype": 1
+      },
+      "mcp_servers": {
+        "frappe": "connected",
+        "frappe-dev": "connected"
+      },
+      "model": "claude-sonnet-5-5",
+      "claude_code": "2.1.329",
+      "is_error": false,
+      "stop": "success",
+      "num_turns": 12,
+      "cost_usd": 0.0981807,
+      "tokens": {
+        "input_tokens": 12,
+        "output_tokens": 2161,
+        "cache_creation_input_tokens": 16999,
+        "cache_read_input_tokens": 85507
+      },
+      "tool_call_count": 10,
+      "mcp_tool_calls": 8,
+      "app_files_restored": 2
+    },
+    {
+      "task": "drift-report",
+      "config": "dev",
+      "status": "pass",
+      "problems": [],
+      "wall_seconds": 6.5,
+      "timed_out": false,
+      "tool_calls": {
+        "ToolSearch": 1,
+        "mcp__frappe-dev__list_app_drift": 1
+      },
+      "mcp_servers": {
+        "frappe-dev": "connected"
+      },
+      "model": "claude-sonnet-5-5",
+      "claude_code": "2.1.329",
+      "is_error": false,
+      "stop": "success",
+      "num_turns": 3,
+      "cost_usd": 0.0332576,
+      "tokens": {
+        "input_tokens": 6,
+        "output_tokens": 241,
+        "cache_creation_input_tokens": 7053,
+        "cache_read_input_tokens": 26236
+      },
+      "tool_call_count": 2,
+      "mcp_tool_calls": 1,
+      "app_files_restored": 0
+    },
+    {
+      "task": "drift-report",
+      "config": "native",
+      "status": "pass",
+      "problems": [],
+      "wall_seconds": 14.3,
+      "timed_out": false,
+      "tool_calls": {
+        "Glob": 1,
+        "ToolSearch": 1,
+        "mcp__frappe__list_documents": 2,
+        "Read": 2,
+        "mcp__frappe__get_doctype_schema": 2
+      },
+      "mcp_servers": {
+        "frappe": "connected"
+      },
+      "model": "claude-sonnet-5-5",
+      "claude_code": "2.1.329",
+      "is_error": false,
+      "stop": "success",
+      "num_turns": 9,
+      "cost_usd": 0.04991400000000001,
+      "tokens": {
+        "input_tokens": 8,
+        "output_tokens": 1194,
+        "cache_creation_input_tokens": 8560,
+        "cache_read_input_tokens": 37180
+      },
+      "tool_call_count": 8,
+      "mcp_tool_calls": 4,
+      "app_files_restored": 0
+    },
+    {
+      "task": "drift-report",
+      "config": "both",
+      "status": "pass",
+      "problems": [],
+      "wall_seconds": 10.2,
+      "timed_out": false,
+      "tool_calls": {
+        "ToolSearch": 1,
+        "mcp__frappe-dev__list_app_drift": 1
+      },
+      "mcp_servers": {
+        "frappe": "connected",
+        "frappe-dev": "connected"
+      },
+      "model": "claude-sonnet-5-5",
+      "claude_code": "2.1.329",
+      "is_error": false,
+      "stop": "success",
+      "num_turns": 3,
+      "cost_usd": 0.0344216,
+      "tokens": {
+        "input_tokens": 6,
+        "output_tokens": 265,
+        "cache_creation_input_tokens": 7273,
+        "cache_read_input_tokens": 26676
+      },
+      "tool_call_count": 2,
+      "mcp_tool_calls": 1,
+      "app_files_restored": 0
+    },
+    {
+      "task": "missing-doctype",
+      "config": "dev",
+      "status": "pass",
+      "problems": [],
+      "wall_seconds": 21.1,
+      "timed_out": false,
+      "tool_calls": {
+        "ToolSearch": 1,
+        "Glob": 1,
+        "mcp__frappe-dev__list_app_drift": 1,
+        "mcp__frappe-dev__list_pending_patches": 1,
+        "mcp__frappe-dev__run_bench": 2
+      },
+      "mcp_servers": {
+        "frappe-dev": "connected"
+      },
+      "model": "claude-sonnet-5-5",
+      "claude_code": "2.1.329",
+      "is_error": false,
+      "stop": "success",
+      "num_turns": 7,
+      "cost_usd": 0.0549843,
+      "tokens": {
+        "input_tokens": 10,
+        "output_tokens": 1075,
+        "cache_creation_input_tokens": 9710,
+        "cache_read_input_tokens": 53743
+      },
+      "tool_call_count": 6,
+      "mcp_tool_calls": 4,
+      "app_files_restored": 0
+    },
+    {
+      "task": "missing-doctype",
+      "config": "native",
+      "status": "fail",
+      "problems": [
+        "step 0: diff_doctype: Error executing tool diff_doctype: Frappe HTTP 404 DoesNotExistError: DocType MCP Eval Missing not found\nHint: The record or DocType does not exist; check the name with list_doctypes, search_records, or list_documents."
+      ],
+      "wall_seconds": 22.4,
+      "timed_out": false,
+      "tool_calls": {
+        "Glob": 1,
+        "ToolSearch": 2,
+        "mcp__frappe__search_doctypes": 1,
+        "mcp__frappe__search_methods": 6,
+        "Read": 1
+      },
+      "mcp_servers": {
+        "frappe": "connected"
+      },
+      "model": "claude-sonnet-5-5",
+      "claude_code": "2.1.329",
+      "is_error": false,
+      "stop": "success",
+      "num_turns": 12,
+      "cost_usd": 0.0585322,
+      "tokens": {
+        "input_tokens": 18,
+        "output_tokens": 1666,
+        "cache_creation_input_tokens": 8120,
+        "cache_read_input_tokens": 93562
+      },
+      "tool_call_count": 11,
+      "mcp_tool_calls": 7,
+      "app_files_restored": 3
+    },
+    {
+      "task": "missing-doctype",
+      "config": "both",
+      "status": "pass",
+      "problems": [],
+      "wall_seconds": 22.0,
+      "timed_out": false,
+      "tool_calls": {
+        "Skill": 1,
+        "ToolSearch": 1,
+        "mcp__frappe-dev__list_app_drift": 1,
+        "mcp__frappe-dev__run_bench": 2
+      },
+      "mcp_servers": {
+        "frappe": "connected",
+        "frappe-dev": "connected"
+      },
+      "model": "claude-sonnet-5-5",
+      "claude_code": "2.1.329",
+      "is_error": false,
+      "stop": "success",
+      "num_turns": 7,
+      "cost_usd": 0.059526699999999995,
+      "tokens": {
+        "input_tokens": 10,
+        "output_tokens": 1047,
+        "cache_creation_input_tokens": 10829,
+        "cache_read_input_tokens": 57207
+      },
+      "tool_call_count": 5,
+      "mcp_tool_calls": 3,
+      "app_files_restored": 0
+    },
+    {
+      "task": "notification-on-submit",
+      "config": "dev",
+      "status": "pass",
+      "problems": [],
+      "wall_seconds": 14.1,
+      "timed_out": false,
+      "tool_calls": {
+        "Skill": 1,
+        "ToolSearch": 1,
+        "mcp__frappe-dev__get_site_info": 1,
+        "mcp__frappe-dev__get_doctype_schema": 1,
+        "mcp__frappe-dev__list_notifications": 1,
+        "mcp__frappe-dev__upsert_notification": 2
+      },
+      "mcp_servers": {
+        "frappe-dev": "connected"
+      },
+      "model": "claude-sonnet-5-5",
+      "claude_code": "2.1.329",
+      "is_error": false,
+      "stop": "success",
+      "num_turns": 9,
+      "cost_usd": 0.0675549,
+      "tokens": {
+        "input_tokens": 10,
+        "output_tokens": 1458,
+        "cache_creation_input_tokens": 11757,
+        "cache_read_input_tokens": 59269
+      },
+      "tool_call_count": 7,
+      "mcp_tool_calls": 5,
+      "app_files_restored": 0
+    },
+    {
+      "task": "notification-on-submit",
+      "config": "native",
+      "status": "pass",
+      "problems": [],
+      "wall_seconds": 10.2,
+      "timed_out": false,
+      "tool_calls": {
+        "ToolSearch": 1,
+        "mcp__frappe__get_doctype_schema": 3,
+        "mcp__frappe__search_doctypes": 1,
+        "mcp__frappe__create_document": 1
+      },
+      "mcp_servers": {
+        "frappe": "connected"
+      },
+      "model": "claude-sonnet-5-5",
+      "claude_code": "2.1.329",
+      "is_error": false,
+      "stop": "success",
+      "num_turns": 7,
+      "cost_usd": 0.0553261,
+      "tokens": {
+        "input_tokens": 10,
+        "output_tokens": 924,
+        "cache_creation_input_tokens": 10240,
+        "cache_read_input_tokens": 51061
+      },
+      "tool_call_count": 6,
+      "mcp_tool_calls": 5,
+      "app_files_restored": 0
+    },
+    {
+      "task": "notification-on-submit",
+      "config": "both",
+      "status": "pass",
+      "problems": [],
+      "wall_seconds": 14.2,
+      "timed_out": false,
+      "tool_calls": {
+        "Skill": 1,
+        "ToolSearch": 1,
+        "mcp__frappe-dev__get_doctype_schema": 1,
+        "mcp__frappe-dev__list_notifications": 1,
+        "mcp__frappe-dev__upsert_notification": 2
+      },
+      "mcp_servers": {
+        "frappe": "connected",
+        "frappe-dev": "connected"
+      },
+      "model": "claude-sonnet-5-5",
+      "claude_code": "2.1.329",
+      "is_error": false,
+      "stop": "success",
+      "num_turns": 8,
+      "cost_usd": 0.0649358,
+      "tokens": {
+        "input_tokens": 10,
+        "output_tokens": 1320,
+        "cache_creation_input_tokens": 11442,
+        "cache_read_input_tokens": 59478
+      },
+      "tool_call_count": 6,
+      "mcp_tool_calls": 4,
+      "app_files_restored": 0
+    },
+    {
+      "task": "pending-patches",
+      "config": "dev",
+      "status": "pass",
+      "problems": [],
+      "wall_seconds": 6.8,
+      "timed_out": false,
+      "tool_calls": {
+        "ToolSearch": 1,
+        "mcp__frappe-dev__list_pending_patches": 1
+      },
+      "mcp_servers": {
+        "frappe-dev": "connected"
+      },
+      "model": "claude-sonnet-5-5",
+      "claude_code": "2.1.329",
+      "is_error": false,
+      "stop": "success",
+      "num_turns": 3,
+      "cost_usd": 0.0343948,
+      "tokens": {
+        "input_tokens": 6,
+        "output_tokens": 363,
+        "cache_creation_input_tokens": 7034,
+        "cache_read_input_tokens": 26168
+      },
+      "tool_call_count": 2,
+      "mcp_tool_calls": 1,
+      "app_files_restored": 1
+    },
+    {
+      "task": "pending-patches",
+      "config": "native",
+      "status": "pass",
+      "problems": [],
+      "wall_seconds": 14.1,
+      "timed_out": false,
+      "tool_calls": {
+        "ToolSearch": 1,
+        "Grep": 1,
+        "mcp__frappe__list_documents": 1,
+        "Glob": 1
+      },
+      "mcp_servers": {
+        "frappe": "connected"
+      },
+      "model": "claude-sonnet-5-5",
+      "claude_code": "2.1.329",
+      "is_error": false,
+      "stop": "success",
+      "num_turns": 5,
+      "cost_usd": 0.0376728,
+      "tokens": {
+        "input_tokens": 6,
+        "output_tokens": 938,
+        "cache_creation_input_tokens": 6461,
+        "cache_read_input_tokens": 24368
+      },
+      "tool_call_count": 4,
+      "mcp_tool_calls": 1,
+      "app_files_restored": 1
+    },
+    {
+      "task": "pending-patches",
+      "config": "both",
+      "status": "pass",
+      "problems": [],
+      "wall_seconds": 10.8,
+      "timed_out": false,
+      "tool_calls": {
+        "ToolSearch": 1,
+        "mcp__frappe-dev__list_pending_patches": 1
+      },
+      "mcp_servers": {
+        "frappe": "connected",
+        "frappe-dev": "connected"
+      },
+      "model": "claude-sonnet-5-5",
+      "claude_code": "2.1.329",
+      "is_error": false,
+      "stop": "success",
+      "num_turns": 3,
+      "cost_usd": 0.0352907,
+      "tokens": {
+        "input_tokens": 6,
+        "output_tokens": 359,
+        "cache_creation_input_tokens": 7257,
+        "cache_read_input_tokens": 26607
+      },
+      "tool_call_count": 2,
+      "mcp_tool_calls": 1,
+      "app_files_restored": 1
+    },
+    {
+      "task": "promote-prototype",
+      "config": "dev",
+      "status": "fail",
+      "problems": [
+        "verdict: \"site_custom\" (expected equals 'in_sync')",
+        "mcp_test_app/mcp_test_app/doctype/mcp_eval_proto/mcp_eval_proto.json: missing"
+      ],
+      "wall_seconds": 9.0,
+      "timed_out": false,
+      "tool_calls": {
+        "Skill": 1,
+        "ToolSearch": 1,
+        "mcp__frappe-dev__get_site_info": 1,
+        "mcp__frappe-dev__promote_custom_doctype": 1
+      },
+      "mcp_servers": {
+        "frappe-dev": "connected"
+      },
+      "model": "claude-sonnet-5-5",
+      "claude_code": "2.1.329",
+      "is_error": false,
+      "stop": "success",
+      "num_turns": 6,
+      "cost_usd": 0.0489995,
+      "tokens": {
+        "input_tokens": 6,
+        "output_tokens": 575,
+        "cache_creation_input_tokens": 10100,
+        "cache_read_input_tokens": 28375
+      },
+      "tool_call_count": 4,
+      "mcp_tool_calls": 2,
+      "app_files_restored": 0
+    },
+    {
+      "task": "promote-prototype",
+      "config": "native",
+      "status": "fail",
+      "problems": [
+        "verdict: \"site_custom\" (expected equals 'in_sync')",
+        "mcp_test_app/mcp_test_app/doctype/mcp_eval_proto/mcp_eval_proto.json: missing"
+      ],
+      "wall_seconds": 23.1,
+      "timed_out": false,
+      "tool_calls": {
+        "ToolSearch": 1,
+        "Glob": 1,
+        "mcp__frappe__get_document": 1,
+        "Read": 4,
+        "Write": 3
+      },
+      "mcp_servers": {
+        "frappe": "connected"
+      },
+      "model": "claude-sonnet-5-5",
+      "claude_code": "2.1.329",
+      "is_error": false,
+      "stop": "success",
+      "num_turns": 11,
+      "cost_usd": 0.09490599999999999,
+      "tokens": {
+        "input_tokens": 8,
+        "output_tokens": 2790,
+        "cache_creation_input_tokens": 15554,
+        "cache_read_input_tokens": 47740
+      },
+      "tool_call_count": 10,
+      "mcp_tool_calls": 1,
+      "app_files_restored": 0
+    },
+    {
+      "task": "promote-prototype",
+      "config": "both",
+      "status": "fail",
+      "problems": [
+        "verdict: \"site_custom\" (expected equals 'in_sync')",
+        "mcp_test_app/mcp_test_app/doctype/mcp_eval_proto/mcp_eval_proto.json: missing"
+      ],
+      "wall_seconds": 12.0,
+      "timed_out": false,
+      "tool_calls": {
+        "Skill": 1,
+        "ToolSearch": 1,
+        "mcp__frappe-dev__get_site_info": 1,
+        "mcp__frappe-dev__promote_custom_doctype": 1
+      },
+      "mcp_servers": {
+        "frappe": "connected",
+        "frappe-dev": "connected"
+      },
+      "model": "claude-sonnet-5-5",
+      "claude_code": "2.1.329",
+      "is_error": false,
+      "stop": "success",
+      "num_turns": 6,
+      "cost_usd": 0.0502951,
+      "tokens": {
+        "input_tokens": 6,
+        "output_tokens": 613,
+        "cache_creation_input_tokens": 10318,
+        "cache_read_input_tokens": 28811
+      },
+      "tool_call_count": 4,
+      "mcp_tool_calls": 2,
+      "app_files_restored": 0
+    },
+    {
+      "task": "rename-field-keep-data",
+      "config": "dev",
+      "status": "pass",
+      "problems": [],
+      "wall_seconds": 31.9,
+      "timed_out": false,
+      "tool_calls": {
+        "Skill": 1,
+        "ToolSearch": 1,
+        "mcp__frappe-dev__get_doctype_schema": 2,
+        "mcp__frappe-dev__list_documents": 2,
+        "mcp__frappe-dev__rename": 2,
+        "mcp__frappe-dev__run_bench": 2
+      },
+      "mcp_servers": {
+        "frappe-dev": "connected"
+      },
+      "model": "claude-sonnet-5-5",
+      "claude_code": "2.1.329",
+      "is_error": false,
+      "stop": "success",
+      "num_turns": 12,
+      "cost_usd": 0.1053199,
+      "tokens": {
+        "input_tokens": 14,
+        "output_tokens": 1646,
+        "cache_creation_input_tokens": 19595,
+        "cache_read_input_tokens": 104519
+      },
+      "tool_call_count": 10,
+      "mcp_tool_calls": 8,
+      "app_files_restored": 4
+    },
+    {
+      "task": "rename-field-keep-data",
+      "config": "native",
+      "status": "fail",
+      "problems": [
+        "fields.fieldname: [\"title\", \"old_code\"] (expected contains 'item_code')",
+        "fields.fieldname: [\"title\", \"old_code\"] (expected not_contains 'old_code')",
+        "step 1: list_documents: Error executing tool list_documents: Unknown field for MCP Eval Item: item_code"
+      ],
+      "wall_seconds": 25.5,
+      "timed_out": false,
+      "tool_calls": {
+        "Grep": 1,
+        "Glob": 2,
+        "Read": 2,
+        "ToolSearch": 1,
+        "mcp__frappe__list_documents": 1,
+        "mcp__frappe__search_methods": 3,
+        "mcp__frappe__get_doctype_schema": 1
+      },
+      "mcp_servers": {
+        "frappe": "connected"
+      },
+      "model": "claude-sonnet-5-5",
+      "claude_code": "2.1.329",
+      "is_error": false,
+      "stop": "success",
+      "num_turns": 12,
+      "cost_usd": 0.0746347,
+      "tokens": {
+        "input_tokens": 16,
+        "output_tokens": 2503,
+        "cache_creation_input_tokens": 10110,
+        "cache_read_input_tokens": 91327
+      },
+      "tool_call_count": 11,
+      "mcp_tool_calls": 5,
+      "app_files_restored": 0
+    },
+    {
+      "task": "rename-field-keep-data",
+      "config": "both",
+      "status": "pass",
+      "problems": [],
+      "wall_seconds": 30.7,
+      "timed_out": false,
+      "tool_calls": {
+        "Skill": 1,
+        "ToolSearch": 1,
+        "mcp__frappe-dev__get_doctype_schema": 1,
+        "mcp__frappe-dev__list_documents": 2,
+        "mcp__frappe-dev__rename": 2,
+        "mcp__frappe-dev__run_bench": 2,
+        "Grep": 1
+      },
+      "mcp_servers": {
+        "frappe": "connected",
+        "frappe-dev": "connected"
+      },
+      "model": "claude-sonnet-5-5",
+      "claude_code": "2.1.329",
+      "is_error": false,
+      "stop": "success",
+      "num_turns": 12,
+      "cost_usd": 0.10842549999999998,
+      "tokens": {
+        "input_tokens": 14,
+        "output_tokens": 1734,
+        "cache_creation_input_tokens": 20092,
+        "cache_read_input_tokens": 106895
+      },
+      "tool_call_count": 10,
+      "mcp_tool_calls": 7,
+      "app_files_restored": 4
+    },
+    {
+      "task": "report-builder",
+      "config": "dev",
+      "status": "pass",
+      "problems": [],
+      "wall_seconds": 17.0,
+      "timed_out": false,
+      "tool_calls": {
+        "ToolSearch": 1,
+        "mcp__frappe-dev__get_doctype_schema": 1,
+        "mcp__frappe-dev__upsert_report": 2
+      },
+      "mcp_servers": {
+        "frappe-dev": "connected"
+      },
+      "model": "claude-sonnet-5-5",
+      "claude_code": "2.1.329",
+      "is_error": false,
+      "stop": "success",
+      "num_turns": 5,
+      "cost_usd": 0.0517726,
+      "tokens": {
+        "input_tokens": 10,
+        "output_tokens": 866,
+        "cache_creation_input_tokens": 9442,
+        "cache_read_input_tokens": 53246
+      },
+      "tool_call_count": 4,
+      "mcp_tool_calls": 3,
+      "app_files_restored": 0
+    },
+    {
+      "task": "report-builder",
+      "config": "native",
+      "status": "pass",
+      "problems": [],
+      "wall_seconds": 12.1,
+      "timed_out": false,
+      "tool_calls": {
+        "ToolSearch": 1,
+        "mcp__frappe__get_doctype_schema": 2,
+        "mcp__frappe__create_document": 1
+      },
+      "mcp_servers": {
+        "frappe": "connected"
+      },
+      "model": "claude-sonnet-5-5",
+      "claude_code": "2.1.329",
+      "is_error": false,
+      "stop": "success",
+      "num_turns": 5,
+      "cost_usd": 0.0508108,
+      "tokens": {
+        "input_tokens": 8,
+        "output_tokens": 937,
+        "cache_creation_input_tokens": 9439,
+        "cache_read_input_tokens": 36688
+      },
+      "tool_call_count": 4,
+      "mcp_tool_calls": 3,
+      "app_files_restored": 0
+    },
+    {
+      "task": "report-builder",
+      "config": "both",
+      "status": "pass",
+      "problems": [],
+      "wall_seconds": 12.5,
+      "timed_out": false,
+      "tool_calls": {
+        "ToolSearch": 1,
+        "mcp__frappe-dev__upsert_report": 2
+      },
+      "mcp_servers": {
+        "frappe": "connected",
+        "frappe-dev": "connected"
+      },
+      "model": "claude-sonnet-5-5",
+      "claude_code": "2.1.329",
+      "is_error": false,
+      "stop": "success",
+      "num_turns": 4,
+      "cost_usd": 0.0453769,
+      "tokens": {
+        "input_tokens": 8,
+        "output_tokens": 661,
+        "cache_creation_input_tokens": 8683,
+        "cache_read_input_tokens": 40189
+      },
+      "tool_call_count": 3,
+      "mcp_tool_calls": 2,
+      "app_files_restored": 0
+    },
+    {
+      "task": "seed-and-undo",
+      "config": "dev",
+      "status": "pass",
+      "problems": [],
+      "wall_seconds": 23.1,
+      "timed_out": false,
+      "tool_calls": {
+        "ToolSearch": 1,
+        "mcp__frappe-dev__create_documents": 2,
+        "mcp__frappe-dev__count_documents": 2,
+        "mcp__frappe-dev__undo_mcp_change": 2
+      },
+      "mcp_servers": {
+        "frappe-dev": "connected"
+      },
+      "model": "claude-sonnet-5-5",
+      "claude_code": "2.1.329",
+      "is_error": false,
+      "stop": "success",
+      "num_turns": 8,
+      "cost_usd": 0.075299,
+      "tokens": {
+        "input_tokens": 12,
+        "output_tokens": 2065,
+        "cache_creation_input_tokens": 11858,
+        "cache_read_input_tokens": 71930
+      },
+      "tool_call_count": 7,
+      "mcp_tool_calls": 6,
+      "app_files_restored": 0
+    },
+    {
+      "task": "seed-and-undo",
+      "config": "native",
+      "status": "pass",
+      "problems": [],
+      "wall_seconds": 27.8,
+      "timed_out": false,
+      "tool_calls": {
+        "ToolSearch": 1,
+        "mcp__frappe__create_document": 20,
+        "mcp__frappe__list_documents": 1,
+        "mcp__frappe__delete_document": 20,
+        "mcp__frappe__count_documents": 1
+      },
+      "mcp_servers": {
+        "frappe": "connected"
+      },
+      "model": "claude-sonnet-5-5",
+      "claude_code": "2.1.329",
+      "is_error": false,
+      "stop": "success",
+      "num_turns": 44,
+      "cost_usd": 0.1174667,
+      "tokens": {
+        "input_tokens": 12,
+        "output_tokens": 4243,
+        "cache_creation_input_tokens": 16720,
+        "cache_read_input_tokens": 81327
+      },
+      "tool_call_count": 43,
+      "mcp_tool_calls": 42,
+      "app_files_restored": 0
+    },
+    {
+      "task": "seed-and-undo",
+      "config": "both",
+      "status": "pass",
+      "problems": [],
+      "wall_seconds": 26.3,
+      "timed_out": false,
+      "tool_calls": {
+        "ToolSearch": 1,
+        "mcp__frappe__create_document": 20,
+        "mcp__frappe__count_documents": 2,
+        "mcp__frappe__delete_document": 20
+      },
+      "mcp_servers": {
+        "frappe": "connected",
+        "frappe-dev": "connected"
+      },
+      "model": "claude-sonnet-5-5",
+      "claude_code": "2.1.329",
+      "is_error": false,
+      "stop": "success",
+      "num_turns": 44,
+      "cost_usd": 0.11946059999999997,
+      "tokens": {
+        "input_tokens": 12,
+        "output_tokens": 4172,
+        "cache_creation_input_tokens": 17270,
+        "cache_read_input_tokens": 86366
+      },
+      "tool_call_count": 43,
+      "mcp_tool_calls": 42,
+      "app_files_restored": 0
+    },
+    {
+      "task": "workflow-three-states",
+      "config": "dev",
+      "status": "pass",
+      "problems": [],
+      "wall_seconds": 14.7,
+      "timed_out": false,
+      "tool_calls": {
+        "Skill": 1,
+        "ToolSearch": 1,
+        "mcp__frappe-dev__get_doctype_schema": 1,
+        "mcp__frappe-dev__get_workflow": 1,
+        "mcp__frappe-dev__upsert_workflow": 2
+      },
+      "mcp_servers": {
+        "frappe-dev": "connected"
+      },
+      "model": "claude-sonnet-5-5",
+      "claude_code": "2.1.329",
+      "is_error": false,
+      "stop": "success",
+      "num_turns": 8,
+      "cost_usd": 0.0670537,
+      "tokens": {
+        "input_tokens": 10,
+        "output_tokens": 1574,
+        "cache_creation_input_tokens": 11385,
+        "cache_read_input_tokens": 57537
+      },
+      "tool_call_count": 6,
+      "mcp_tool_calls": 4,
+      "app_files_restored": 0
+    },
+    {
+      "task": "workflow-three-states",
+      "config": "native",
+      "status": "pass",
+      "problems": [],
+      "wall_seconds": 12.9,
+      "timed_out": false,
+      "tool_calls": {
+        "ToolSearch": 1,
+        "mcp__frappe__get_doctype_schema": 1,
+        "mcp__frappe__list_documents": 3,
+        "mcp__frappe__create_document": 1
+      },
+      "mcp_servers": {
+        "frappe": "connected"
+      },
+      "model": "claude-sonnet-5-5",
+      "claude_code": "2.1.329",
+      "is_error": false,
+      "stop": "success",
+      "num_turns": 7,
+      "cost_usd": 0.0517446,
+      "tokens": {
+        "input_tokens": 8,
+        "output_tokens": 1277,
+        "cache_creation_input_tokens": 8842,
+        "cache_read_input_tokens": 35906
+      },
+      "tool_call_count": 6,
+      "mcp_tool_calls": 5,
+      "app_files_restored": 0
+    },
+    {
+      "task": "workflow-three-states",
+      "config": "both",
+      "status": "pass",
+      "problems": [],
+      "wall_seconds": 16.9,
+      "timed_out": false,
+      "tool_calls": {
+        "Skill": 1,
+        "ToolSearch": 1,
+        "mcp__frappe-dev__get_doctype_schema": 1,
+        "mcp__frappe-dev__get_workflow": 1,
+        "mcp__frappe-dev__upsert_workflow": 2
+      },
+      "mcp_servers": {
+        "frappe": "connected",
+        "frappe-dev": "connected"
+      },
+      "model": "claude-sonnet-5-5",
+      "claude_code": "2.1.329",
+      "is_error": false,
+      "stop": "success",
+      "num_turns": 8,
+      "cost_usd": 0.06826549999999999,
+      "tokens": {
+        "input_tokens": 10,
+        "output_tokens": 1595,
+        "cache_creation_input_tokens": 11614,
+        "cache_read_input_tokens": 58395
+      },
+      "tool_call_count": 6,
+      "mcp_tool_calls": 4,
+      "app_files_restored": 0
+    }
+  ]
+}

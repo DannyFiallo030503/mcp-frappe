@@ -219,6 +219,37 @@ def test_diff_in_sync(fake_site, apps) -> None:
     assert result["customizations"] == []
 
 
+def test_diff_in_sync_when_frappe_filled_defaults_on_import(fake_site, apps) -> None:
+    # A hand-written JSON without `engine`, `sort_field`, ...: `bench reload-doc` stores the
+    # file's hash and its `modified`, and Frappe fills those defaults in. Same hash, same
+    # `modified`: the site holds exactly what was imported, so the leftovers aren't drift.
+    file_doc = _exported(_record())
+    file_doc.pop("engine", None)
+    record = _record(row_format="Dynamic", sort_field="creation", sort_order="DESC")
+    record["migration_hash"] = _write_app_json(apps, file_doc)
+    _site(fake_site, record)
+
+    result = standalone.diff_doctype(DOCTYPE)
+
+    assert result["verdict"] == "in_sync"
+    assert result["doctype_file"]["filled_on_import"] is True
+    assert {"row_format", "sort_field", "sort_order"} <= set(
+        result["doctype_file"]["changes"]["properties"]
+    )
+
+
+def test_diff_same_modified_without_a_matching_hash_stays_diverged(fake_site, apps) -> None:
+    _write_app_json(apps, _exported(_record()))
+    record = _record(track_changes=1)
+    record["migration_hash"] = "hash-of-an-older-file"
+    _site(fake_site, record)
+
+    result = standalone.diff_doctype(DOCTYPE)
+
+    assert result["verdict"] == "app_ahead"
+    assert "filled_on_import" not in result["doctype_file"]
+
+
 def test_diff_site_ahead_when_only_the_site_changed(fake_site, apps) -> None:
     file_doc = _exported(_record())
     record = _record(modified=NEW, track_changes=1)

@@ -263,6 +263,7 @@ def test_custom_field_refusals(fake_site) -> None:
 APP = "lab_app"
 DOCTYPE = "Lab Sample"
 RECORD_PATH = standalone._resource("DocType", DOCTYPE)
+PATCH_LOG = standalone._resource("Patch Log")
 PATCHES = """\
 [pre_model_sync]
 lab_app.patches.first
@@ -316,6 +317,7 @@ def _field_site(fake_site, tmp_path: Path, monkeypatch, *, custom: int = 0, app:
     fake_site.add("GET", standalone._resource("Module Def"), [{"name": "Lab", "app_name": app}])
     fake_site.add_doctype(DOCTYPE, [dict(row) for row in fields], module="Lab")
     fake_site.add("GET", COUNT_PATH, 12)
+    fake_site.add("GET", PATCH_LOG, [])
     return package
 
 
@@ -475,6 +477,38 @@ def test_field_rename_refuses_a_patch_already_listed(fake_site, tmp_path, monkey
     )
     with pytest.raises(ValueError, match="already lists"):
         standalone.rename("field", DOCTYPE, "batch_no", "lot_no")
+
+
+def test_field_rename_skips_patch_names_the_site_already_ran(
+    fake_site, tmp_path, monkeypatch
+) -> None:
+    # A rename undone and done again: Patch Log keeps the first run, so `bench migrate` would
+    # skip a patch of the same name and the values would never reach the new column.
+    package = _field_site(fake_site, tmp_path, monkeypatch)
+    base = "lab_app.patches.rename_lab_sample_batch_no_to_lot_no"
+    fake_site.add(
+        "GET",
+        PATCH_LOG,
+        [
+            {"patch": base},
+            {"patch": f"{base}_2"},
+            {"patch": "lab_app.patches.rename_lab_sampleXbatch"},
+        ],
+    )
+    fake_site.add("PUT", RECORD_PATH, {"name": DOCTYPE})
+
+    preview = standalone.rename("field", DOCTYPE, "batch_no", "lot_no")
+    standalone.rename(
+        "field", DOCTYPE, "batch_no", "lot_no", expected_preview=preview["preview_id"], confirm=True
+    )
+
+    assert preview["patch"] == f"{base}_3"
+    assert (package / "patches" / "rename_lab_sample_batch_no_to_lot_no_3.py").read_text() == (
+        EXPECTED_PATCH
+    )
+    assert (package / "patches.txt").read_text().endswith(f"{base}_3\n\n")
+    (log_read,) = {call.params["filters"] for call in fake_site.calls_to("GET", PATCH_LOG)}
+    assert json.loads(log_read) == [["patch", "like", f"{base}%"]]
 
 
 @pytest.mark.parametrize(

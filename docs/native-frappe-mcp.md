@@ -66,4 +66,4 @@ Both servers have tools named `list_documents`, `get_document`, `count_documents
 
 ## Checked so far
 
-The [developer-task evaluations](evaluations.md) compare this server, the native one, and both on the same tasks; they haven't been run yet. The side-by-side setup has not yet been run on a site; see [not yet checked on a site](compatibility-and-validation.md#not-yet-checked-on-a-site). The configuration above follows the Frappe MCP guide as of 2026-11-19.
+The [developer-task evaluations](evaluations.md) compare this server, the native one, and both on the same tasks. In the first run (v16), the native server did as well on development tasks that write records, and couldn't do the tasks that need the Bench or app files. The `both` configuration ran headless in that run; the setup above hasn't been tried by hand in Claude Code or Claude Desktop; see [not yet checked on a site](compatibility-and-validation.md#not-yet-checked-on-a-site). The configuration above follows the Frappe MCP guide as of 2026-11-19.

@@ -4700,6 +4700,31 @@ def _rename_custom_field_plan(doctype: str, old: str, new: str) -> dict[str, Any
     }
 
 
+def _unused_patch_name(app: str, name: str) -> str:
+    """`name`, or `name_2`, `name_3`, ... : the first that the site's Patch Log hasn't recorded.
+
+    `bench migrate` skips a patch already in Patch Log, so a field renamed, undone, and renamed
+    again would otherwise never get its values copied.
+    """
+    prefix = f"{app}.patches.{name}"
+    rows = _request(
+        "GET",
+        _resource("Patch Log"),
+        params={
+            "fields": '["patch"]',
+            "filters": json.dumps([["patch", "like", f"{prefix}%"]]),
+            "limit_page_length": _PATCH_LOG_PAGE,
+        },
+    )
+    rows = rows if isinstance(rows, list) else []
+    ran = {row.get("patch") for row in rows if isinstance(row, dict)}
+    candidate, number = name, 1
+    while f"{app}.patches.{candidate}" in ran:
+        number += 1
+        candidate = f"{name}_{number}"
+    return candidate
+
+
 def _rename_field_plan(doctype: str, old: str, new: str) -> dict[str, Any]:
     doc, app = _editable_doctype(doctype)
     if doc.get("custom"):
@@ -4728,6 +4753,7 @@ def _rename_field_plan(doctype: str, old: str, new: str) -> dict[str, Any]:
     patch_name = f"rename_{slug}_{old}_to_{new}"
     if not _PATCH_MODULE.fullmatch(patch_name) or not _PATCH_MODULE.fullmatch(module_slug):
         raise ValueError(f"{doctype} or its module is not a Python identifier once scrubbed")
+    patch_name = _unused_patch_name(app, patch_name)
     patch = f"{app}.patches.{patch_name}"
     patches_dir = package_path / "patches"
     patch_path = _safe_app_file(app_path, patches_dir / f"{patch_name}.py")
@@ -5166,7 +5192,11 @@ def _doctype_file_drift(site_doc: dict[str, Any], path: Path) -> dict[str, Any]:
     stored = site_doc.get("migration_hash")
     file_changed = bool(stored) and stored != digest
     newer = _newer(site_doc.get("modified"), app_doc.get("modified"))
-    if not any(changes.values()):
+    # Same hash and same `modified`: the site holds exactly what the last import read from this
+    # file, so what still differs is what Frappe filled in on import (`engine`, `sort_field`,
+    # ...) that a hand-written JSON leaves out.
+    filled_on_import = bool(stored) and stored == digest and newer == "same"
+    if not any(changes.values()) or filled_on_import:
         verdict = "in_sync"
     elif newer == "app":
         verdict = "app_ahead"
@@ -5175,7 +5205,7 @@ def _doctype_file_drift(site_doc: dict[str, Any], path: Path) -> dict[str, Any]:
     else:
         verdict = "app_ahead" if file_changed else "diverged"
     state = {"truncated": False}
-    return {
+    result = {
         "path": str(path),
         "exists": True,
         "verdict": verdict,
@@ -5186,6 +5216,9 @@ def _doctype_file_drift(site_doc: dict[str, Any], path: Path) -> dict[str, Any]:
         "changes": _bounded(changes, state),
         "truncated": state["truncated"],
     }
+    if filled_on_import and any(changes.values()):
+        result["filled_on_import"] = True
+    return result
 
 
 _CUSTOMIZATION_KINDS = (

@@ -327,3 +327,14 @@ def test_dry_run_prints_the_plan_and_touches_nothing(run, capsys, monkeypatch) -
     plan = json.loads(capsys.readouterr().out)
     assert plan["runs"] == 1 and plan["configs"] == ["dev"]
     assert plan["tasks"][0]["id"] == "pending-patches"
+
+
+def test_transcripts_are_saved_privately_only_when_asked(run, tmp_path) -> None:
+    lines = ['{"type": "result", "result": "done"}', '{"type": "assistant"}']
+    assert run.save_transcript(None, "add-field-after", "dev", lines) is None
+    path = run.save_transcript(tmp_path / "t", "add-field-after", "dev", lines)
+    assert path == tmp_path / "t" / "add-field-after-dev.jsonl"
+    assert path.read_text().splitlines() == lines
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert run.parse_args(["--transcripts", str(tmp_path)]).transcripts == tmp_path
+    assert run.parse_args([]).transcripts is None
