@@ -188,3 +188,12 @@ def fake_site(monkeypatch) -> Iterator[FakeSite]:
     monkeypatch.setattr(standalone, "_client", no_client)
     yield site
     _reset_module_caches()
+
+
+@pytest.fixture(autouse=True)
+def _empty_change_journal(monkeypatch) -> Iterator[None]:
+    """Start every test with an empty in-memory change journal and record journaling off."""
+    monkeypatch.delenv("FRAPPE_MCP_JOURNAL_RECORDS", raising=False)
+    standalone._journal_memory.clear()
+    yield
+    standalone._journal_memory.clear()

@@ -103,9 +103,18 @@ def _tool(
         @functools.wraps(fn)
         def call(*args: Any, **kwargs: Any) -> Any:
             try:
-                return fn(*args, **kwargs)
+                result = fn(*args, **kwargs)
             except httpx.TransportError as error:
                 raise RuntimeError(_unreachable_message(error)) from error
+            # Every confirmed write goes in the change journal; tools with an inverse write
+            # their own entry.
+            if (
+                not read_only
+                and kwargs.get("confirm") is True
+                and fn.__name__ not in _SELF_JOURNALED
+            ):
+                result = _journal_call(fn.__name__, toolset, kwargs, result)
+            return result
 
         # No output schema: Frappe returns open-ended JSON, so the generated one says nothing
         # and only adds to the tool list every session pays for (results stay text blocks).
@@ -2632,14 +2641,8 @@ def create_document(
     """
     _assert_record_doctype(doctype, "create")
     bundle = _meta_bundle(doctype)
-    schema = bundle["doctype"]
-    prompt_named = str(schema.get("autoname") or "").lower() == "prompt"
-    if isinstance(values, dict) and "name" in values and not prompt_named:
-        raise ValueError(
-            f"{doctype} names its records itself (autoname is not Prompt); leave out name"
-        )
-    _assert_writable_fields(schema, values, allow_name=prompt_named)
-    _assert_no_code_fields(bundle, values)
+    prompt_named = str(bundle["doctype"].get("autoname") or "").lower() == "prompt"
+    _assert_new_record(bundle, values, prompt_named)
     if not confirm:
         return {
             "preview": True,
@@ -2648,15 +2651,167 @@ def create_document(
             "fields": sorted(values),
             "requires_confirmation": True,
         }
+    try:
+        created = _request(
+            "POST", _resource(doctype), json={"data": _new_record_data(doctype, values)}
+        )
+    finally:
+        _forget_meta_after_write(doctype)
+    if not isinstance(created, dict):
+        return created
+    return _journal(
+        created,
+        "create_document",
+        {"doctype": doctype, "names": [created.get("name")]},
+        undo={
+            "op": "delete_documents",
+            "doctype": doctype,
+            "modified": {str(created.get("name")): created.get("modified")},
+        },
+        record_data=True,
+    )
+
+
+def _assert_new_record(bundle: dict[str, Any], values: Any, prompt_named: bool) -> None:
+    """Check one new record's values: writable fields, child rows, no code."""
+    schema = bundle["doctype"]
+    doctype = schema.get("name")
+    if isinstance(values, dict) and "name" in values and not prompt_named:
+        raise ValueError(
+            f"{doctype} names its records itself (autoname is not Prompt); leave out name"
+        )
+    _assert_writable_fields(schema, values, allow_name=prompt_named)
+    _assert_child_rows(bundle, values)
+    _assert_no_code_fields(bundle, values)
+
+
+def _assert_child_rows(bundle: dict[str, Any], values: dict[str, Any]) -> None:
+    """Check each child-table row's keys against the child DocType's fields.
+
+    Read-only child fields stay allowed: mapped drafts set them (an item's link back to its
+    order is read-only in Desk but written by the mapper).
+    """
+    fields = _schema_fields(bundle["doctype"])
+    for fieldname, value in values.items():
+        row = fields.get(fieldname)
+        if row is None or row.get("fieldtype") not in _TABLE_FIELDTYPES:
+            continue
+        if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
+            raise ValueError(f"{fieldname} is a child table; give a list of row objects")
+        child = bundle["children"].get(row.get("options"))
+        if child is None:
+            continue
+        child_fields = _schema_fields(child)
+        for index, item in enumerate(value, 1):
+            where = f"{fieldname} row {index}"
+            if not item:
+                raise ValueError(f"{where} is empty")
+            for key in item:
+                if key == "doctype":
+                    if item[key] != row.get("options"):
+                        raise ValueError(f"{where}: doctype must be {row.get('options')}")
+                elif key in _RESERVED_FIELDS or key not in child_fields:
+                    raise ValueError(f"{where}: field cannot be written: {key}")
+
+
+def _new_record_data(doctype: str, values: dict[str, Any]) -> dict[str, Any]:
     data = dict(values)
     if "name" in data:
         # Desk sends a prompted name as __newname; Document.set_new_name uses it only when
-        # autoname is "prompt", the condition checked above.
+        # autoname is "prompt", the condition _assert_new_record checks.
         data["__newname"] = data.pop("name")
+    return {"doctype": doctype, **data}
+
+
+_BATCH_MAX_ROWS = 100
+# frappe.client.insert_many (v15 and v16): POST only, at most 200 docs, each through
+# frappe.get_doc(doc).insert(). Frappe commits a request only when it ends without an
+# exception, so one failing row rolls back the whole batch.
+_INSERT_MANY = "/api/method/frappe.client.insert_many"
+
+
+@_tool("data", "Create documents")
+def create_documents(
+    doctype: str,
+    rows: list[dict[str, Any]],
+    expected_preview: ExpectedPreview = None,
+    confirm: Confirm = False,
+) -> dict[str, Any]:
+    """Preview or create 1-100 records of one DocType, all or nothing, for test or seed data.
+
+    Each row is checked like create_document's `values`. The preview returns `count`, `fields`,
+    per-row `problems`, and `preview_id` (none while there are problems). Confirm with the same
+    rows. Returns the created `names`.
+    """
+    _assert_record_doctype(doctype, "create")
+    if not isinstance(rows, list) or not 1 <= len(rows) <= _BATCH_MAX_ROWS:
+        raise ValueError(f"rows must be a list of 1 to {_BATCH_MAX_ROWS} objects")
+    bundle = _meta_bundle(doctype)
+    prompt_named = str(bundle["doctype"].get("autoname") or "").lower() == "prompt"
+    problems: list[dict[str, Any]] = []
+    names: dict[Any, int] = {}
+    for index, row in enumerate(rows, 1):
+        try:
+            _assert_new_record(bundle, row, prompt_named)
+        except ValueError as error:
+            problems.append({"row": index, "problem": str(error)})
+            continue
+        if "name" in row:
+            if row["name"] in names:
+                problems.append(
+                    {"row": index, "problem": f"same name as row {names[row['name']]}"}
+                )
+            names.setdefault(row["name"], index)
+    fields = sorted({key for row in rows if isinstance(row, dict) for key in row})
+    preview_id = (
+        None
+        if problems
+        else hashlib.sha256(
+            json.dumps({"doctype": doctype, "rows": rows}, sort_keys=True, default=str).encode()
+        ).hexdigest()
+    )
+    if not confirm:
+        return {
+            "preview": True,
+            "action": "create_documents",
+            "doctype": doctype,
+            "count": len(rows),
+            "fields": fields,
+            "problems": problems,
+            "preview_id": preview_id,
+            "requires_confirmation": True,
+        }
+    if problems:
+        raise ValueError(f"{len(problems)} rows have problems; fix them and preview again")
+    if not expected_preview or expected_preview != preview_id:
+        raise ValueError("The rows changed since the preview; request a fresh preview")
     try:
-        return _request("POST", _resource(doctype), json={"data": {"doctype": doctype, **data}})
+        created = _request(
+            "POST",
+            _INSERT_MANY,
+            json={"docs": [_new_record_data(doctype, row) for row in rows]},
+        )
+    except FrappeError as error:
+        raise FrappeError(
+            f"Nothing was created; Frappe rolled back the whole batch: {error}",
+            error.exc_type,
+            status=error.status,
+        ) from error
     finally:
         _forget_meta_after_write(doctype)
+    created_names = [str(name) for name in created] if isinstance(created, list) else []
+    result = {"created": len(created_names), "doctype": doctype, "names": created_names}
+    return _journal(
+        result,
+        "create_documents",
+        {"doctype": doctype, "names": created_names},
+        undo=lambda: {
+            "op": "delete_documents",
+            "doctype": doctype,
+            "modified": _current_modified(doctype, created_names),
+        },
+        record_data=True,
+    )
 
 
 @_tool("data", "Update document", idempotent=True)
@@ -2683,12 +2838,12 @@ def update_document(
             "fields": sorted(values),
             "requires_confirmation": True,
         }
-    _expected_modified(doctype, name, expected_modified)
+    before = _expected_modified(doctype, name, expected_modified)
     # Callers may not write `modified`, but sending the preview's value closes the gap after
     # the check above: update_doc locks the row, and Document.check_if_latest compares this
     # value with the stored one and raises TimestampMismatchError if they differ.
     try:
-        return _request(
+        saved = _request(
             "PUT",
             _resource(doctype, name),
             json={"data": {**values, "modified": expected_modified}},
@@ -2699,6 +2854,25 @@ def update_document(
         raise
     finally:
         _forget_meta_after_write(doctype)
+    if not isinstance(saved, dict):
+        return saved
+    old, reason = _old_values(bundle, before, values)
+    return _journal(
+        saved,
+        "update_document",
+        {"doctype": doctype, "names": [name], "fields": sorted(values)},
+        undo=None
+        if old is None
+        else {
+            "op": "update_document",
+            "doctype": doctype,
+            "name": name,
+            "values": old,
+            "modified": saved.get("modified"),
+        },
+        reason=reason,
+        record_data=True,
+    )
 
 
 @_tool("data", "Delete document", destructive=True, idempotent=True)
@@ -2853,6 +3027,483 @@ def cancel_document(
         "docstatus": result.get("docstatus"),
         "modified": result.get("modified"),
     }
+
+
+# The change journal: one entry per confirmed write, so a change made through this server can
+# be listed and undone. Entries hold names, fieldnames, and the values an undo writes back,
+# never credentials; record data only with FRAPPE_MCP_JOURNAL_RECORDS=YES.
+
+_JOURNAL_MAX = 200
+_JOURNAL_DIR = ".mcp-frappe-journal"
+_JOURNAL_VALUES_MAX = 50_000
+_JOURNAL_LIST_MAX = 50
+_JOURNAL_NAMES_SHOWN = 10
+_journal_memory: list[dict[str, Any]] = []
+# True while undo_mcp_change runs an inverse, which marks the entry undone instead.
+_journal_paused = False
+# Records of these DocTypes describe the site, not business data, so they are always journaled.
+_CONFIG_DOCTYPES = _SCHEMA_DOCTYPES | frozenset(_RECORD_TOOL_REDIRECTS)
+# Tools that write their own entries, with an inverse; `_tool()` journals every other write.
+_SELF_JOURNALED = frozenset(
+    {
+        "create_document",
+        "create_documents",
+        "update_document",
+        "create_custom_field",
+        "set_field_property",
+        "create_doctype",
+        "update_doctype",
+        "undo_mcp_change",
+    }
+)
+# Arguments that identify what a write touched; values and field lists never go in.
+_JOURNAL_TARGET_KEYS = (
+    "doctype",
+    "name",
+    "document_type",
+    "kind",
+    "old",
+    "new",
+    "app",
+    "module",
+    "command",
+    "method",
+    "role",
+    "property",
+    "fieldname",
+)
+_NO_UNDO = {
+    "delete_document": "a deleted record can't be restored from the journal",
+    "delete_doctype": "a deleted DocType can't be restored from the journal",
+    "submit_document": "a submitted document has no safe inverse; cancel it instead",
+    "cancel_document": "a cancelled document can't be submitted again",
+    "export_customizations": "use rollback_export for exported files",
+    "export_form_customizations": "restore the exported files from version control",
+    "rollback_export": "export again to redo it",
+    "promote_custom_doctype": "a promoted DocType's files can't be removed from the journal",
+    "run_bench": "Bench commands have no inverse",
+    "rename": "rename it back with rename",
+    "customize_doctype": "change it back with customize_doctype",
+    "set_role_permissions": "set the old permissions again with set_role_permissions",
+}
+_UNDO_TOOLS = {
+    "delete_documents": "delete_document",
+    "update_document": "update_document",
+    "set_field_property": "set_field_property",
+    "delete_doctype": "delete_doctype",
+    "update_doctype": "update_doctype",
+}
+
+
+def _journal_records() -> bool:
+    return os.environ.get("FRAPPE_MCP_JOURNAL_RECORDS", "").strip().upper() == "YES"
+
+
+def _journal_file() -> Path | None:
+    """The site's journal file under FRAPPE_APPS_PATH, or None to keep it in memory."""
+    root_value = os.environ.get("FRAPPE_APPS_PATH")
+    if not root_value:
+        return None
+    try:
+        root = Path(root_value).expanduser().resolve(strict=True)
+    except OSError as error:
+        raise ValueError("FRAPPE_APPS_PATH does not exist; the journal can't be kept") from error
+    folder = root / _JOURNAL_DIR
+    key = (
+        _site_label()
+        or os.environ.get("FRAPPE_SITE")
+        or urlparse(os.environ.get("FRAPPE_URL") or "").hostname
+        or "site"
+    )
+    key = re.sub(r"[^A-Za-z0-9._-]", "_", key).strip(".")[:100] or "site"
+    path = folder / f"{key}.json"
+    if folder.is_symlink() or path.is_symlink():
+        raise ValueError(f"The journal folder {_JOURNAL_DIR} must not be a symlink")
+    return path
+
+
+def _journal_load() -> list[dict[str, Any]]:
+    path = _journal_file()
+    if path is None:
+        return copy.deepcopy(_journal_memory)
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise ValueError(
+            f"The journal file {_JOURNAL_DIR}/{path.name} is unreadable; move it aside"
+        ) from error
+    entries = data.get("entries") if isinstance(data, dict) else None
+    if not isinstance(entries, list) or not all(isinstance(entry, dict) for entry in entries):
+        raise ValueError(f"The journal file {_JOURNAL_DIR}/{path.name} has an unknown shape")
+    return entries
+
+
+def _journal_save(entries: list[dict[str, Any]]) -> None:
+    entries = entries[-_JOURNAL_MAX:]
+    path = _journal_file()
+    if path is None:
+        _journal_memory[:] = copy.deepcopy(entries)
+        return
+    path.parent.mkdir(mode=0o700, exist_ok=True)
+    _atomic_write(
+        path,
+        json.dumps({"version": 1, "entries": entries}, indent=1, default=str) + "\n",
+        mode=0o600,
+    )
+
+
+def _journal(
+    result: Any,
+    tool: str,
+    target: dict[str, Any],
+    *,
+    undo: dict[str, Any] | Callable[[], dict[str, Any]] | None = None,
+    reason: str | None = None,
+    record_data: bool = False,
+) -> Any:
+    """Record a confirmed write and return `result` with its entry id as `mcp_change`.
+
+    `undo` (or a callable that builds it, since that may cost a request) describes the inverse.
+    Writes of record data are skipped unless FRAPPE_MCP_JOURNAL_RECORDS=YES. A journal failure
+    never fails the write: the result says so in `journal_error`.
+    """
+    if _journal_paused or (record_data and not _journal_records()):
+        return result
+    try:
+        if callable(undo):
+            undo = undo()
+        entry: dict[str, Any] = {
+            "id": uuid.uuid4().hex[:12],
+            "at": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "tool": tool,
+            "target": target,
+            "undo": undo,
+        }
+        if undo is None:
+            entry["no_undo"] = reason or _NO_UNDO.get(
+                tool, "no inverse for this tool; reverse it with the tool that made it"
+            )
+        entries = _journal_load()
+        entries.append(entry)
+        _journal_save(entries)
+    except Exception as error:  # the write itself succeeded
+        detail = str(error) if isinstance(error, ValueError | FrappeError) else type(error).__name__
+        _log.warning("Change journal not updated: %s", detail)
+        if isinstance(result, dict):
+            return {**result, "journal_error": f"change not journaled: {detail}"}
+        return result
+    if isinstance(result, dict):
+        return {**result, "mcp_change": entry["id"]}
+    return result
+
+
+def _journal_call(tool: str, toolset: str, kwargs: dict[str, Any], result: Any) -> Any:
+    """Journal a confirmed write of a tool that has no inverse, by the names it touched."""
+    doctype = kwargs.get("doctype")
+    record_data = doctype not in _CONFIG_DOCTYPES and (
+        toolset == "data" or (tool == "rename" and kwargs.get("kind") == "document")
+    )
+    target = {
+        key: value[:_RENAME_NAME_MAX]
+        for key in _JOURNAL_TARGET_KEYS
+        if isinstance(value := kwargs.get(key), str)
+    }
+    return _journal(result, tool, target, record_data=record_data)
+
+
+def _current_rows(doctype: str, names: list[str]) -> dict[str, dict[str, Any]]:
+    """Read `name`, `modified`, and `docstatus` of up to 100 records in one request."""
+    rows = _request(
+        "GET",
+        _resource(doctype),
+        params={
+            "fields": '["name","modified","docstatus"]',
+            "filters": _filters([["name", "in", names]]),
+            "limit_page_length": len(names),
+        },
+    )
+    return {str(row.get("name")): row for row in rows if isinstance(row, dict)}
+
+
+def _current_modified(doctype: str, names: list[str]) -> dict[str, Any]:
+    rows = _current_rows(doctype, names) if names else {}
+    return {name: rows.get(name, {}).get("modified") for name in names}
+
+
+def _old_values(
+    bundle: dict[str, Any], before: dict[str, Any], values: dict[str, Any]
+) -> tuple[dict[str, Any] | None, str | None]:
+    """The values an update replaced, as update_document takes them, or why there are none."""
+    fields = _schema_fields(bundle["doctype"])
+    old: dict[str, Any] = {}
+    for key in values:
+        row = fields.get(key, {})
+        if row.get("fieldtype") == "Password":
+            return None, "a Password field changed; Frappe never returns its old value"
+        value = before.get(key)
+        if row.get("fieldtype") in _TABLE_FIELDTYPES and isinstance(value, list):
+            child = _schema_fields(bundle["children"].get(row.get("options")) or {})
+            value = [
+                {
+                    k: v
+                    for k, v in item.items()
+                    if k in ("name", "idx") or (k in child and k not in _RESERVED_FIELDS)
+                }
+                for item in value
+                if isinstance(item, dict)
+            ]
+        old[key] = value
+    if len(json.dumps(old, default=str)) > _JOURNAL_VALUES_MAX:
+        return None, "the old values are too large to journal"
+    return old, None
+
+
+def _inverse_doctype_operations(
+    doc: dict[str, Any], plan: dict[str, Any], changes: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """update_doctype operations that take a DocType back to `doc` from the planned state."""
+    operations: list[dict[str, Any]] = [
+        {"op": "remove_field", "fieldname": row["fieldname"]} for row in changes["added"]
+    ]
+    if changes["properties"]:
+        operations.append(
+            {
+                "op": "set_properties",
+                "set": {key: delta["from"] for key, delta in changes["properties"].items()},
+            }
+        )
+    for fieldname, delta in changes["changed"].items():
+        operations.append(
+            {
+                "op": "update_field",
+                "fieldname": fieldname,
+                "set": {key: change["from"] for key, change in delta.items()},
+            }
+        )
+    removed = {row["fieldname"] for row in changes["removed"]}
+    moved = set(plan["moved"])
+    # Walking the old order, each field goes back after its old predecessor, which is either
+    # untouched or already restored by an earlier step.
+    previous = None
+    for row in doc.get("fields") or []:
+        fieldname = row.get("fieldname")
+        if fieldname in removed:
+            field = {
+                key: row[key]
+                for key in sorted(_DOCFIELD_PROPERTIES | {"fieldname"})
+                if key in row and not _blank(row[key])
+            }
+            operations.append({"op": "add_field", "field": field, "insert_after": previous})
+        elif fieldname in moved:
+            operations.append(
+                {"op": "move_field", "fieldname": fieldname, "insert_after": previous}
+            )
+        previous = fieldname
+    return operations
+
+
+def _journal_row(entry: dict[str, Any]) -> dict[str, Any]:
+    target = dict(entry.get("target") or {})
+    names = target.get("names")
+    if isinstance(names, list) and len(names) > _JOURNAL_NAMES_SHOWN:
+        target["names"] = names[:_JOURNAL_NAMES_SHOWN]
+        target["more_names"] = len(names) - _JOURNAL_NAMES_SHOWN
+    row = {
+        "id": entry.get("id"),
+        "at": entry.get("at"),
+        "tool": entry.get("tool"),
+        "target": target,
+        "undoable": bool(entry.get("undo")) and not entry.get("undone_at"),
+    }
+    for key in ("no_undo", "undone_at"):
+        if entry.get(key):
+            row[key] = entry[key]
+    return row
+
+
+@_tool("read", "List MCP changes")
+def list_mcp_changes(limit: int = 20) -> dict[str, Any]:
+    """List the newest writes made through this server, newest first, from its change journal.
+
+    Rows: `id`, `at`, `tool`, `target`, `undoable`, and `no_undo` or `undone_at`. Record writes are
+    journaled only with FRAPPE_MCP_JOURNAL_RECORDS=YES. Undo one with undo_mcp_change.
+    """
+    if not 1 <= limit <= _JOURNAL_LIST_MAX:
+        raise ValueError(f"limit must be between 1 and {_JOURNAL_LIST_MAX}")
+    entries = _journal_load()
+    return {
+        "rows": [_journal_row(entry) for entry in reversed(entries[-limit:])],
+        "total": len(entries),
+        "storage": "memory" if _journal_file() is None else "file",
+        "records_journaled": _journal_records(),
+    }
+
+
+def _changed_since(what: str, current: Any, journaled: Any) -> ValueError:
+    return ValueError(
+        f"{what} changed after this MCP change (modified {current}, the journal has "
+        f"{journaled}); undo is refused so the later change isn't lost"
+    )
+
+
+def _undo_preview(undo: dict[str, Any]) -> dict[str, Any]:
+    """Check the inverse still applies and return the preview of the tool that runs it."""
+    op = undo["op"]
+    if op == "delete_documents":
+        doctype, modified = undo["doctype"], undo["modified"]
+        _assert_record_doctype(doctype, "delete")
+        names = list(modified)
+        current = _current_rows(doctype, names)
+        for name in names:
+            row = current.get(name)
+            if row is None:
+                raise ValueError(f"{doctype} {name} no longer exists; nothing to undo")
+            if str(row.get("modified")) != str(modified[name]):
+                raise _changed_since(f"{doctype} {name}", row.get("modified"), modified[name])
+            if row.get("docstatus"):
+                raise ValueError(
+                    f"{doctype} {name} was submitted or cancelled; a submitted document has "
+                    "no safe inverse"
+                )
+        return {"action": "delete_document", "doctype": doctype, "names": names[::-1]}
+    if op == "update_document":
+        preview = update_document(undo["doctype"], undo["name"], undo["values"])
+        current = preview.get("modified")
+        what = f"{undo['doctype']} {undo['name']}"
+    elif op == "set_field_property":
+        preview = set_field_property(
+            undo["doctype"], undo["property"], undo["value"], undo["fieldname"]
+        )
+        if preview.get("name") != undo["setter"]:
+            raise ValueError(f"Property Setter {undo['setter']} no longer exists")
+        current = preview.get("modified")
+        what = f"Property Setter {undo['setter']}"
+    elif op == "delete_doctype":
+        preview = delete_doctype(undo["doctype"])
+        current = preview.get("modified")
+        what = f"DocType {undo['doctype']}"
+    elif op == "update_doctype":
+        preview = update_doctype(undo["doctype"], undo["operations"])
+        current = preview.get("modified")
+        what = f"DocType {undo['doctype']}"
+    else:
+        raise ValueError(f"Unknown inverse in the journal: {op!r}")
+    if str(current) != str(undo["modified"]):
+        raise _changed_since(what, current, undo["modified"])
+    return preview
+
+
+def _undo_apply(entry_id: str, undo: dict[str, Any]) -> Any:
+    op = undo["op"]
+    if op == "delete_documents":
+        doctype, modified = undo["doctype"], undo["modified"]
+        deleted: list[str] = []
+        for name in reversed(list(modified)):
+            try:
+                delete_document(doctype, name, expected_modified=modified[name], confirm=True)
+            except Exception as error:
+                if deleted:
+                    _journal_update(entry_id, functools.partial(_forget_deleted, deleted))
+                raise RuntimeError(
+                    f"Undo stopped after deleting {len(deleted)} of {len(modified)} {doctype} "
+                    f"records, at {name}: {error}. The journal entry keeps the rest; preview "
+                    "the undo again."
+                ) from error
+            deleted.append(name)
+        return {"deleted": deleted, "doctype": doctype}
+    if op == "update_document":
+        return update_document(
+            undo["doctype"],
+            undo["name"],
+            undo["values"],
+            expected_modified=undo["modified"],
+            confirm=True,
+        )
+    if op == "set_field_property":
+        return set_field_property(
+            undo["doctype"],
+            undo["property"],
+            undo["value"],
+            undo["fieldname"],
+            expected_modified=undo["modified"],
+            confirm=True,
+        )
+    if op == "delete_doctype":
+        return delete_doctype(undo["doctype"], expected_modified=undo["modified"], confirm=True)
+    return update_doctype(
+        undo["doctype"], undo["operations"], expected_modified=undo["modified"], confirm=True
+    )
+
+
+def _forget_deleted(deleted: list[str], entry: dict[str, Any]) -> None:
+    """Drop records a stopped undo already deleted from the entry's inverse."""
+    modified = entry["undo"]["modified"]
+    entry["undo"]["modified"] = {
+        name: value for name, value in modified.items() if name not in deleted
+    }
+
+
+def _journal_update(entry_id: str, change: Callable[[dict[str, Any]], Any]) -> None:
+    entries = _journal_load()
+    for entry in entries:
+        if entry.get("id") == entry_id:
+            change(entry)
+    _journal_save(entries)
+
+
+@_tool("data", "Undo MCP change", destructive=True)
+def undo_mcp_change(
+    entry_id: str, expected_preview: ExpectedPreview = None, confirm: Confirm = False
+) -> dict[str, Any]:
+    """Preview or undo one change from list_mcp_changes, through the tool that reverses it.
+
+    Created records, Custom Fields, Property Setters, and DocTypes are deleted; updates and DocType
+    edits are written back. Refused when the target changed since, or when the entry has no safe
+    inverse. The preview returns `inverse` and `preview_id`.
+    """
+    global _journal_paused
+    entries = _journal_load()
+    entry = next((item for item in entries if item.get("id") == entry_id), None)
+    if entry is None:
+        raise ValueError(f"No journal entry {entry_id!r}; list_mcp_changes shows the ids")
+    if entry.get("undone_at"):
+        raise ValueError(f"Change {entry_id} was already undone at {entry['undone_at']}")
+    undo = entry.get("undo")
+    if not undo:
+        raise ValueError(
+            f"Change {entry_id} ({entry.get('tool')}) has no safe inverse: "
+            f"{entry.get('no_undo') or 'none recorded'}"
+        )
+    tool = _UNDO_TOOLS.get(undo.get("op"), "")
+    if tool not in server._tool_manager._tools:
+        raise ValueError(f"Undoing this change needs {tool}, whose toolset is not selected")
+    inverse = _undo_preview(undo)
+    preview_id = hashlib.sha256(
+        json.dumps({"entry": entry_id, "undo": undo, "inverse": inverse}, sort_keys=True,
+                   default=str).encode()
+    ).hexdigest()
+    if not confirm:
+        return {
+            "preview": True,
+            "action": "undo_mcp_change",
+            "change": _journal_row(entry),
+            "tool": tool,
+            "inverse": inverse,
+            "preview_id": preview_id,
+            "requires_confirmation": True,
+        }
+    if not expected_preview or expected_preview != preview_id:
+        raise ValueError("The change or its target moved since the preview; preview again")
+    _journal_paused = True
+    try:
+        result = _undo_apply(entry_id, undo)
+    finally:
+        _journal_paused = False
+    undone_at = datetime.now().astimezone().isoformat(timespec="seconds")
+    _journal_update(entry_id, lambda item: item.update(undone_at=undone_at))
+    return {"undone": True, "change": entry_id, "tool": tool, "result": result}
 
 
 _REPORT_MAX_ROWS = 500
@@ -3081,7 +3732,7 @@ def create_doctype(
         _forget_meta(name)
         if not _doctype_exists(name):
             raise RuntimeError("Frappe did not persist the custom DocType record")
-        return {
+        return _journal_new_doctype({
             "created": True,
             "doctype": name,
             "app": app,
@@ -3091,7 +3742,7 @@ def create_doctype(
             "file_status": {},
             "native_files_complete": None,
             "reconciled_after_server_reload": reconciled,
-        }
+        })
     # Stage the exact templates shipped with this Frappe checkout before the
     # metadata request. Werkzeug watches Python files and can kill that request
     # mid-transaction when Frappe itself creates the scaffolding.
@@ -3125,7 +3776,7 @@ def create_doctype(
         "javascript": javascript_file.is_file() if not is_child_table else None,
         "test": test_file.is_file() if not is_child_table else None,
     }
-    return {
+    return _journal_new_doctype({
         "created": True,
         "doctype": name,
         "app": app,
@@ -3142,7 +3793,21 @@ def create_doctype(
         "native_files_complete": all(value is not False for value in file_status.values()),
         "reconciled_after_server_reload": reconciled,
         "app_path": str(app_path),
-    }
+    })
+
+
+def _journal_new_doctype(result: dict[str, Any]) -> dict[str, Any]:
+    doctype = result["doctype"]
+    return _journal(
+        result,
+        "create_doctype",
+        {"doctype": doctype, "app": result.get("app")},
+        undo=lambda: {
+            "op": "delete_doctype",
+            "doctype": doctype,
+            "modified": _request("GET", _resource("DocType", doctype)).get("modified"),
+        },
+    )
 
 
 _DOCTYPE_OPERATIONS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
@@ -3653,14 +4318,25 @@ def update_doctype(
     finally:
         for name in (doctype, *children):
             _forget_meta(name)
-    return {
-        "updated": True,
-        "doctype": doctype,
-        "modified": saved.get("modified") if isinstance(saved, dict) else None,
-        "changes": changes,
-        "warnings": warnings,
-        "reconciled_after_server_reload": reconciled,
-    }
+    modified = saved.get("modified") if isinstance(saved, dict) else None
+    return _journal(
+        {
+            "updated": True,
+            "doctype": doctype,
+            "modified": modified,
+            "changes": changes,
+            "warnings": warnings,
+            "reconciled_after_server_reload": reconciled,
+        },
+        "update_doctype",
+        {"doctype": doctype, "app": app},
+        undo=lambda: {
+            "op": "update_doctype",
+            "doctype": doctype,
+            "operations": _inverse_doctype_operations(doc, plan, changes),
+            "modified": modified,
+        },
+    )
 
 
 def _doctype_links(doctype: str) -> list[dict[str, Any]]:
@@ -6139,9 +6815,21 @@ def create_custom_field(
             "requires_confirmation": True,
         }
     try:
-        return _request("POST", _resource("Custom Field"), json={"data": data})
+        created = _request("POST", _resource("Custom Field"), json={"data": data})
     finally:
         _forget_meta(doctype)
+    if not isinstance(created, dict):
+        return created
+    return _journal(
+        created,
+        "create_custom_field",
+        {"doctype": doctype, "fieldname": field["fieldname"], "custom_field": created.get("name")},
+        undo={
+            "op": "delete_documents",
+            "doctype": "Custom Field",
+            "modified": {str(created.get("name")): created.get("modified")},
+        },
+    )
 
 
 def _property_value(property: str, value: Any, property_type: str) -> str:
@@ -6235,9 +6923,47 @@ def set_field_property(
     if not confirm:
         return preview
     try:
-        return _save_property_setter(preview, existing, expected_modified)
+        saved = _save_property_setter(preview, existing, expected_modified)
     finally:
         _forget_meta(doctype)
+    if not isinstance(saved, dict):
+        return saved
+    undo: dict[str, Any] | None
+    reason = None
+    if existing:
+        undo = {
+            "op": "set_field_property",
+            "doctype": doctype,
+            "fieldname": fieldname,
+            "property": property,
+            "value": existing.get("value") if existing.get("value") is not None else "",
+            "setter": existing["name"],
+            "modified": saved.get("modified"),
+        }
+    elif preview.get("replaces_field_setters"):
+        undo = None
+        reason = (
+            "this DocType-level setter replaced field-level ones, which deleting it would not "
+            "bring back"
+        )
+    else:
+        undo = {
+            "op": "delete_documents",
+            "doctype": "Property Setter",
+            "modified": {str(saved.get("name")): saved.get("modified")},
+        }
+    return _journal(
+        saved,
+        "set_field_property",
+        {
+            "doctype": doctype,
+            "fieldname": fieldname,
+            "property": property,
+            "property_setter": saved.get("name"),
+        },
+        undo=undo,
+        reason=reason,
+    )
 
 
 def _save_property_setter(

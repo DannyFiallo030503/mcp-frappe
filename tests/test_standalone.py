@@ -10,6 +10,9 @@ def test_server_registers_expected_tools() -> None:
     assert set(standalone.server._tool_manager._tools) == {
         "get_site_info",
         "list_installed_apps",
+        "create_documents",
+        "list_mcp_changes",
+        "undo_mcp_change",
         "list_doctypes",
         "get_doctype_schema",
         "list_documents",

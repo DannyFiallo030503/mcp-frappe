@@ -75,7 +75,7 @@ If a stage turns out larger than one session, stop at a clean point (tests passi
 | 17 | [Allowlisted method calls](stage-17-method-allowlist.md) | 16 | done |
 | 18 | [Opt-in Bench commands](stage-18-bench-runner.md) | 16 | done |
 | 19 | [Full Customize Form saves, and renames](stage-19-customize-form-and-rename.md) | 15 (18 optional) | done |
-| 20 | [Batch inserts and undo for MCP changes](stage-20-batch-and-undo.md) | 15 | todo |
+| 20 | [Batch inserts and undo for MCP changes](stage-20-batch-and-undo.md) | 15 | done |
 | 21 | [Claude Code plugin and developer-task evaluations](stage-21-plugin-and-evals.md) | 15; 16–20 for the evaluations | todo |
 
 Status values: `todo`, `in progress`, `partial`, `done`.

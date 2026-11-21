@@ -66,6 +66,26 @@ Use the same preview-first pattern for creation/deletion. Do not pass `name`, `d
 
 The record tools are for record data. For DocTypes, Custom Fields, Property Setters, permissions, Workflows, Notifications, Reports, and Workspaces, the error names the tool to use; use it. Records that hold code (Server Script, Client Script, Print Format, Webhook, Email Template, ...) and values for `Code` fields are refused: tell the user to change them in Desk or in the app's files.
 
+### Seed test data
+
+To create several records of one DocType, use `create_documents` instead of one `create_document` per record:
+
+1. Read the schema and build the rows: `create_documents(doctype="Item Group", rows=[{"item_group_name": "QA Group 1", "parent_item_group": "All Item Groups"}, ...])`, at most 100 rows.
+2. If the preview lists `problems`, fix those rows and preview again; there is no `preview_id` until every row passes.
+3. Show the user `count` and `fields`, then confirm with the same rows and `expected_preview` set to the preview's `preview_id`.
+
+The batch is all or nothing: if Frappe refuses one row, the error says nothing was created, and you can fix the row and confirm a fresh preview. For more than 100 records, send several batches and tell the user how many went in.
+
+### Try a change, then undo it
+
+Changes made through this server go in a change journal. To take one back:
+
+1. `list_mcp_changes()` lists the newest changes with their `id`; a confirmed result also returns its id as `mcp_change`.
+2. `undo_mcp_change(entry_id=...)` previews the inverse: deleting created records, a Custom Field, a Property Setter, or a DocType; writing an update's old values back; or the `update_doctype` operations that reverse a DocType edit. Show the preview to the user.
+3. Confirm with `expected_preview` set to the preview's `preview_id`.
+
+Undo is refused when someone changed the target after the journaled change (its `modified` moved on): say so, and don't work around it. Undo the newest change first when several touched the same target. Deletes, submit and cancel, exports (use `rollback_export`), renames, `customize_doctype`, and Bench commands have no undo; the entry's `no_undo` says what to do instead. Record writes are journaled only when the user set `FRAPPE_MCP_JOURNAL_RECORDS=YES`; `list_mcp_changes` reports it as `records_journaled`.
+
 ### Test my submittable DocType
 
 Use this to check a submittable DocType's controller (`validate`, `on_submit`, `on_cancel`) on a development site. Ask the user first: submitting and cancelling run the controller, which may post or reverse ledger and stock entries.
