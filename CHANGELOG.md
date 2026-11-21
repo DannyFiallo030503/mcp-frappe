@@ -17,6 +17,15 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-21
+
+This release adds the rest of the development loop that Frappe's built-in MCP server can't
+cover: Bench commands, pending patches and recent errors, renames with data-preserving patches,
+full Customize Form saves, allowlisted app methods, batch inserts, and undo for MCP changes.
+It also ships a Claude Code plugin and the first developer-task evaluations. It covers
+work-plan stages 16–21. Every change to the tool contract is an addition: no tool or argument
+was removed, and no argument became required.
+
 ### Added
 
 - A Claude Code plugin, `frappe-dev`, in `plugins/frappe-dev`, listed by the repository's
@@ -86,6 +95,7 @@ All notable changes to this project are listed here. The format follows
   by the same 3,000.
 - `e2e/run_standalone_batch_undo.py`: batch inserts and undo on ToDos, opt-in with
   `FRAPPE_ALLOW_MUTATION_TEST=YES`.
+- `evals/run.py --transcripts DIR` saves each run's raw stream-json (mode 0600) for debugging.
 
 ### Fixed
 
@@ -98,7 +108,15 @@ All notable changes to this project are listed here. The format follows
   `modified` match the file: what still differs is what Frappe filled in on import (`engine`,
   `row_format`, `sort_field`, `sort_order` for a hand-written JSON), now flagged
   `filled_on_import`. Found by the stage 21 evaluations.
-- `evals/run.py --transcripts DIR` saves each run's raw stream-json (mode 0600) for debugging.
+
+### Validated
+
+- The developer-task evaluations ran on a Frappe 16.55.1 development site with ERPNext
+  16.53.0: this server passed 11 of 12 tasks, Frappe's built-in MCP server 9, and both
+  together 11. The evaluation agents also used `run_bench` (`reload-doc`, `migrate`),
+  `rename(kind="field")` with its patch, `list_pending_patches`, `create_documents`, and
+  `undo_mcp_change` on that site. See `docs/evaluations.md`. The other tools added in this
+  release are unit-tested; v15 was not run (`docs/compatibility-and-validation.md`).
 
 ## [0.3.0] - 2026-11-20
 
@@ -230,6 +248,7 @@ and setting up configuration records. It covers work-plan stages 00–15.
 - Standalone MCP server over stdio that talks to a Frappe site through its HTTP API, replacing
   the earlier implementation that ran as an installed Frappe app (now under `legacy/`).
 
-[Unreleased]: https://github.com/DannyFiallo030503/mcp-frappe/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/DannyFiallo030503/mcp-frappe/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/DannyFiallo030503/mcp-frappe/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/DannyFiallo030503/mcp-frappe/compare/5ceaff6...v0.3.0
 [0.2.0]: https://github.com/DannyFiallo030503/mcp-frappe/commit/5ceaff6

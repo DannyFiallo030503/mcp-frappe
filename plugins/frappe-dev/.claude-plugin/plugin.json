@@ -1,7 +1,7 @@
 {
   "name": "frappe-dev",
   "displayName": "Frappe development",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "The mcp-frappe server and a skill for Frappe app development: DocTypes, customizations, site and app sync, with a preview before every write.",
   "author": {
     "name": "Dennis Fiallo and Danny Fiallo",
