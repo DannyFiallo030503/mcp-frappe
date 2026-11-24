@@ -306,7 +306,7 @@ Confirmation re-reads the DocType, refuses if `modified` moved, and sends `modif
 
 `set_role_permissions` uses Frappe's System Manager-only Permission Manager methods. The connected account must have the System Manager role, and the target DocType and role must already exist. The tool does not create roles or assign roles to users.
 
-The preview is not a concurrency lock: the native Permission Manager update method accepts no expected `modified` value or compare-and-set condition. Another administrator can change or remove the rule before confirmation. Use this tool only on an isolated site or when permission writers are paused; do not treat `confirm=true` as protection against concurrent edits. When the rule is absent, confirmation follows Frappe's native `add` path and creates permission configuration.
+The preview is not a client-side concurrency token: this tool accepts no expected `modified` value. On isolated Frappe 16.34.0, two independent MCP processes previewed and confirmed competing updates; Frappe accepted one and rejected the stale save with `TimestampMismatchError`, preserving the row identity and accepted flags ([runner](../e2e/run_standalone_role_permission_concurrency.py), [evidence](../e2e/evidence/2026-11-24-v16-role-permission-concurrent-update.json)). This live behavior is verified on v16 only. Keep permission writes isolated or pause other writers, and handle a stale-write error by rereading and previewing again. When the rule is absent, confirmation follows Frappe's native `add` path and creates permission configuration.
 
 ### Customize Form saves
 
