@@ -882,7 +882,7 @@ def _unreachable_message(error: httpx.TransportError, *, suggest_check: bool = T
 
 
 def _local_port_hint(url: str) -> str | None:
-    """Explain common Aspire/Docker port mistakes without probing other services."""
+    """Explain common local port mistakes without probing other services."""
     if not _is_local_target(url):
         return None
     try:
@@ -891,14 +891,15 @@ def _local_port_hint(url: str) -> str | None:
         return None
     if port == 8000:
         return (
-            "If Frappe runs in Aspire or Docker, 8000 may be the container's internal HTTP "
-            "port; use the host-published `http` endpoint shown by `aspire describe frappe`."
+            "8000 is the default web port of `bench start`; check that the Bench is running. "
+            "If Frappe runs in a container, use the HTTP port published on the host, which "
+            "may differ from the container's 8000."
         )
-    if port in {9000, 9088}:
+    if port == 9000:
         return (
-            f"Port {port} is commonly used for Frappe Socket.IO, but host-published ports "
-            "vary. Check `aspire describe frappe`; if this is its `socketio` endpoint, use "
-            "the host-published `http` endpoint for the REST API."
+            "9000 is Frappe's default Socket.IO port, not the REST API; use the web server's "
+            "HTTP port (8000 for `bench start`, or the port published on the host for a "
+            "container)."
         )
     return None
 
@@ -4672,6 +4673,7 @@ def delete_doctype(
         raise ValueError(_STALE_DOCUMENT)
     reconciled = False
     folder = Path(files["folder"]) if files and files.get("local_checkout") else None
+    app_path = _app_root(app)[0] if folder is not None else None
     with tempfile.TemporaryDirectory(prefix="mcp-frappe-doctype-delete-") as temporary:
         backup = Path(temporary) / "doctype"
         if folder is not None and folder.is_dir():
@@ -4686,9 +4688,9 @@ def delete_doctype(
                     try:
                         restored = _restore_doctype_files_after_failed_delete(folder, backup)
                     except RuntimeError as recovery_error:
-                        retained = _retain_doctype_snapshot(backup)
-                        snapshot = f" Snapshot retained at {retained}." if retained else ""
-                        raise RuntimeError(f"{recovery_error}.{snapshot}") from error
+                        raise RuntimeError(
+                            f"{recovery_error}.{_snapshot_note(backup, app_path)}"
+                        ) from error
                 detail = "; original app files restored" if restored else ""
                 raise RuntimeError(
                     "Frappe disconnected during deletion and the DocType still exists"
@@ -5279,34 +5281,26 @@ def _apply_field_rename(
 
 
 def _restore_doctype_files_after_failed_rename(
-    source: Path, destination: Path, backup: Path, old: str, new: str
-) -> dict[str, Path] | None:
-    """Quarantine Frappe's moved folder and restore pre-rename app files."""
-    if source.exists() and not destination.exists():
-        return None
-    if not backup.is_dir():
+    source: Path, destination: Path, snapshot: Path
+) -> Path | None:
+    """Put the pre-rename folder back from `snapshot` after Frappe moved it but kept the old name.
+
+    `snapshot` is a `_retain_doctype_snapshot()` folder; Frappe's moved folder, if any, goes into
+    it as `moved-doctype-folder`, which is returned.
+    """
+    original = snapshot / "original"
+    if not original.is_dir():
         raise RuntimeError("The original DocType files are unavailable for recovery")
-    retained = _retain_doctype_snapshot(backup)
-    if retained is None:
-        raise RuntimeError("The original DocType files could not be retained for recovery")
     if source.exists():
-        raise RuntimeError(
-            f"Both original and renamed DocType folders exist; recovery snapshot: {retained}"
-        )
+        raise RuntimeError("Both original and renamed DocType folders exist")
+    moved_files = None
     if destination.exists():
         if destination.is_symlink() or not destination.is_dir():
             raise RuntimeError("Refusing to move an unexpected DocType destination path")
-        quarantine = source.parent / f".mcp-frappe-recovery-{retained.name}"
-        quarantine.mkdir(mode=0o700)
-        moved_files = quarantine / "moved-doctype-folder"
-        os.replace(destination, moved_files)
-    else:
-        moved_files = None
-    shutil.copytree(retained / "original", source, symlinks=True)
-    recovery = {"snapshot": retained}
-    if moved_files:
-        recovery["moved_files"] = moved_files
-    return recovery
+        moved_files = snapshot / "moved-doctype-folder"
+        shutil.move(destination, moved_files)
+    shutil.copytree(original, source, symlinks=True)
+    return moved_files
 
 
 def _restore_doctype_files_after_failed_delete(folder: Path, backup: Path) -> bool:
@@ -5343,19 +5337,28 @@ def _doctype_file_trees_match(left: Path, right: Path) -> bool:
     return entries(left) == entries(right)
 
 
-def _retain_doctype_snapshot(backup: Path) -> Path | None:
-    """Keep a private copy when native Frappe leaves an ambiguous app-file state."""
-    if not backup.is_dir():
+def _retain_doctype_snapshot(backup: Path, app_path: Path | None) -> Path | None:
+    """Keep a copy of a DocType folder when Frappe leaves its app files in doubt.
+
+    It goes under `<app>/.mcp-frappe-backups/doctype-recoveries/<id>/original`, next to the
+    export backups, so recovery never writes outside FRAPPE_APPS_PATH. Nothing removes it: the
+    developer deletes the folder once the DocType and its files are checked.
+    """
+    if app_path is None or not backup.is_dir():
         return None
-    state_root = Path(
-        os.environ.get("XDG_STATE_HOME") or (Path.home() / ".local" / "state")
+    recovery_root = _safe_app_file(
+        app_path, app_path / ".mcp-frappe-backups" / "doctype-recoveries"
     )
-    recovery_root = state_root / "mcp-frappe" / "doctype-recoveries"
     recovery_root.mkdir(parents=True, exist_ok=True, mode=0o700)
-    os.chmod(recovery_root, 0o700)
     retained = recovery_root / uuid.uuid4().hex
     shutil.copytree(backup, retained / "original", symlinks=True)
     return retained
+
+
+def _snapshot_note(backup: Path, app_path: Path | None) -> str:
+    """Retain a recovery snapshot and say where it is, for an error message."""
+    retained = _retain_doctype_snapshot(backup, app_path)
+    return f" Snapshot retained at {retained}." if retained else ""
 
 
 def _apply_doctype_rename(
@@ -5366,6 +5369,7 @@ def _apply_doctype_rename(
     app_files = plan.get("app_files") or {}
     source = Path(app_files["from"]) if app_files.get("local_checkout") else None
     destination = Path(app_files["to"]) if app_files.get("local_checkout") else None
+    app_path = _app_root(plan["app"])[0] if source is not None else None
     with tempfile.TemporaryDirectory(prefix="mcp-frappe-doctype-rename-") as temporary:
         backup = Path(temporary) / "doctype"
         if source is not None and source.is_dir() and destination is not None:
@@ -5382,50 +5386,59 @@ def _apply_doctype_rename(
             try:
                 _wait_for_server_ready()
             except Exception as wait_error:
-                retained = _retain_doctype_snapshot(backup)
-                snapshot = f" Snapshot retained at {retained}." if retained else ""
                 raise RuntimeError(
                     "Frappe did not return to a stable state after the DocType rename; "
-                    f"inspect both names and app files before retrying.{snapshot}"
+                    "inspect both names and app files before retrying."
+                    + _snapshot_note(backup, app_path)
                 ) from wait_error
             try:
                 new_exists = _doctype_exists(new)
                 old_exists = _doctype_exists(old)
             except Exception as readback_error:
-                retained = _retain_doctype_snapshot(backup)
-                snapshot = f" Snapshot retained at {retained}." if retained else ""
                 raise RuntimeError(
                     "Frappe returned but the renamed DocType state could not be read; "
-                    f"inspect both names and app files before retrying.{snapshot}"
+                    "inspect both names and app files before retrying."
+                    + _snapshot_note(backup, app_path)
                 ) from readback_error
             if new_exists and not old_exists:
                 reconciled = True
             elif old_exists and not new_exists:
-                recovery = None
-                if source is not None and destination is not None and backup.is_dir():
-                    try:
-                        recovery = _restore_doctype_files_after_failed_rename(
-                            source, destination, backup, old, new
-                        )
-                    except RuntimeError as recovery_error:
-                        retained = _retain_doctype_snapshot(backup)
-                        snapshot = f" Snapshot retained at {retained}." if retained else ""
-                        raise RuntimeError(f"{recovery_error}{snapshot}") from error
                 detail = ""
-                if recovery:
-                    detail = f"; original snapshot retained at {recovery['snapshot']}"
-                    if recovery.get("moved_files"):
-                        detail += f"; moved files quarantined at {recovery['moved_files']}"
+                moved = (
+                    source is not None
+                    and destination is not None
+                    and backup.is_dir()
+                    and not (source.exists() and not destination.exists())
+                )
+                if moved:
+                    # Frappe moved the folder but kept the old name: put the folder back.
+                    retained = _retain_doctype_snapshot(backup, app_path)
+                    if retained is None:
+                        raise RuntimeError(
+                            "Frappe disconnected during the rename and moved the DocType's app "
+                            "files, but they could not be retained for recovery; inspect both "
+                            "app folders before retrying."
+                        ) from error
+                    try:
+                        moved_files = _restore_doctype_files_after_failed_rename(
+                            source, destination, retained
+                        )
+                    except (RuntimeError, OSError) as recovery_error:
+                        raise RuntimeError(
+                            f"{recovery_error}. Snapshot retained at {retained}."
+                        ) from error
+                    detail = f"; original snapshot retained at {retained}"
+                    if moved_files:
+                        detail += f"; moved files kept at {moved_files}"
                 raise RuntimeError(
                     "Frappe disconnected during the rename and the DocType was not renamed"
                     f"{detail}; request a fresh preview before retrying."
                 ) from error
             else:
-                retained = _retain_doctype_snapshot(backup)
-                snapshot = f" Snapshot retained at {retained}." if retained else ""
                 raise RuntimeError(
                     "Frappe disconnected during the rename and its final DocType state is "
-                    f"ambiguous; inspect both names and app folders before retrying.{snapshot}"
+                    "ambiguous; inspect both names and app folders before retrying."
+                    + _snapshot_note(backup, app_path)
                 ) from error
         finally:
             _forget_meta()
@@ -10797,8 +10810,8 @@ def _setup_check() -> list[tuple[str, str, str]]:
     url = os.environ.get("FRAPPE_URL", "")
     if not url:
         problems.append(
-            "Set FRAPPE_URL to the target site's base URL; for local Aspire, use the "
-            "Frappe desk URL shown by `aspire describe frappe`"
+            "Set FRAPPE_URL to the target site's base URL; for a site in a container, use "
+            "the HTTP URL published on the host"
         )
     target = _display_url(url) if url else "no site URL"
     if label:

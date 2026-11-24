@@ -42,7 +42,7 @@ uvx mcp-frappe check
 
 `check` logs in and prints the user, app versions, toolsets, how many characters each toolset adds to the host's context, and whether `FRAPPE_APPS_PATH` holds the site's apps. It never prints a secret. HTTPS is required except for loopback and `.localhost` hosts.
 
-For an Aspire or Docker site, configure `FRAPPE_URL` with the host-published HTTP URL, not a container port or Socket.IO URL; see [port mapping guidance](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/docs/installation-and-configuration.md#aspire-and-docker-port-mapping).
+For a site in a container, configure `FRAPPE_URL` with the HTTP URL published on the host, not the container's internal port or the Socket.IO URL; see [ports and containers](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/docs/installation-and-configuration.md#ports-and-containers).
 
 ### Claude Code plugin
 

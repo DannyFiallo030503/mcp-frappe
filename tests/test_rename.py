@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 import httpx
@@ -709,12 +710,35 @@ def test_doctype_confirm_reconciles_a_reload(fake_site, tmp_path, monkeypatch) -
     assert result["reconciled_after_server_reload"] is True
 
 
-def test_failed_doctype_rename_quarantines_moved_files_and_restores_original(
+def _recovery_app(tmp_path, monkeypatch) -> tuple[Path, Path]:
+    """A `lab` app checkout under FRAPPE_APPS_PATH; returns (app root, the DocType folder)."""
+    app_path = tmp_path / "apps" / "lab"
+    folder = app_path / "lab" / "lab_module" / "doctype" / "lab_sample"
+    folder.mkdir(parents=True)
+    monkeypatch.setenv("FRAPPE_APPS_PATH", str(tmp_path / "apps"))
+    return app_path.resolve(), folder
+
+
+def _rename_plan(source: Path) -> dict:
+    return {
+        "app": "lab",
+        "app_files": {
+            "from": str(source),
+            "to": str(source.parent / "lab_specimen"),
+            "local_checkout": True,
+        },
+    }
+
+
+def _snapshot_in(error: pytest.ExceptionInfo) -> Path:
+    return Path(str(error.value).split("Snapshot retained at ", 1)[1].rstrip("."))
+
+
+def test_failed_doctype_rename_moves_renamed_files_aside_and_restores_original(
     tmp_path, monkeypatch
 ) -> None:
-    source = tmp_path / "lab" / "doctype" / "lab_sample"
-    destination = tmp_path / "lab" / "doctype" / "lab_specimen"
-    source.mkdir(parents=True)
+    app_path, source = _recovery_app(tmp_path, monkeypatch)
+    destination = source.parent / "lab_specimen"
     original = {
         "lab_sample.json": '{"doctype": "DocType", "name": "Lab Sample"}',
         "lab_sample.py": "class LabSample(Document):\n    pass\n",
@@ -726,10 +750,8 @@ def test_failed_doctype_rename_quarantines_moved_files_and_restores_original(
     (source / "__pycache__").mkdir()
     (source / "__pycache__" / "lab_sample.cpython-314.pyc").write_bytes(b"compiled")
     backup = tmp_path / "backup"
-    import shutil
-
     shutil.copytree(source, backup)
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    snapshot = standalone._retain_doctype_snapshot(backup, app_path)
 
     source.rename(destination)
     for path in list(destination.iterdir()):
@@ -737,58 +759,46 @@ def test_failed_doctype_rename_quarantines_moved_files_and_restores_original(
         path.rename(renamed)
         if renamed.suffix == ".json":
             renamed.write_text('{"doctype": "DocType", "name": "Lab Specimen"}')
-        elif renamed.suffix == ".py":
-            renamed.write_text(
-                renamed.read_text().replace("LabSample", "LabSpecimen").replace(
-                    "TestLabSample", "TestLabSpecimen"
-                )
-            )
-        elif renamed.suffix == ".js":
-            renamed.write_text(renamed.read_text().replace("Lab Sample", "Lab Specimen"))
 
-    recovery = standalone._restore_doctype_files_after_failed_rename(
-        source, destination, backup, "Lab Sample", "Lab Specimen"
-    )
+    moved = standalone._restore_doctype_files_after_failed_rename(source, destination, snapshot)
 
-    assert recovery is not None
+    assert moved == snapshot / "moved-doctype-folder"
+    assert (moved / "lab_specimen.json").is_file()
     assert not destination.exists()
-    quarantine = recovery["moved_files"]
-    assert (quarantine / "lab_specimen.json").is_file()
-    assert (recovery["snapshot"] / "original" / "lab_sample.json").is_file()
+    assert snapshot.is_relative_to(app_path / ".mcp-frappe-backups" / "doctype-recoveries")
     assert {path.name: path.read_text() for path in source.iterdir() if path.is_file()} == original
     assert (source / "__pycache__" / "lab_sample.cpython-314.pyc").read_bytes() == b"compiled"
 
 
-def test_failed_doctype_rename_quarantines_unexpected_destination(tmp_path, monkeypatch) -> None:
-    source = tmp_path / "lab" / "doctype" / "lab_sample"
-    destination = tmp_path / "lab" / "doctype" / "lab_specimen"
+def test_failed_doctype_rename_keeps_an_unexpected_destination(tmp_path, monkeypatch) -> None:
+    app_path, source = _recovery_app(tmp_path, monkeypatch)
+    source.rmdir()
+    destination = source.parent / "lab_specimen"
     backup = tmp_path / "backup"
-    backup.mkdir(parents=True)
+    backup.mkdir()
     (backup / "lab_sample.json").write_text('{"name": "Lab Sample"}')
-    destination.mkdir(parents=True)
+    destination.mkdir()
     (destination / "operator-file.txt").write_text("preserve me")
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    snapshot = standalone._retain_doctype_snapshot(backup, app_path)
 
-    recovery = standalone._restore_doctype_files_after_failed_rename(
-        source, destination, backup, "Lab Sample", "Lab Specimen"
-    )
+    moved = standalone._restore_doctype_files_after_failed_rename(source, destination, snapshot)
 
-    assert recovery is not None
-    quarantined = recovery["moved_files"]
-    assert (quarantined / "operator-file.txt").read_text() == "preserve me"
+    assert (moved / "operator-file.txt").read_text() == "preserve me"
     assert (source / "lab_sample.json").read_text() == '{"name": "Lab Sample"}'
 
 
-def test_doctype_rename_wait_failure_retains_snapshot(tmp_path, monkeypatch) -> None:
-    source = tmp_path / "lab" / "doctype" / "lab_sample"
-    source.mkdir(parents=True)
-    (source / "lab_sample.json").write_text('{"name": "Lab Sample"}')
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+def _rename_disconnects(monkeypatch) -> None:
     monkeypatch.setattr(
         standalone,
         "_request",
         lambda *args, **kwargs: (_ for _ in ()).throw(httpx.ReadError("worker stopped")),
     )
+
+
+def test_doctype_rename_wait_failure_retains_snapshot(tmp_path, monkeypatch) -> None:
+    app_path, source = _recovery_app(tmp_path, monkeypatch)
+    (source / "lab_sample.json").write_text('{"name": "Lab Sample"}')
+    _rename_disconnects(monkeypatch)
     monkeypatch.setattr(
         standalone,
         "_wait_for_server_ready",
@@ -796,64 +806,31 @@ def test_doctype_rename_wait_failure_retains_snapshot(tmp_path, monkeypatch) -> 
     )
 
     with pytest.raises(RuntimeError, match="Snapshot retained at") as error:
-        standalone._apply_doctype_rename(
-            "Lab Sample",
-            "Lab Specimen",
-            {},
-            {
-                "app_files": {
-                    "from": str(source),
-                    "to": str(source.parent / "lab_specimen"),
-                    "local_checkout": True,
-                }
-            },
-        )
+        standalone._apply_doctype_rename("Lab Sample", "Lab Specimen", {}, _rename_plan(source))
 
-    snapshot = Path(str(error.value).split("Snapshot retained at ", 1)[1].rstrip("."))
+    snapshot = _snapshot_in(error)
+    assert snapshot.is_relative_to(app_path / ".mcp-frappe-backups")
     assert (snapshot / "original" / "lab_sample.json").read_text() == '{"name": "Lab Sample"}'
 
 
 def test_doctype_rename_ambiguous_remote_state_retains_snapshot(tmp_path, monkeypatch) -> None:
-    source = tmp_path / "lab" / "doctype" / "lab_sample"
-    source.mkdir(parents=True)
+    app_path, source = _recovery_app(tmp_path, monkeypatch)
     (source / "lab_sample.json").write_text('{"name": "Lab Sample"}')
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    monkeypatch.setattr(
-        standalone,
-        "_request",
-        lambda *args, **kwargs: (_ for _ in ()).throw(httpx.ReadError("worker stopped")),
-    )
+    _rename_disconnects(monkeypatch)
     monkeypatch.setattr(standalone, "_wait_for_server_ready", lambda: None)
     monkeypatch.setattr(standalone, "_doctype_exists", lambda _name: True)
 
     with pytest.raises(RuntimeError, match="Snapshot retained at") as error:
-        standalone._apply_doctype_rename(
-            "Lab Sample",
-            "Lab Specimen",
-            {},
-            {
-                "app_files": {
-                    "from": str(source),
-                    "to": str(source.parent / "lab_specimen"),
-                    "local_checkout": True,
-                }
-            },
-        )
+        standalone._apply_doctype_rename("Lab Sample", "Lab Specimen", {}, _rename_plan(source))
 
-    snapshot = Path(str(error.value).split("Snapshot retained at ", 1)[1].rstrip("."))
+    snapshot = _snapshot_in(error)
     assert (snapshot / "original" / "lab_sample.json").read_text() == '{"name": "Lab Sample"}'
 
 
 def test_doctype_rename_readback_failure_retains_snapshot(tmp_path, monkeypatch) -> None:
-    source = tmp_path / "lab" / "doctype" / "lab_sample"
-    source.mkdir(parents=True)
+    app_path, source = _recovery_app(tmp_path, monkeypatch)
     (source / "lab_sample.json").write_text('{"name": "Lab Sample"}')
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    monkeypatch.setattr(
-        standalone,
-        "_request",
-        lambda *args, **kwargs: (_ for _ in ()).throw(httpx.ReadError("worker stopped")),
-    )
+    _rename_disconnects(monkeypatch)
     monkeypatch.setattr(standalone, "_wait_for_server_ready", lambda: None)
     monkeypatch.setattr(
         standalone,
@@ -862,21 +839,57 @@ def test_doctype_rename_readback_failure_retains_snapshot(tmp_path, monkeypatch)
     )
 
     with pytest.raises(RuntimeError, match="Snapshot retained at") as error:
-        standalone._apply_doctype_rename(
-            "Lab Sample",
-            "Lab Specimen",
-            {},
-            {
-                "app_files": {
-                    "from": str(source),
-                    "to": str(source.parent / "lab_specimen"),
-                    "local_checkout": True,
-                }
-            },
-        )
+        standalone._apply_doctype_rename("Lab Sample", "Lab Specimen", {}, _rename_plan(source))
 
-    snapshot = Path(str(error.value).split("Snapshot retained at ", 1)[1].rstrip("."))
+    snapshot = _snapshot_in(error)
     assert (snapshot / "original" / "lab_sample.json").read_text() == '{"name": "Lab Sample"}'
+
+
+def test_doctype_rename_rolled_back_after_move_restores_files_with_one_snapshot(
+    tmp_path, monkeypatch
+) -> None:
+    app_path, source = _recovery_app(tmp_path, monkeypatch)
+    (source / "lab_sample.json").write_text('{"name": "Lab Sample"}')
+    destination = source.parent / "lab_specimen"
+
+    def move_then_disconnect(*args, **kwargs):
+        source.rename(destination)
+        raise httpx.ReadError("worker reloaded")
+
+    monkeypatch.setattr(standalone, "_request", move_then_disconnect)
+    monkeypatch.setattr(standalone, "_wait_for_server_ready", lambda: None)
+    monkeypatch.setattr(standalone, "_doctype_exists", lambda name: name == "Lab Sample")
+
+    with pytest.raises(RuntimeError, match="was not renamed") as error:
+        standalone._apply_doctype_rename("Lab Sample", "Lab Specimen", {}, _rename_plan(source))
+
+    (snapshot,) = (app_path / ".mcp-frappe-backups" / "doctype-recoveries").iterdir()
+    assert str(snapshot) in str(error.value)
+    assert (snapshot / "moved-doctype-folder" / "lab_sample.json").is_file()
+    assert (source / "lab_sample.json").read_text() == '{"name": "Lab Sample"}'
+    assert not destination.exists()
+
+
+def test_doctype_rename_with_both_folders_retains_one_snapshot(tmp_path, monkeypatch) -> None:
+    app_path, source = _recovery_app(tmp_path, monkeypatch)
+    (source / "lab_sample.json").write_text('{"name": "Lab Sample"}')
+    destination = source.parent / "lab_specimen"
+
+    def copy_then_disconnect(*args, **kwargs):
+        shutil.copytree(source, destination)
+        raise httpx.ReadError("worker reloaded")
+
+    monkeypatch.setattr(standalone, "_request", copy_then_disconnect)
+    monkeypatch.setattr(standalone, "_wait_for_server_ready", lambda: None)
+    monkeypatch.setattr(standalone, "_doctype_exists", lambda name: name == "Lab Sample")
+
+    with pytest.raises(RuntimeError, match="Both original and renamed") as error:
+        standalone._apply_doctype_rename("Lab Sample", "Lab Specimen", {}, _rename_plan(source))
+
+    snapshots = list((app_path / ".mcp-frappe-backups" / "doctype-recoveries").iterdir())
+    assert len(snapshots) == 1
+    assert f"exist. Snapshot retained at {snapshots[0]}." in str(error.value)
+    assert source.is_dir() and destination.is_dir()
 
 
 def test_failed_doctype_delete_restores_removed_app_folder(tmp_path) -> None:
@@ -884,7 +897,6 @@ def test_failed_doctype_delete_restores_removed_app_folder(tmp_path) -> None:
     folder.mkdir(parents=True)
     (folder / "lab_sample.json").write_text('{"name": "Lab Sample"}')
     backup = tmp_path / "backup"
-    import shutil
 
     shutil.copytree(folder, backup)
     shutil.rmtree(folder)
@@ -895,18 +907,18 @@ def test_failed_doctype_delete_restores_removed_app_folder(tmp_path) -> None:
     assert (folder / "lab_sample.json").read_text() == '{"name": "Lab Sample"}'
 
 
-def test_doctype_recovery_snapshot_is_retained_outside_app_tree(tmp_path, monkeypatch) -> None:
+def test_doctype_recovery_snapshot_stays_in_the_app_backups(tmp_path, monkeypatch) -> None:
+    app_path, _ = _recovery_app(tmp_path, monkeypatch)
     backup = tmp_path / "backup"
     backup.mkdir()
     (backup / "controller.py").write_text("class Example: pass\n")
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
 
-    retained = standalone._retain_doctype_snapshot(backup)
+    retained = standalone._retain_doctype_snapshot(backup, app_path)
 
     assert retained is not None
-    assert retained != backup
+    assert retained.parent == app_path / ".mcp-frappe-backups" / "doctype-recoveries"
     assert (retained / "original" / "controller.py").read_text() == "class Example: pass\n"
-    assert retained.parent.stat().st_mode & 0o777 == 0o700
+    assert standalone._retain_doctype_snapshot(backup, None) is None
 
 
 def test_failed_doctype_delete_preserves_partially_changed_folder(tmp_path) -> None:
