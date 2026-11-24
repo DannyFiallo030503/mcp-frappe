@@ -1,0 +1,42 @@
+{
+  "cleanup": {
+    "metadata_absent": true,
+    "method": "MCP delete_doctype through a temporary stable HTTP worker on the same Bench/site",
+    "old_and_new_app_folders_absent": true,
+    "post_run_bench_readback": {
+      "new_metadata": false,
+      "new_table": false,
+      "old_metadata": false,
+      "old_table": false
+    },
+    "recovery_quarantine_verified_test_only_and_removed": true,
+    "snapshot_verified_test_only_and_removed": true
+  },
+  "compose_health": {
+    "frappe": "healthy",
+    "mariadb": "healthy",
+    "redis_cache": "healthy",
+    "redis_queue": "healthy"
+  },
+  "date": "2026-11-24",
+  "default_reloader": {
+    "app_files_after_recovery": {
+      "original_folder_restored": true,
+      "private_snapshot_retained": true,
+      "renamed_folder_quarantined": true
+    },
+    "confirmed_rename": "interrupted by Frappe's development worker reload",
+    "metadata_after_recovery": {
+      "original_present": true,
+      "renamed_present": false
+    },
+    "rename_preview": "passed; no linked records or customizations",
+    "result": "MCP reported failure after safely restoring the original state"
+  },
+  "doctype_kind": "standard virtual DocType with native JSON, Python, JavaScript, and test files",
+  "frappe_major_version": 16,
+  "frappe_version": "16.34.0",
+  "limitation": "This validates safe failure recovery on the default reloader; a completed DocType rename still requires a stable no-reload worker.",
+  "mcp_version": "0.4.0 working tree at main commit d17320e",
+  "site": "existing isolated development site"
+}
