@@ -1,0 +1,21 @@
+{
+  "date": "2026-11-24",
+  "doctype": "temporary custom submittable DocType",
+  "frappe_major_version": 16,
+  "frappe_version": "16.34.0",
+  "user_type": "Website User",
+  "system_manager_absent": true,
+  "permission_role": "All",
+  "permission_scope": "temporary DocType only",
+  "create_as_limited_user": true,
+  "submit_as_limited_user": true,
+  "submitted_docstatus": 1,
+  "cancel_as_limited_user": true,
+  "canceled_docstatus": 2,
+  "cleanup": {
+    "temporary_document_deleted": true,
+    "temporary_doctype_deleted": true,
+    "temporary_user_and_password_history_deleted": true
+  },
+  "site_isolated": true
+}
