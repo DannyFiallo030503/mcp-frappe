@@ -1,4 +1,4 @@
-"""The Claude Code plugin in plugins/frappe-dev and the marketplace that lists it."""
+"""The frappe-dev plugin in plugins/frappe-dev (Claude Code and Codex) and its marketplaces."""
 
 from __future__ import annotations
 
@@ -38,6 +38,18 @@ def test_plugin_and_marketplace_versions_follow_the_package() -> None:
     assert manifest["name"] == entry["name"] == "frappe-dev"
     assert manifest["version"] == entry["version"] == frappe_mcp.__version__
     assert entry["source"] == "./plugins/frappe-dev"
+    assert marketplace["name"] == "mcp-frappe"
+
+
+def test_codex_plugin_and_marketplace_versions_follow_the_package() -> None:
+    manifest = _json(PLUGIN / ".codex-plugin" / "plugin.json")
+    marketplace = _json(ROOT / ".agents" / "plugins" / "marketplace.json")
+    (entry,) = marketplace["plugins"]
+
+    assert manifest["name"] == entry["name"] == "frappe-dev"
+    assert manifest["version"] == entry["version"] == frappe_mcp.__version__
+    assert entry["source"]["path"] == "./plugins/frappe-dev"
+    assert manifest["skills"] == "./skills/"
     assert marketplace["name"] == "mcp-frappe"
 
 

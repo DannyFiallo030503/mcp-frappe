@@ -275,12 +275,11 @@ def test_check_fails_when_the_site_is_unreachable(fake_site, clean_env, capsys) 
 @pytest.mark.parametrize(
     ("port", "hint"),
     [
-        (8000, "host-published `http` endpoint"),
-        (9000, "if this is its `socketio` endpoint"),
-        (9088, "if this is its `socketio` endpoint"),
+        (8000, "default web port of `bench start`"),
+        (9000, "default Socket.IO port, not the REST API"),
     ],
 )
-def test_check_explains_common_aspire_ports(
+def test_check_explains_common_local_ports(
     fake_site, clean_env, capsys, port: int, hint: str
 ) -> None:
     _token_env(clean_env, f"http://127.0.0.1:{port}")
@@ -307,7 +306,7 @@ def test_check_fails_without_a_site_url(clean_env, capsys) -> None:
 
     assert code == 1
     assert "Set FRAPPE_URL" in output
-    assert "aspire describe frappe" in output
+    assert "published on the host" in output
     assert "Traceback" not in output
 
 

@@ -72,25 +72,23 @@ Run `check` with the same environment the host will use before adding the server
 | `FRAPPE_MCP_JOURNAL_RECORDS` | No | `YES` also journals writes of business records (`create_document`, `create_documents`, `update_document`, deletes, submit, cancel, method calls) so that `undo_mcp_change` can reverse creations and updates. Off by default, because the journal then holds record names and old values. Schema and customization changes are always journaled. The journal is `FRAPPE_APPS_PATH/.mcp-frappe-journal/<site>.json`, or memory without `FRAPPE_APPS_PATH`; see [change journal](tool-reference.md#change-journal-and-undo) |
 | `FRAPPE_MCP_READ_ONLY` | No | `YES` exposes only the `read` toolset, for checking a site that must not change. Unset: read-only for a remote target (see [Remote sites](#remote-sites)), no change for a local one. `NO` enables the write toolsets on a remote target too. The server refuses to start with any other value, or when read-only and `FRAPPE_MCP_TOOLSETS` names a non-`read` toolset |
 
-### Aspire and Docker port mapping
+### Ports and containers
 
-When Codex, Claude Code, or `uvx mcp-frappe` runs on the host, `FRAPPE_URL` must use the host-published **HTTP** endpoint. In Aspire, run `aspire describe frappe` from the AppHost directory and copy the displayed Frappe desk URL. The default table output avoids printing the resource environment, which can contain credentials. Do not use the container target port unless the MCP itself runs inside the same container network.
+`FRAPPE_URL` is the site's HTTP (REST) address as seen from the machine that runs the MCP process. With `bench start`, that is the web server port, `8000` by default; `9000` is Frappe's Socket.IO port, which doesn't serve the REST API.
 
-Frappe's common container ports are HTTP `8000` and Socket.IO `9000`, but the host-published ports can be different. For example, use the host and port shown for Aspire’s `http` endpoint:
+When Frappe runs in a container and Codex, Claude Code, or `uvx mcp-frappe` runs on the host, use the port the container publishes on the host, which may differ from the container's own `8000` (with Docker Compose, `docker compose port <service> 8000` prints it). Don't print the container's environment to find it, since it can hold credentials. When the MCP itself runs inside the same container network, use the Frappe service name and its internal HTTP port instead.
 
 ```bash
 export FRAPPE_URL="<host-published-http-url>"
 ```
 
-Do not point `FRAPPE_URL` at the `socketio` URL: the MCP uses the REST API over HTTP. If the HTTP endpoint URL uses `localhost` instead of the site hostname, set `FRAPPE_SITE` to the site's `.localhost` name so Frappe selects the right site. When using a Docker network from inside a container, use the Frappe service name and its internal HTTP port, and set `FRAPPE_SITE` when the Bench needs host-based site routing.
+If the URL uses `localhost` or an IP address instead of the site name, set `FRAPPE_SITE` to the site's `.localhost` name so the Bench selects the right site; with the site name in `FRAPPE_URL`, `FRAPPE_SITE` is unnecessary.
 
-To separate network/port problems from authentication problems, the read-only `GET /api/method/ping` endpoint should answer at the selected HTTP URL. A successful ping only confirms that HTTP reaches Frappe; `mcp-frappe check` must also log in with the configured user's credentials. If `check` cannot connect at a common container port such as `8000` or `9000`, it prints a hint to inspect the current Aspire/Docker mapping; it does not assume a host-published port has a fixed role. It never scans other ports or changes the connection automatically.
+To tell a network problem from a login problem, `GET /api/method/ping` needs no login and should answer at the URL; `mcp-frappe check` then also logs in with the configured credentials. When it can't connect to a local `8000` or `9000`, it adds a hint about these ports. It never scans other ports or changes the connection.
 
-The process location matters too: `.localhost`, `localhost`, and `127.0.0.1` resolve from the machine or network namespace running the MCP process. A local stdio MCP launched by Codex or Claude on the same workstation can use the local Aspire URL. A remote MCP service cannot reach the workstation's `.localhost` endpoint; use a network path reachable from that service with HTTPS and its normal credential safeguards, or run this MCP locally. Do not expose the development site's plain-HTTP endpoint publicly.
+`localhost`, `.localhost`, and `127.0.0.1` resolve where the MCP process runs: a stdio MCP launched by Codex or Claude Code on the workstation can use the workstation's local URL, while an MCP service on another machine can't. Run this MCP locally, or reach the site over HTTPS with its normal credential safeguards; don't expose a development site's plain-HTTP endpoint publicly.
 
-The environment file used to launch a Frappe container is not automatically the MCP process environment. Map only the needed site URL, site name, and credential to `FRAPPE_URL`, `FRAPPE_SITE`, and `FRAPPE_PASSWORD` in a local launcher or secret manager. Avoid exporting the entire container environment to the MCP host, and never place the password in a committed config or an MCP server command line. A local launcher can derive the URL from the current host-published HTTP endpoint.
-
-Published host ports vary by AppHost configuration. Always read the current values from Aspire instead of copying a port from an example. With the site hostname in `FRAPPE_URL`, `FRAPPE_SITE` is unnecessary.
+The environment file that launches a Frappe container is not the MCP process environment. Pass only `FRAPPE_URL`, `FRAPPE_SITE`, and the credential, through a local launcher or secret manager; never put the password in a committed config or on an MCP server command line.
 
 Use either both API token variables or a username/password. Token auth is preferred for remote sites. Password login uses Frappe's `/api/method/login`.
 

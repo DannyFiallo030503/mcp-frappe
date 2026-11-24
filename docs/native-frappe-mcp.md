@@ -1,6 +1,6 @@
 # Choosing between mcp-frappe, Frappe's built-in MCP, and frappectl
 
-Frappe's current integration guide (checked 2026-11-23) documents two built-in options for **Frappe v16 and later**: a Streamable HTTP MCP server at `/api/v2/mcp` and `frappectl`, a CLI for REST API v2. The local Aspire site checked for this roadmap is Frappe 15.96, so neither is a replacement there. Check the [official Frappe MCP/CLI guide](https://docs.frappe.io/framework/guides-integration/mcp) before relying on version-specific details; upstream tools evolve independently from this package.
+Frappe's current integration guide (checked 2026-11-23) documents two built-in options for **Frappe v16 and later**: a Streamable HTTP MCP server at `/api/v2/mcp` and `frappectl`, a CLI for REST API v2. The local site checked for this roadmap is Frappe 15.96, so neither is a replacement there. Check the [official Frappe MCP/CLI guide](https://docs.frappe.io/framework/guides-integration/mcp) before relying on version-specific details; upstream tools evolve independently from this package.
 
 ## What each server does
 

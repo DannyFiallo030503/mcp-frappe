@@ -23,6 +23,9 @@ All notable changes to this project are listed here. The format follows
 
 ### Fixed
 
+- The DocType recovery copies kept when a standard DocType rename or deletion loses the connection now go to `<app>/.mcp-frappe-backups/doctype-recoveries/` inside `FRAPPE_APPS_PATH`, like export backups, instead of `~/.local/state`, and Frappe's moved folder is kept there instead of in the module's `doctype/` folder. One recovery keeps one copy, and its error message is punctuated correctly.
+- `mcp-frappe check` and connection errors describe local ports generically: 8000 as `bench start`'s web port (or a container's internal port) and 9000 as Socket.IO, without assuming a particular container tool.
+- `docs/security.md` no longer claims a default `admin` password; password login always needs `FRAPPE_PASSWORD`.
 - `rename(kind="field")` no longer removes its generated patch files when a transport error leaves the remote DocType state uncertain. It reconciles an unambiguous field rename despite Frappe metadata normalization; otherwise it returns the rollback ID and a conditional recovery path without retrying the write.
 
 ## [0.4.0] - 2026-11-21
