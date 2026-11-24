@@ -1,0 +1,33 @@
+{
+  "date": "2026-11-24",
+  "doctype": "ToDo",
+  "property": "grid_page_length",
+  "property_type": "Int",
+  "frappe_major_version": 16,
+  "frappe_version": "16.34.0",
+  "site": "existing isolated development site",
+  "paths_compared": [
+    "MCP customize_doctype",
+    "native Frappe Customize Form save_customization"
+  ],
+  "mcp_setter": {
+    "doctype_or_field": "DocType",
+    "field_name": null,
+    "property": "grid_page_length",
+    "property_type": "Int",
+    "value": "17"
+  },
+  "native_setter": {
+    "doctype_or_field": "DocType",
+    "field_name": null,
+    "property": "grid_page_length",
+    "property_type": "Int",
+    "value": "23"
+  },
+  "setter_identity_and_semantics_match": true,
+  "cleanup": {
+    "method": "native Customize Form save restored the original value",
+    "property_setter_absent_after_restore": true
+  },
+  "limitation": "This comparison covers one DocType-level Int Property Setter; field-level properties and Custom Field saves were not compared directly with Desk."
+}
