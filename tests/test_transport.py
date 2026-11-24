@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import functools
 import logging
+import time
 from collections.abc import Callable, Iterator
 
+import anyio
 import httpx
 import pytest
 
@@ -200,6 +203,46 @@ def test_valid_timeout_is_used(site, monkeypatch) -> None:
     assert standalone._client().timeout.read == 12.5
 
 
+def test_parallel_tool_startup_creates_one_authenticated_client(site, monkeypatch) -> None:
+    _password_env(monkeypatch)
+    site.handler = lambda request: (
+        time.sleep(0.1) or _ok("Logged In")
+        if request.url.path == "/api/method/login"
+        else _ok()
+    )
+
+    async def get_clients():
+        clients = []
+
+        async def get_client():
+            clients.append(await anyio.to_thread.run_sync(standalone._client))
+
+        async with anyio.create_task_group() as group:
+            group.start_soon(get_client)
+            group.start_soon(get_client)
+        return clients
+
+    clients = anyio.run(get_clients)
+
+    assert len(clients) == 2 and clients[0] is clients[1]
+    assert site.paths().count("/api/method/login") == 1
+
+
+def test_reset_defers_closing_a_client_until_in_flight_requests_finish(site, monkeypatch) -> None:
+    _password_env(monkeypatch)
+    site.handler = lambda request: _ok("Logged In")
+    client = standalone._acquire_client()
+
+    standalone._reset_session(client)
+
+    assert standalone._session is None
+    assert not client.is_closed
+
+    standalone._release_client(client)
+
+    assert client.is_closed
+
+
 def test_expired_session_logs_in_again_and_retries_once(site, monkeypatch) -> None:
     _password_env(monkeypatch)
     logins = []
@@ -382,7 +425,16 @@ def test_a_short_timeout_also_bounds_connecting(site, monkeypatch) -> None:
 
 def _registered(name: str):
     """The function FastMCP calls for a tool, as opposed to the module-level one."""
-    return standalone.server._tool_manager._tools[name].fn
+    registered = standalone.server._tool_manager._tools[name].fn
+
+    @functools.wraps(registered)
+    def call(*args, **kwargs):
+        async def invoke():
+            return await registered(*args, **kwargs)
+
+        return anyio.run(invoke)
+
+    return call
 
 
 _URL = "http://user:hunter2-secret@127.0.0.1:8000/private/path?token=abc"

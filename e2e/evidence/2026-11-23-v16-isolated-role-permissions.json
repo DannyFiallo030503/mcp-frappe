@@ -1,0 +1,19 @@
+{
+  "date": "2026-11-23",
+  "mcp_version": "0.4.0 working tree",
+  "frappe_major_version": 16,
+  "frappe_version": "16.34.0",
+  "doctype": "ToDo",
+  "operation": "set_role_permissions add path",
+  "temporary_role": "MCP Roadmap QA 20261123 01",
+  "steps": {
+    "create_role_preview_and_confirmation": "pass",
+    "permission_preview_and_confirmation": "pass",
+    "permission_row_readback_read_true": "pass",
+    "delete_permission_row": "pass",
+    "delete_temporary_role": "pass",
+    "final_cleanup_query_empty": "pass"
+  },
+  "cleanup_verified": true,
+  "site_isolated": true
+}

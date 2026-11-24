@@ -12,6 +12,8 @@ The `frappe-dev` MCP server works on one Frappe site through its REST API, as on
 1. `get_site_info`: the user, the Frappe version, the installed apps, and which apps have a checkout (standard DocTypes and exports need one). If the call fails on settings or login, ask the user to run `uvx mcp-frappe check` with the same settings; never ask them to paste a key or password into the chat.
 2. Find the DocType with `list_doctypes(search=...)`, then read `get_doctype_schema` before you change anything. Use the fieldnames it returns.
 
+If the site runs under Aspire or Docker and the connection fails, inspect the AppHost's host-published HTTP endpoint first (`aspire describe frappe` in Aspire). Set `FRAPPE_URL` to its Frappe desk URL, not the container's internal target port or the `socketio` endpoint. Use Aspire's default table output; JSON output can include environment values. A `GET /api/method/ping` response confirms the HTTP route only; `mcp-frappe check` still needs valid credentials. `localhost` and `.localhost` resolve where the MCP process runs, so a remote MCP service cannot use a workstation-local Aspire URL; run this stdio MCP locally or use a secured endpoint reachable from the remote host. Never change ports or enable Guest access to work around a failed login.
+
 ## Pick the tool by who owns the DocType
 
 - **The user's own app, or a site-custom DocType:** `create_doctype`, `update_doctype` (one `operations` list per save), `rename` for fields and DocTypes, `delete_doctype`, `promote_custom_doctype` to move a site-custom prototype into the app.
@@ -36,6 +38,17 @@ Details, verdicts, and what to tell the user at each step: [references/loop.md](
 - Take back a change this server made: `list_mcp_changes`, then `undo_mcp_change(entry_id)` with its preview. Record writes are journaled only when the user set `FRAPPE_MCP_JOURNAL_RECORDS=YES`.
 
 More: [references/data-and-undo.md](references/data-and-undo.md).
+
+## Edit the app code with the coding agent
+
+Use the coding agent's workspace for app code; this MCP is not a Python or shell execution tool.
+
+1. Read the target app's `AGENTS.md` and local development instructions. Confirm the app checkout from `get_site_info` and the tool's `FRAPPE_APPS_PATH` result. If the checkout is not available in the coding agent's workspace, stop before editing and explain that boundary.
+2. Inspect `git status` before editing. Preserve existing user changes and work only in the requested app. For Frappe internals, verify behavior against the site's major version (v15 or v16) and the checked-out source; do not infer behavior from a different major version.
+3. Edit controllers, hooks, tests, and other app files in the coding-agent workspace. Keep schema changes in the MCP workflow above so the site operation uses Frappe's native validation and the MCP's preview. Never use arbitrary Python, shell, or SQL as a workaround for a missing tool or permission denial.
+4. Run the app's focused tests using its documented workflow. If `run_bench` is available, preview and show the exact `run-tests` command before confirming it; otherwise describe the command for the developer to run. Do not test against a production site.
+5. If a change needs migration, inspect drift and pending patches first. Preview `migrate` or `reload-doc`; stop if the preview shows site-ahead or diverged metadata. Afterward, check `list_app_drift`, `list_pending_patches`, and `get_recent_errors` as applicable.
+6. Review and show the app's Git diff and test result. Leave commit, push, and deployment to the user unless they explicitly request them.
 
 ## Next to Frappe's built-in MCP server
 

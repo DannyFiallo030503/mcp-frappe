@@ -1,0 +1,19 @@
+{
+  "frappe_major_version": 16,
+  "limited_user_type": "Website User",
+  "system_manager_role_assigned": false,
+  "welcome_email_sent": false,
+  "operations": {
+    "create_temporary_website_user": "pass",
+    "system_manager_role_absent": "pass",
+    "limited_user_login": "pass",
+    "create_todo": "pass",
+    "read_own_todo": "pass",
+    "update_own_todo": "pass",
+    "delete_own_todo": "pass",
+    "cleanup_temporary_user": "pass",
+    "cleanup_todo_records": "pass",
+    "cleanup_password_history": "pass",
+    "cleanup_verified": "pass"
+  }
+}

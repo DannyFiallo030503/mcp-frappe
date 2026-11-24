@@ -3,6 +3,7 @@
 This folder splits the work to make Frappe MCP useful into **stages**. Each stage is sized for one Claude session. The stages run in order: each one assumes the earlier ones are done.
 
 - [assessment.md](assessment.md): the investigation behind this plan. It covers what exists, confirmed bugs, and structural gaps. Read it once for background.
+- [roadmap-complete-developer-pack.md](roadmap-complete-developer-pack.md): follow-up roadmap for closing live validation gaps and completing the MCP + coding-agent development loop. The assessment below is historical; use the compatibility matrix and this roadmap for current status.
 - `stage-NN-*.md`: one file per stage. Each file has the context, tasks, acceptance criteria, verification commands, and a **Handoff** section that the session fills in when it finishes.
 - [backlog/](backlog/): detailed plans for work that is not scheduled. They were stages before the plan was refocused (see below).
 

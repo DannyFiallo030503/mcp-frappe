@@ -1,0 +1,44 @@
+{
+  "server_name": "frappe",
+  "tool_count": 43,
+  "installed_app_count": 5,
+  "site_info_app_count": 5,
+  "frappe_major_version": 15,
+  "doctype_sample_count": 5,
+  "customer_schema_field_count": 54,
+  "document_list_count": 1,
+  "document_list_tool": "list_documents",
+  "report_tool_returned_rows": 1,
+  "report_tool_truncated": true,
+  "read_only": true,
+  "read_tools": {
+    "get_site_info": "pass",
+    "list_installed_apps": "pass",
+    "list_doctypes": "pass",
+    "get_doctype_schema": "pass",
+    "list_documents": "pass",
+    "count_documents": "pass",
+    "search_records": "pass",
+    "list_reports": "pass",
+    "get_report_filters": "pass",
+    "run_report": "pass",
+    "get_workflow": "pass",
+    "list_notifications": "pass",
+    "get_workspace": "pass",
+    "get_recent_errors": "pass"
+  },
+  "read_tool_count": 14,
+  "connectivity_recheck": {
+    "frappe_url_alias": "host-published-http-endpoint",
+    "host_http_ping_status": 200,
+    "site": "existing Aspire site; no writes",
+    "date": "2026-11-23"
+  },
+  "installation_check": {
+    "command": "uvx --from . mcp-frappe check",
+    "exit_code": 0,
+    "ready": true,
+    "version_guidance": "Frappe v15",
+    "site_writes": false
+  }
+}

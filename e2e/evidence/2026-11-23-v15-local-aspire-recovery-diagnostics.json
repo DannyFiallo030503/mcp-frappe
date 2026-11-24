@@ -1,0 +1,36 @@
+{
+  "date": "2026-11-23",
+  "site_alias": "local-development",
+  "mcp_version": "0.4.0",
+  "mcp_commit": "89a167b",
+  "mcp_worktree_dirty": true,
+  "version": {
+    "frappe": "15.96.0",
+    "erpnext": "15.96.1"
+  },
+  "client_calls": {
+    "managed_connector_a__get_site_info": "pass",
+    "managed_connector_a__list_pending_patches": "pass",
+    "managed_connector_a__list_app_methods": "pass",
+    "managed_connector_a__list_app_methods_as_config": "pass",
+    "managed_connector_a__list_app_drift": "pass",
+    "managed_connector_b__get_site_info": "fail: Error executing tool get_site_info"
+  },
+  "results": {
+    "pending_patches": 2,
+    "applied_patches": 20,
+    "unknown_patch_log_entries": 0,
+    "app_method_python_files_scanned": 118,
+    "method_page_rows": 5,
+    "config_page_rows": 5,
+    "methods_have_more_pages": true,
+    "drift": {
+      "in_sync": 11,
+      "missing_on_site": 1,
+      "site_ahead": 1,
+      "missing_in_app": 1
+    }
+  },
+  "read_only": true,
+  "secrets_paths_method_names_and_private_urls_recorded": false
+}

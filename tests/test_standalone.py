@@ -249,6 +249,10 @@ def test_doctype_payload_marks_custom_doctypes_and_rejects_custom_virtual() -> N
 def test_custom_doctype_creation_does_not_require_local_files(monkeypatch) -> None:
     monkeypatch.delenv("FRAPPE_APPS_PATH", raising=False)
     monkeypatch.setattr(standalone, "_assert_remote_module", lambda *_: None)
+    monkeypatch.setattr(standalone, "_site_fieldtypes", lambda: standalone._FIELDTYPES)
+    monkeypatch.setattr(standalone, "_schema_fieldnames", lambda doctype: (
+        standalone._DOCFIELD_PROPERTIES if doctype == "DocField" else standalone._DOCTYPE_PROPERTIES
+    ))
     exists_values = iter([False, False, True])
     monkeypatch.setattr(standalone, "_doctype_exists", lambda *_: next(exists_values))
     requests = []
@@ -294,6 +298,24 @@ def test_doctype_payload_rejects_duplicate_fields_unknown_properties_and_single_
             [{"fieldname": "value", "fieldtype": "Data"}],
             properties={"custom": 1},
         )
+
+
+def test_doctype_payload_uses_site_fieldtypes_instead_of_release_template() -> None:
+    base = {"Data", "Int"}
+    fields = [{"fieldname": "gallery", "fieldtype": "Attachment Gallery"}]
+
+    with pytest.raises(ValueError, match="unsupported fieldtype"):
+        standalone._build_doctype_payload(
+            "Example Module", "Example", fields, supported_fieldtypes=base
+        )
+
+    payload = standalone._build_doctype_payload(
+        "Example Module",
+        "Example",
+        fields,
+        supported_fieldtypes=base | {"Attachment Gallery"},
+    )
+    assert payload["fields"] == fields
 
     with pytest.raises(ValueError, match="both a child table and a Single"):
         standalone._build_doctype_payload(
@@ -418,6 +440,10 @@ def _standard_create_site(monkeypatch, tmp_path: Path) -> Path:
         standalone, "_assert_app_module", lambda app, module: (tmp_path / app, module_path)
     )
     monkeypatch.setattr(standalone, "_doctype_exists", lambda *_: False)
+    monkeypatch.setattr(standalone, "_site_fieldtypes", lambda: standalone._FIELDTYPES)
+    monkeypatch.setattr(standalone, "_schema_fieldnames", lambda doctype: (
+        standalone._DOCFIELD_PROPERTIES if doctype == "DocField" else standalone._DOCTYPE_PROPERTIES
+    ))
     return module_path
 
 

@@ -57,6 +57,8 @@ TRANSIENT = (
     "reset by peer",
     "incomplete read",
     "remoteprotocolerror",
+    "connection was closed before frappe answered",
+    "frappe disconnected",
     "502",
     "503",
 )
@@ -143,12 +145,18 @@ def mcp_commit() -> dict[str, object]:
     try:
         commit = subprocess.run(
             ["git", "-C", str(ROOT), "rev-parse", "--short", "HEAD"],
-            capture_output=True, text=True, timeout=10, check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=True,
         ).stdout.strip()
         dirty = bool(
             subprocess.run(
                 ["git", "-C", str(ROOT), "status", "--porcelain", "--untracked-files=no"],
-                capture_output=True, text=True, timeout=10, check=True,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=True,
             ).stdout.strip()
         )
     except (OSError, subprocess.SubprocessError):
@@ -268,8 +276,12 @@ class Flow:
                 "name": child,
                 "is_child_table": True,
                 "fields": [
-                    {"fieldname": "item_name", "fieldtype": "Data", "label": "Item",
-                     "in_list_view": 1},
+                    {
+                        "fieldname": "item_name",
+                        "fieldtype": "Data",
+                        "label": "Item",
+                        "in_list_view": 1,
+                    },
                     {"fieldname": "qty", "fieldtype": "Int", "label": "Qty", "in_list_view": 1},
                 ],
             },
@@ -283,21 +295,48 @@ class Flow:
                 "name": parent,
                 "is_submittable": True,
                 "fields": [
-                    {"fieldname": "title", "fieldtype": "Data", "label": "Title", "reqd": 1,
-                     "in_list_view": 1},
+                    {
+                        "fieldname": "title",
+                        "fieldtype": "Data",
+                        "label": "Title",
+                        "reqd": 1,
+                        "in_list_view": 1,
+                    },
                     {"fieldname": "legacy_code", "fieldtype": "Data", "label": "Legacy Code"},
-                    {"fieldname": "status", "fieldtype": "Select", "label": "Status",
-                     "options": "Open\nClosed", "default": "Open"},
+                    {
+                        "fieldname": "status",
+                        "fieldtype": "Select",
+                        "label": "Status",
+                        "options": "Open\nClosed",
+                        "default": "Open",
+                    },
                     {"fieldname": "notes", "fieldtype": "Small Text", "label": "Notes"},
                     {"fieldname": "amount", "fieldtype": "Currency", "label": "Amount"},
-                    {"fieldname": "workflow_state", "fieldtype": "Link", "label": "State",
-                     "options": "Workflow State", "hidden": 1, "allow_on_submit": 1},
-                    {"fieldname": "items", "fieldtype": "Table", "label": "Items",
-                     "options": child},
+                    {
+                        "fieldname": "workflow_state",
+                        "fieldtype": "Link",
+                        "label": "State",
+                        "options": "Workflow State",
+                        "hidden": 1,
+                        "allow_on_submit": 1,
+                    },
+                    {
+                        "fieldname": "items",
+                        "fieldtype": "Table",
+                        "label": "Items",
+                        "options": child,
+                    },
                 ],
                 "permissions": [
-                    {"role": "System Manager", "read": 1, "write": 1, "create": 1,
-                     "delete": 1, "submit": 1, "cancel": 1},
+                    {
+                        "role": "System Manager",
+                        "read": 1,
+                        "write": 1,
+                        "create": 1,
+                        "delete": 1,
+                        "submit": 1,
+                        "cancel": 1,
+                    },
                 ],
             },
         )
@@ -313,9 +352,16 @@ class Flow:
     async def step_update(self) -> None:
         parent = self.names["parent"]
         operations = [
-            {"op": "add_field", "insert_after": "title",
-             "field": {"fieldname": "priority", "fieldtype": "Select", "label": "Priority",
-                       "options": "Low\nHigh"}},
+            {
+                "op": "add_field",
+                "insert_after": "title",
+                "field": {
+                    "fieldname": "priority",
+                    "fieldtype": "Select",
+                    "label": "Priority",
+                    "options": "Low\nHigh",
+                },
+            },
             {"op": "move_field", "fieldname": "notes", "insert_after": "priority"},
             {"op": "update_field", "fieldname": "amount", "set": {"label": "Total Amount"}},
             {"op": "remove_field", "fieldname": "legacy_code"},
@@ -348,17 +394,22 @@ class Flow:
         base = {"app": self.app, "module": self.module, "doctype": doctype}
         _, created = await self.preview_confirm(
             "create_custom_field",
-            {**base, "field": {"fieldname": fieldname, "fieldtype": "Data",
-                               "label": "MCP Flow Field"}},
+            {
+                **base,
+                "field": {"fieldname": fieldname, "fieldtype": "Data", "label": "MCP Flow Field"},
+            },
         )
         name = created.get("name") or f"{doctype}-{fieldname}"
         self.on_cleanup("custom_field", lambda: self.delete_document("Custom Field", name))
         custom_file = self.module_dir / "custom" / f"{scrub(doctype)}.json"
         before = file_hash(custom_file)
-        export_args = {"app": self.app, "module": self.module, "doctypes": [doctype],
-                       "apply_module_filter": True}
-        _, exported = await self.preview_confirm("export_customizations", export_args,
-                                                 "preview_id")
+        export_args = {
+            "app": self.app,
+            "module": self.module,
+            "doctypes": [doctype],
+            "apply_module_filter": True,
+        }
+        _, exported = await self.preview_confirm("export_customizations", export_args, "preview_id")
         rollback_id = exported["rollback_id"]
         rollback_args = {"app": self.app, "module": self.module, "rollback_id": rollback_id}
 
@@ -380,8 +431,13 @@ class Flow:
         name = self.names["custom"]
         await self.preview_confirm(
             "create_doctype",
-            {"app": self.app, "module": self.module, "name": name, "is_custom": True,
-             "fields": [{"fieldname": "note", "fieldtype": "Data", "label": "Note"}]},
+            {
+                "app": self.app,
+                "module": self.module,
+                "name": name,
+                "is_custom": True,
+                "fields": [{"fieldname": "note", "fieldtype": "Data", "label": "Note"}],
+            },
         )
         self.on_cleanup("custom_doctype", lambda: self.delete_doctype(name))
         before = await self.diff_verdict(name)
@@ -403,8 +459,13 @@ class Flow:
         parent = self.names["parent"]
         _, created = await self.preview_confirm(
             "create_document",
-            {"doctype": parent, "values": {"title": "MCP flow record",
-                                           "items": [{"item_name": "Sample", "qty": 1}]}},
+            {
+                "doctype": parent,
+                "values": {
+                    "title": "MCP flow record",
+                    "items": [{"item_name": "Sample", "qty": 1}],
+                },
+            },
         )
         name = created.get("name") or created.get("document", {}).get("name")
         if not name:
@@ -418,7 +479,8 @@ class Flow:
         )
         deleted = await self.delete_document(parent, name)
         self.details["lifecycle_docstatus"] = [
-            submitted.get("docstatus"), cancelled.get("docstatus")
+            submitted.get("docstatus"),
+            cancelled.get("docstatus"),
         ]
         if submitted.get("docstatus") != 1 or cancelled.get("docstatus") != 2 or not deleted:
             raise AssertionError(f"lifecycle: {self.details['lifecycle_docstatus']}")
@@ -431,14 +493,24 @@ class Flow:
                 "doctype": parent,
                 "name": names["workflow"],
                 "states": [
-                    {"state": names["state_draft"], "doc_status": 0,
-                     "allow_edit": "System Manager"},
-                    {"state": names["state_approved"], "doc_status": 1,
-                     "allow_edit": "System Manager"},
+                    {
+                        "state": names["state_draft"],
+                        "doc_status": 0,
+                        "allow_edit": "System Manager",
+                    },
+                    {
+                        "state": names["state_approved"],
+                        "doc_status": 1,
+                        "allow_edit": "System Manager",
+                    },
                 ],
                 "transitions": [
-                    {"state": names["state_draft"], "action": names["action"],
-                     "next_state": names["state_approved"], "allowed": "System Manager"},
+                    {
+                        "state": names["state_draft"],
+                        "action": names["action"],
+                        "next_state": names["state_approved"],
+                        "allowed": "System Manager",
+                    },
                 ],
             },
         )
@@ -448,9 +520,7 @@ class Flow:
                     "workflow_master",
                     lambda doctype=doctype, master=master: self.delete_document(doctype, master),
                 )
-        self.on_cleanup(
-            "workflow", lambda: self.delete_document("Workflow", names["workflow"])
-        )
+        self.on_cleanup("workflow", lambda: self.delete_document("Workflow", names["workflow"]))
         active = (await self.read("get_workflow", {"doctype": parent})).get("workflow") or {}
         self.details["workflow_masters_created"] = sum(
             len(rows) for rows in preview.get("creates", {}).values()
@@ -480,9 +550,13 @@ class Flow:
         name = self.names["report"]
         _, saved = await self.preview_confirm(
             "upsert_report",
-            {"name": name, "ref_doctype": self.names["parent"],
-             "columns": ["name", "title", "amount"], "filters": {"status": "Open"},
-             "order_by": "modified desc"},
+            {
+                "name": name,
+                "ref_doctype": self.names["parent"],
+                "columns": ["name", "title", "amount"],
+                "filters": {"status": "Open"},
+                "order_by": "modified desc",
+            },
         )
         self.on_cleanup("report", lambda: self.delete_document("Report", name))
         sample = saved.get("sample") or {}
@@ -498,14 +572,14 @@ class Flow:
                 "name": name,
                 "module": self.module,
                 "shortcuts": [
-                    {"label": "Records", "type": "DocType", "link_to": parent,
-                     "doc_view": "List"},
-                    {"label": "Open Records", "type": "Report",
-                     "link_to": self.names["report"]},
+                    {"label": "Records", "type": "DocType", "link_to": parent, "doc_view": "List"},
+                    {"label": "Open Records", "type": "Report", "link_to": self.names["report"]},
                 ],
                 "link_cards": [
-                    {"label": "Masters",
-                     "links": [{"label": "Records", "type": "DocType", "link_to": parent}]},
+                    {
+                        "label": "Masters",
+                        "links": [{"label": "Records", "type": "DocType", "link_to": parent}],
+                    },
                 ],
             },
         )

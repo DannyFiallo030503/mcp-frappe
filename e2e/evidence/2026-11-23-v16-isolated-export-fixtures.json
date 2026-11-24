@@ -1,0 +1,18 @@
+{
+  "date": "2026-11-23",
+  "source": "direct standalone MCP client invocation, separate from run_standalone_bench_flow.py",
+  "mcp_version": "0.4.0",
+  "site_alias": "isolated-v16",
+  "frappe_major_version": 16,
+  "app": "temporary mcp_test_app",
+  "tool": "run_bench",
+  "command": "export-fixtures",
+  "result": {
+    "exit_code": 0,
+    "ok": true,
+    "timed_out": false,
+    "server_ready": true
+  },
+  "cleanup": "temporary app uninstalled and removed after validation",
+  "secrets_paths_record_values_and_hostnames_recorded": false
+}

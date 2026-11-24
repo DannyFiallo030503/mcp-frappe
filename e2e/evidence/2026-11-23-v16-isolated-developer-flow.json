@@ -1,0 +1,54 @@
+{
+  "runner": "run_standalone_developer_flow.py",
+  "date": "2026-11-23",
+  "mcp_version": "0.4.0",
+  "mcp_commit": "89a167b",
+  "mcp_worktree_dirty": true,
+  "site_alias": "isolated-v16",
+  "frappe_major_version": 16,
+  "versions": {
+    "frappe": "16.34.0",
+    "erpnext": "16.35.0",
+    "hrms": "16.4.8",
+    "cuba": "14.3.7",
+    "application": "0.0.1"
+  },
+  "test_app": "temporary mcp_test_app",
+  "areas": {
+    "doctype_create_and_diff": "pass",
+    "doctype_update_and_diff": "pass",
+    "custom_field_export_rollback": "pass",
+    "custom_doctype_promote": "pass",
+    "document_submit_cancel": "pass",
+    "workflow": "pass",
+    "notification": "pass",
+    "report_builder_report": "pass",
+    "workspace": "pass"
+  },
+  "details": {
+    "developer_mode": "on",
+    "diff_after_create": ["in_sync", "in_sync"],
+    "diff_after_update": "in_sync",
+    "export_rolled_back": true,
+    "promote_verdicts": ["site_custom", "in_sync"],
+    "document_docstatus": [1, 2],
+    "report_sample_ran": true,
+    "workspace_file_written": true,
+    "update_reconciled_after_reload": false
+  },
+  "cleanup": {
+    "all_removed": true,
+    "leftover_paths_removed": 2,
+    "module_files_restored": true,
+    "app_git_changes_unchanged": true,
+    "drift_counts_unchanged": true,
+    "test_doctypes_left_in_drift": 0
+  },
+  "passed": true,
+  "secrets_paths_record_values_and_hostnames_recorded": false,
+  "notes": [
+    "Runner transient classification was extended for worker reload disconnect messages.",
+    "Temporary app was uninstalled and removed after validation.",
+    "Site configuration allow_tests was enabled only on the isolated v16 test site."
+  ]
+}

@@ -143,6 +143,20 @@ def test_preview_loads_customize_form_with_a_get_and_lists_a_new_setter(fake_sit
     assert not fake_site.calls_to("POST")
 
 
+def test_unset_doctype_settings_use_customize_form_schema_allowlist(fake_site) -> None:
+    _Site(fake_site)
+
+    preview = standalone.customize_doctype(
+        DOCTYPE, [{"op": "set_property", "property": "default_view", "value": "List"}]
+    )
+
+    assert preview["property_setters"] == [
+        {"action": "create", "property": "default_view", "to": "List"}
+    ]
+    assert preview["warnings"] == []
+    assert not fake_site.calls_to("POST")
+
+
 def test_confirm_sends_the_whole_form_to_save_customization(fake_site) -> None:
     site = _Site(fake_site)
     site.after = [_setter("notes", "hidden", "1")]
@@ -258,7 +272,7 @@ def test_adding_a_custom_field_previews_it_and_the_field_order(fake_site) -> Non
         [
             {
                 "op": "add_custom_field",
-                "field": {"fieldname": "lab_code", "fieldtype": "Data", "label": "Lab Code"},
+                "field": {"fieldname": "custom_lab_code", "fieldtype": "Data", "label": "Lab Code"},
                 "insert_after": "customer",
             }
         ],
@@ -267,7 +281,7 @@ def test_adding_a_custom_field_previews_it_and_the_field_order(fake_site) -> Non
     assert preview["custom_fields"] == [
         {
             "action": "create",
-            "fieldname": "lab_code",
+            "fieldname": "custom_lab_code",
             "insert_after": "customer",
             "fieldtype": "Data",
             "label": "Lab Code",
@@ -278,9 +292,49 @@ def test_adding_a_custom_field_previews_it_and_the_field_order(fake_site) -> Non
         {
             "action": "create",
             "property": "field_order",
-            "to": json.dumps(["customer", "lab_code", "status", "notes", "total"]),
+                "to": json.dumps(["customer", "custom_lab_code", "status", "notes", "total"]),
         }
     ]
+
+
+def test_adding_a_custom_field_rejects_name_frappe_would_replace(fake_site) -> None:
+    _Site(fake_site)
+
+    with pytest.raises(ValueError, match="derives fieldname 'custom_lab_code'"):
+        standalone.customize_doctype(
+            DOCTYPE,
+            [
+                {
+                    "op": "add_custom_field",
+                    "field": {"fieldname": "lab_code", "fieldtype": "Data", "label": "Lab Code"},
+                }
+            ],
+        )
+
+
+def test_adding_a_custom_field_rejects_batch_that_changes_derived_name(fake_site) -> None:
+    _Site(fake_site)
+
+    with pytest.raises(ValueError, match="derives fieldname 'custom_other'"):
+        standalone.customize_doctype(
+            DOCTYPE,
+            [
+                {
+                    "op": "add_custom_field",
+                    "field": {
+                        "fieldname": "custom_lab_code",
+                        "fieldtype": "Data",
+                        "label": "Lab Code",
+                    },
+                },
+                {
+                    "op": "set_property",
+                    "fieldname": "custom_lab_code",
+                    "property": "label",
+                    "value": "Other",
+                },
+            ],
+        )
 
 
 def test_a_new_custom_field_row_is_marked_custom_in_the_saved_form(fake_site) -> None:
@@ -288,13 +342,13 @@ def test_a_new_custom_field_row_is_marked_custom_in_the_saved_form(fake_site) ->
     operations = [
         {
             "op": "add_custom_field",
-            "field": {"fieldname": "lab_code", "fieldtype": "Data", "label": "Lab Code"},
+            "field": {"fieldname": "custom_lab_code", "fieldtype": "Data", "label": "Lab Code"},
         }
     ]
     preview = standalone.customize_doctype(DOCTYPE, operations)
 
     def save(call):
-        site.custom_fields = [*site.custom_fields, {"name": "x", "fieldname": "lab_code"}]
+        site.custom_fields = [*site.custom_fields, {"name": "x", "fieldname": "custom_lab_code"}]
         site.setters = [_setter(None, "field_order", "[]")]
         return {"docs": []}
 
@@ -304,7 +358,7 @@ def test_a_new_custom_field_row_is_marked_custom_in_the_saved_form(fake_site) ->
     )
 
     row = site.saved_form()["fields"][-1]
-    assert row["fieldname"] == "lab_code"
+    assert row["fieldname"] == "custom_lab_code"
     assert row["is_custom_field"] == 1 and row["is_system_generated"] == 0
     assert result["warnings"] == []
 

@@ -1,0 +1,43 @@
+{
+  "date": "2026-11-23",
+  "runner": "run_standalone_smoke.py",
+  "mcp_version": "0.4.0",
+  "mcp_commit": "89a167b",
+  "mcp_worktree_dirty": true,
+  "site_alias": "local-development",
+  "versions": {
+    "frappe": "15.96.0",
+    "erpnext": "15.96.1",
+    "hrms": "15.60.0",
+    "cuba": "14.3.7",
+    "application": "0.0.1"
+  },
+  "tool_count": 43,
+  "read_probes": {
+    "get_site_info": "pass",
+    "list_installed_apps": "pass",
+    "list_doctypes": "pass",
+    "get_doctype_schema": "pass",
+    "list_documents": "pass",
+    "count_documents": "pass",
+    "search_records": "pass",
+    "list_reports": "pass",
+    "get_report_filters": "pass",
+    "run_report": "pass",
+    "get_workflow": "pass",
+    "list_notifications": "pass",
+    "get_workspace": "pass",
+    "get_recent_errors": "pass"
+  },
+  "read_only": true,
+  "result_counts": {
+    "installed_apps": 5,
+    "site_info_apps": 5,
+    "doctype_sample": 5,
+    "reference_schema_field_count": 54,
+    "document_rows": 1,
+    "report_rows": 1,
+    "report_truncated": true
+  },
+  "secrets_paths_record_values_and_hostnames_recorded": false
+}

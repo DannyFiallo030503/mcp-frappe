@@ -1,0 +1,42 @@
+{
+  "date": "2026-11-23",
+  "mcp_version": "0.4.0 working tree",
+  "frappe_major_version": 16,
+  "frappe_version": "16.34.0",
+  "target": "existing isolated local v16 site",
+  "doctype_kind": "standard virtual DocType",
+  "tools": [
+    "get_site_info",
+    "list_documents",
+    "create_doctype",
+    "get_doctype_schema",
+    "rename",
+    "delete_doctype"
+  ],
+  "create": {
+    "result": "passed",
+    "native_files_complete": true,
+    "files": ["JSON", "Python controller", "JavaScript", "test Python"],
+    "schema_readback": "passed",
+    "is_virtual": true
+  },
+  "rename": {
+    "preview": "passed",
+    "records": null,
+    "links": 0,
+    "customizations": {"custom_fields": 0, "property_setters": 0},
+    "result": "failed",
+    "error_summary": "Frappe reloaded while its native rename moved app files; MCP recovery found the requested DocType rename had not completed."
+  },
+  "cleanup": {
+    "doctype_records": "both requested names absent",
+    "database_tables": "both absent; checked with bench execute",
+    "app_folders": "both absent; renamed orphan folder removed only after its generated JSON matched this test's exact name, module, and virtual flag",
+    "verified": true
+  },
+  "source_checks": {
+    "frappe_schema_sync": "returns without schema changes for virtual DocTypes",
+    "frappe_after_rename": "skips db.rename_table for virtual DocTypes and still moves standard app files"
+  },
+  "stack_health_after_test": "all four Compose resources healthy"
+}

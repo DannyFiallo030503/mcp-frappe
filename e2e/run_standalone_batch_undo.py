@@ -71,6 +71,7 @@ async def run() -> dict:
     )
     marker = f"MCP batch acceptance {uuid.uuid4().hex}"
     rows = [{"description": f"{marker} {index}"} for index in range(3)]
+    result: dict | None = None
     async with stdio_client(params) as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
@@ -123,13 +124,20 @@ async def run() -> dict:
                     raise AssertionError("Undo of a record changed afterwards was not refused")
 
                 changes = await call(session, "list_mcp_changes", {"limit": 5})
-                return {
+                journal_tools = {row.get("tool") for row in changes["rows"]}
+                expected_journal_tools = {"create_documents", "update_document"}
+                if changes["storage"] != "memory":
+                    raise AssertionError("The change journal was not kept in memory")
+                if len(changes["rows"]) != 2 or not expected_journal_tools.issubset(journal_tools):
+                    raise AssertionError(f"Unexpected change journal entries: {changes['rows']}")
+                result = {
                     "failed_batch_left_nothing": True,
                     "batch_created": len(created["names"]),
                     "update_undone": bool(undo_update.get("undone")),
                     "changed_target_refused": True,
                     "journal_rows": len(changes["rows"]),
                     "journal_storage": changes["storage"],
+                    "journal_tools": sorted(journal_tools),
                 }
             finally:
                 for name in await marked(session, marker):
@@ -139,8 +147,15 @@ async def run() -> dict:
                         {"doctype": "ToDo", "name": name},
                         token="modified",
                     )
-                if await marked(session, marker):
+                remaining = await marked(session, marker)
+                if remaining:
                     raise RuntimeError(f"Temporary ToDos marked {marker!r} remain; remove them")
+                if result is not None:
+                    result["cleanup_marker_records_remaining"] = bool(remaining)
+
+    if result is None:
+        raise AssertionError("Batch/undo run finished without a result")
+    return result
 
 
 if __name__ == "__main__":

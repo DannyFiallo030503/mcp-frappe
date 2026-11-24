@@ -1,0 +1,28 @@
+{
+  "run_date": "2026-11-23",
+  "mcp_version": "0.4.0",
+  "frappe_version": "15.96.0",
+  "erpnext_version": "15.96.1",
+  "runner": "e2e/run_standalone_rename_acceptance.py",
+  "kind": "custom_field",
+  "target_doctype": "ToDo",
+  "operations": {
+    "custom_field_created": true,
+    "native_rename_saved": true,
+    "schema_readback_new_name_present_old_name_absent": true,
+    "native_rename_back_saved": true,
+    "schema_readback_original_name_restored": true,
+    "schema_readback_test_names_absent_after_cleanup": true,
+    "temporary_custom_field_metadata_deleted": true,
+    "test_custom_field_names_absent_from_metadata_after_cleanup": true
+  },
+  "secrets_or_fieldnames_recorded": false,
+  "scope": "One nullable temporary Data Custom Field; metadata removed and Frappe dry-run found no residual test-named columns; no app files or test documents remained",
+  "native_limit_observed": "ToDo documents have Allow Rename disabled; Frappe refused a document rename. The temporary ToDo from that probe was deleted and marker lookup returned zero.",
+  "cleanup_test_field_metadata_remaining": false,
+  "physical_column_check": {
+    "method": "Frappe bench trim-tables --dry-run --format json, output filtered to test-name prefixes on tabToDo",
+    "residual_test_columns": [],
+    "mutated_database": false
+  }
+}

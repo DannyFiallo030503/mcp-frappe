@@ -1,0 +1,38 @@
+{
+  "server_version": "0.4.0",
+  "frappe_major_version": 15,
+  "tool_count": 43,
+  "read_only": true,
+  "tools_passed": [
+    "get_site_info",
+    "list_installed_apps",
+    "list_doctypes",
+    "get_doctype_schema",
+    "list_documents",
+    "count_documents",
+    "search_records",
+    "list_reports",
+    "get_report_filters",
+    "run_report",
+    "get_workflow",
+    "list_notifications",
+    "get_workspace",
+    "get_recent_errors",
+    "list_pending_patches",
+    "list_app_methods",
+    "list_app_methods(as_config=true)"
+  ],
+  "pending_patches": {
+    "total": 22,
+    "applied": 20,
+    "pending": 2,
+    "warnings": 0
+  },
+  "app_methods": {
+    "python_files_scanned": 118,
+    "sample_page_rows": 5,
+    "config_page_rows": 5
+  },
+  "create_doctype": "preview only; not confirmed",
+  "site_mutations": 0
+}

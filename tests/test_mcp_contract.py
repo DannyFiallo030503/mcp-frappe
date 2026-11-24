@@ -1,7 +1,10 @@
 """Exercise the server through a real MCP client session, as an agent would see it."""
 
+import asyncio
 import copy
 import json
+import threading
+import time
 
 import anyio
 import pytest
@@ -86,6 +89,91 @@ def test_read_tool_round_trips_through_an_mcp_session(fake_site) -> None:
         {"app": "frappe", "modules": ["Core"]},
     ]
     assert len(fake_site.calls_to("GET", "/api/resource/Module%20Def")) == 1
+
+
+def test_read_tool_stays_responsive_during_a_blocking_doctype_reload_request(fake_site) -> None:
+    fake_site.add_doctype(
+        "ToDo",
+        [{"fieldname": "description", "fieldtype": "Small Text", "label": "Description"}],
+        module="Desk",
+        custom=0,
+    )
+    slow_started = threading.Event()
+
+    def delayed_metadata(call):
+        slow_started.set()
+        time.sleep(1.2)
+        return fake_site._getdoctype(call)
+
+    fake_site.add("GET", standalone._GETDOCTYPE, delayed_metadata)
+    fake_site.add(
+        "GET",
+        "/api/resource/Module%20Def",
+        [{"name": "Core", "app_name": "frappe"}],
+    )
+
+    async def call_tools():
+        async with create_connected_server_and_client_session(
+            standalone.server._mcp_server
+        ) as client:
+            started_at = time.perf_counter()
+            slow = asyncio.create_task(
+                client.call_tool("get_doctype_schema", {"doctype": "ToDo"})
+            )
+            assert await anyio.to_thread.run_sync(slow_started.wait, 1.0)
+            fast = await client.call_tool("list_installed_apps", {})
+            fast_elapsed = time.perf_counter() - started_at
+            slow_result = await slow
+            return fast, slow_result, fast_elapsed
+
+    fast, slow, fast_elapsed = anyio.run(call_tools)
+
+    assert not fast.isError
+    assert not slow.isError
+    assert fast_elapsed < 0.75
+
+
+def test_confirmed_write_handlers_are_serialized(monkeypatch) -> None:
+    monkeypatch.setattr(
+        standalone.server._tool_manager,
+        "_tools",
+        dict(standalone.server._tool_manager._tools),
+    )
+    monkeypatch.setattr(standalone, "_TOOLSETS", copy.deepcopy(standalone._TOOLSETS))
+    guard = threading.Lock()
+    state = {"active": 0, "maximum": 0}
+
+    def run_write_probe() -> dict[str, bool]:
+        with guard:
+            state["active"] += 1
+            state["maximum"] = max(state["maximum"], state["active"])
+        time.sleep(0.1)
+        with guard:
+            state["active"] -= 1
+        return {"ok": True}
+
+    def write_probe() -> dict[str, bool]:
+        return run_write_probe()
+
+    def second_write_probe() -> dict[str, bool]:
+        return run_write_probe()
+
+    standalone._tool("data", "Write probe", destructive=True)(write_probe)
+    standalone._tool("data", "Second write probe", destructive=True)(second_write_probe)
+
+    async def call_tools():
+        async with create_connected_server_and_client_session(
+            standalone.server._mcp_server
+        ) as client:
+            return await asyncio.gather(
+                client.call_tool("write_probe", {}),
+                client.call_tool("second_write_probe", {}),
+            )
+
+    results = anyio.run(call_tools)
+
+    assert all(not result.isError for result in results)
+    assert state["maximum"] == 1
 
 
 def test_schema_tool_exposes_the_detail_choice() -> None:

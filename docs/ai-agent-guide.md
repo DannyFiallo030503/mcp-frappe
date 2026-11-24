@@ -17,6 +17,7 @@
 - Read tool errors to the end. They give Frappe's message as plain text and, for common exception types, a `Hint:` line: a `MandatoryError` lists the missing field labels, a `TimestampMismatchError` asks for a fresh preview, and a `PermissionError` is final.
 - Route by the major version from `get_site_info`: on v15 use standalone mcp-frappe for data and development. On v16+, use a configured native Frappe MCP for data and standalone mcp-frappe for customization, developer, and Bench tools. If the version is unknown, use standalone and consult the [compatibility matrix](compatibility-and-validation.md); do not infer native MCP availability. The standalone server cannot configure or call another MCP. See [using both servers](native-frappe-mcp.md).
 - The tools you see depend on the server's toolsets. With `FRAPPE_MCP_READ_ONLY=YES`, and by default for a remote (not loopback or `.localhost`) site, only the read tools are listed; if a change needs a tool that isn't there, tell the user rather than looking for another route. Writes to a remote site need the user to set `FRAPPE_MCP_READ_ONLY=NO`.
+- Read calls remain schedulable while a Frappe/Bench operation waits, and confirmed writes serialize. If the host reports an interrupted write, inspect the site and app checkout before retrying; the worker operation may have completed.
 
 ## Read a record type
 

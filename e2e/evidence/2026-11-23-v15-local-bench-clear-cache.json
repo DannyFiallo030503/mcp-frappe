@@ -1,0 +1,21 @@
+{
+  "run_date": "2026-11-23",
+  "mcp_version": "0.4.0",
+  "frappe_version": "15.96.0",
+  "erpnext_version": "15.96.1",
+  "tool": "run_bench",
+  "operation": "clear-cache",
+  "preview_and_confirmation": true,
+  "result": {
+    "exit_code": 0,
+    "ok": true,
+    "timed_out": false,
+    "seconds": 1.5,
+    "server_ready": true,
+    "output_lines": 0,
+    "output_truncated": false
+  },
+  "execution": "Existing Aspire Bench via container command; sensitive path and host identifiers omitted",
+  "site_data_or_schema_changed": false,
+  "secrets_recorded": false
+}

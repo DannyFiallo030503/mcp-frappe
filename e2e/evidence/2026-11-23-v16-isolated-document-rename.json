@@ -1,0 +1,51 @@
+{
+  "cleanup_verified": true,
+  "date": "2026-11-23",
+  "doctype": "Salutation",
+  "frappe_major_version": 16,
+  "frappe_version": "16.34.0",
+  "new_name": "MCP QA Salutation Renamed 678805e1ff69",
+  "old_name": "MCP QA Salutation 678805e1ff69",
+  "rename_preview": {
+    "frappe_updates": [
+      "Link fields that point to it, and Dynamic Links",
+      "its child rows, attachments, versions, and assignments"
+    ],
+    "incoming_links": {
+      "linked_records": 0,
+      "links": [
+        {
+          "doctype": "Contact",
+          "fieldname": "salutation",
+          "fieldtype": "Link",
+          "records": 0
+        },
+        {
+          "doctype": "Employee",
+          "fieldname": "salutation",
+          "fieldtype": "Link",
+          "records": 0
+        },
+        {
+          "doctype": "Lead",
+          "fieldname": "salutation",
+          "fieldtype": "Link",
+          "records": 0
+        }
+      ],
+      "links_truncated": false
+    },
+    "notes": [
+      "Frappe may adjust the new name (naming rules, the DocType's before_rename hook)."
+    ]
+  },
+  "renamed_name_actual": "MCP QA Salutation Renamed 678805e1ff69",
+  "site_isolated": true,
+  "steps": {
+    "create_and_readback": "pass",
+    "rename_preview_confirm_and_readback": "pass",
+    "schema_and_name_preflight": "pass",
+    "temporary_document_deleted": "pass"
+  },
+  "target_host_port": "redacted-local-loopback"
+}

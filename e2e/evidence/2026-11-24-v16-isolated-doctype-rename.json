@@ -1,0 +1,48 @@
+{
+  "date": "2026-11-24",
+  "mcp_version": "0.4.0 working tree",
+  "frappe_major_version": 16,
+  "frappe_version": "16.34.0",
+  "target": "existing isolated v16 Bench and site",
+  "http_process": "temporary bench serve --noreload on the same existing site, database, and app checkout",
+  "doctype_kind": "standard virtual DocType",
+  "tools": [
+    "get_site_info",
+    "list_documents",
+    "create_doctype",
+    "get_doctype_schema",
+    "rename",
+    "delete_doctype"
+  ],
+  "create": {
+    "result": "passed",
+    "native_files_complete": true,
+    "files": ["JSON", "Python controller", "JavaScript", "test Python"],
+    "schema_readback": "passed",
+    "is_virtual": true
+  },
+  "rename": {
+    "preview": "passed",
+    "records": null,
+    "links": 0,
+    "customizations": {"custom_fields": 0, "property_setters": 0},
+    "confirm_and_readback": "passed",
+    "old_name_absent": true,
+    "new_name_present": true,
+    "folder_and_controller_names_moved": true
+  },
+  "cleanup": {
+    "delete_doctype": "passed through MCP",
+    "old_and_new_metadata_absent": true,
+    "old_and_new_tables_absent": true,
+    "old_and_new_app_folders_absent": true,
+    "verified": true
+  },
+  "source_checks": {
+    "frappe_schema_sync": "returns without schema changes for virtual DocTypes",
+    "frappe_after_rename": "skips db.rename_table for virtual DocTypes and still moves standard app files",
+    "frappe_dev_server": "bench serve supports --noreload"
+  },
+  "stack_health_after_test": "all four Compose resources healthy",
+  "watcher_endpoint_failure_mode": "observed separately: the default development reloader can interrupt the native virtual DocType rename after files move and before metadata commit; final-code recovery on that endpoint remains unverified"
+}
