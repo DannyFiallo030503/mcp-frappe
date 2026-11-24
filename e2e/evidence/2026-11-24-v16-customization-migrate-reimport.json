@@ -1,0 +1,24 @@
+{
+  "date": "2026-11-24",
+  "doctype": "ToDo",
+  "fieldtype": "Data",
+  "frappe_major_version": 16,
+  "frappe_version": "16.34.0",
+  "site": "existing isolated development site",
+  "sequence": [
+    "create temporary Custom Field through MCP",
+    "export module-filtered native custom/ file",
+    "delete the site Custom Field",
+    "confirm run_bench(migrate) preview and execution",
+    "verify Custom Field restored from export"
+  ],
+  "bench_preflight_included": true,
+  "bench_migrate_exit_code": 0,
+  "reimported_fieldtype": "Data",
+  "cleanup": {
+    "custom_field_absent": true,
+    "export_rollback_removed_test_file": true,
+    "unrelated_preexisting_app_modifications_preserved": true
+  },
+  "site_isolated": true
+}
