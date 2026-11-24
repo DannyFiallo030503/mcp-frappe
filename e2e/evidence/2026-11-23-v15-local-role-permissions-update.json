@@ -1,0 +1,25 @@
+{
+  "run_date": "2026-11-23",
+  "mcp_version": "0.4.0",
+  "frappe_version": "15.96.0",
+  "erpnext_version": "15.96.1",
+  "execution": "Ran via a now-removed live runner; no reusable runner retained because the native update lacks compare-and-set.",
+  "tool": "set_role_permissions",
+  "native_method": "frappe.core.page.permission_manager.permission_manager.update",
+  "result": {
+    "existing_permission_row_reused": true,
+    "preview_confirmed": true,
+    "native_update_returned": true,
+    "all_permission_flags_unchanged": true,
+    "modified_unchanged": true,
+    "permission_row_count_unchanged": true,
+    "same_permission_row_identity": "not recorded during live run",
+    "operator_declared_no_concurrent_permission_writers": "not recorded during live run",
+    "concurrency_exclusion_independently_verified": false
+  },
+  "scope": "One existing Custom DocPerm row; re-sent its current read value",
+  "role_and_doctype_recorded": false,
+  "secrets_recorded": false,
+  "accepted_as_shared_site_validation": false,
+  "limitation": "The live run observed unchanged flags, modified timestamp, and row count, but did not record row identity or exclude concurrent writers. Frappe Permission Manager update has no compare-and-set. This is observational only; do not repeat on a shared site."
+}

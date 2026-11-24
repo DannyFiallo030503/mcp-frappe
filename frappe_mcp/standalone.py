@@ -21,6 +21,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 from collections.abc import Callable
@@ -61,8 +62,8 @@ list_reports and their filters with get_report_filters.
 the preview returned (expected_modified or expected_preview). Show the preview to the user \
 first. A stale token means: preview again.
 - A PermissionError is final: tell the user which access is missing; never work around it.
-- If another Frappe MCP server (such as Frappe's built-in one) is connected, use it for record \
-data and method calls, and this one for DocTypes, customizations, and app files.
+- Route by get_site_info: v15 uses this server; v16+ may use native MCP for data and this one for \
+development; unknown stays here. It cannot configure another Frappe MCP server.
 """
 
 server = FastMCP("frappe", instructions=_INSTRUCTIONS)
@@ -70,6 +71,7 @@ server = FastMCP("frappe", instructions=_INSTRUCTIONS)
 _TOOLSETS: dict[str, set[str]] = {
     name: set() for name in ("read", "data", "customize", "developer", "bench")
 }
+_WRITE_LOCK = threading.Lock()
 
 
 def _tool(
@@ -97,24 +99,49 @@ def _tool(
     def register(fn: Callable[..., Any]) -> Callable[..., Any]:
         _TOOLSETS[toolset].add(fn.__name__)
 
-        # FastMCP reads the schema through `__wrapped__`. Only the registered copy turns a
-        # network failure into a readable error: the module-level function keeps raising
-        # `httpx.TransportError`, which the reload helpers and other callers depend on.
-        @functools.wraps(fn)
-        def call(*args: Any, **kwargs: Any) -> Any:
+        # FastMCP invokes sync handlers on its event loop. Run their blocking HTTP, Bench, and
+        # filesystem work in AnyIO's worker pool so one slow Frappe reload can't stall reads.
+        # Serialize writes across workers to protect file changes and the shared change journal.
+        # FastMCP reads the schema through `__wrapped__`; module-level functions keep their
+        # native sync behavior for internal callers and tests.
+        def invoke_sync(args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
             try:
-                result = fn(*args, **kwargs)
+                if read_only:
+                    result = fn(*args, **kwargs)
+                else:
+                    with _WRITE_LOCK:
+                        result = fn(*args, **kwargs)
+                        if kwargs.get("confirm") is True and fn.__name__ not in _SELF_JOURNALED:
+                            result = _journal_call(fn.__name__, toolset, kwargs, result)
             except httpx.TransportError as error:
                 raise RuntimeError(_unreachable_message(error)) from error
-            # Every confirmed write goes in the change journal; tools with an inverse write
-            # their own entry.
-            if (
-                not read_only
-                and kwargs.get("confirm") is True
-                and fn.__name__ not in _SELF_JOURNALED
-            ):
-                result = _journal_call(fn.__name__, toolset, kwargs, result)
             return result
+
+        @functools.wraps(fn)
+        async def call(*args: Any, **kwargs: Any) -> Any:
+            if inspect.iscoroutinefunction(fn):
+                if not read_only:
+                    await anyio.to_thread.run_sync(_WRITE_LOCK.acquire, abandon_on_cancel=False)
+                try:
+                    result = await fn(*args, **kwargs)
+                    if (
+                        not read_only
+                        and kwargs.get("confirm") is True
+                        and fn.__name__ not in _SELF_JOURNALED
+                    ):
+                        result = await anyio.to_thread.run_sync(
+                            functools.partial(_journal_call, fn.__name__, toolset, kwargs, result),
+                            abandon_on_cancel=False,
+                        )
+                    return result
+                except httpx.TransportError as error:
+                    raise RuntimeError(_unreachable_message(error)) from error
+                finally:
+                    if not read_only:
+                        _WRITE_LOCK.release()
+            return await anyio.to_thread.run_sync(
+                functools.partial(invoke_sync, args, kwargs), abandon_on_cancel=False
+            )
 
         # No output schema: Frappe returns open-ended JSON, so the generated one says nothing
         # and only adds to the tool list every session pays for (results stay text blocks).
@@ -147,9 +174,11 @@ def _trim_schema(schema: Any) -> None:
     # `X | None = None` becomes just X: the argument is optional because it isn't required,
     # and the server still accepts an explicit null.
     branches = schema.get("anyOf")
-    if isinstance(branches, list) and {"type": "null"} in branches and schema.get(
-        "default", ...
-    ) is None:
+    if (
+        isinstance(branches, list)
+        and {"type": "null"} in branches
+        and schema.get("default", ...) is None
+    ):
         rest = [branch for branch in branches if branch != {"type": "null"}]
         del schema["default"]
         if len(rest) == 1 and isinstance(rest[0], dict):
@@ -185,6 +214,9 @@ def _tool_list_cost() -> dict[str, tuple[int, int]]:
 
 
 _session: httpx.Client | None = None
+_session_lock = threading.RLock()
+_session_active: dict[int, int] = {}
+_retired_sessions: dict[int, httpx.Client] = {}
 _SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _.-]{0,139}$")
 _RESERVED_FIELDS = {
     "doctype",
@@ -299,8 +331,7 @@ _PLAIN_CODE_FIELDS: dict[tuple[str, str], str] = {
     ("Translation", "translated_text"): "the translation frappe._ returns; not run",
     **{
         (doctype, "item_tax_rate"): (
-            "ERPNext's JSON map of tax account to rate, read with json.loads; copied with "
-            "item rows"
+            "ERPNext's JSON map of tax account to rate, read with json.loads; copied with item rows"
         )
         for doctype in (
             "Purchase Invoice Item",
@@ -394,8 +425,7 @@ OrderBy = Annotated[
     str | None,
     Field(
         description=(
-            f"'<field> [asc|desc]', up to {_ORDER_MAX_TERMS} comma-separated, "
-            "e.g. 'modified desc'."
+            f"'<field> [asc|desc]', up to {_ORDER_MAX_TERMS} comma-separated, e.g. 'modified desc'."
         )
     ),
 ]
@@ -405,9 +435,7 @@ ExpectedModified = Annotated[
 ]
 ExpectedPreview = Annotated[
     str | None,
-    Field(
-        description="With confirm=true: the preview's `preview_id`. A mismatch: preview again."
-    ),
+    Field(description="With confirm=true: the preview's `preview_id`. A mismatch: preview again."),
 ]
 Confirm = Annotated[
     bool,
@@ -623,6 +651,35 @@ _FIELDTYPE_CHANGE_GROUPS = (
     frozenset({"Table", "Table MultiSelect"}),
 )
 _NEW_FIELDNAME = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+_CUSTOM_FIELD_RESERVED_FIELDNAMES = frozenset(
+    {
+        "name",
+        "parent",
+        "creation",
+        "modified",
+        "modified_by",
+        "parentfield",
+        "parenttype",
+        "file_list",
+        "flags",
+        "docstatus",
+    }
+)
+
+
+def _frappe_customize_fieldname(label: Any) -> str:
+    """Mirror Custom Field.set_fieldname used by Customize Form when adding a field."""
+    if not isinstance(label, str) or not label:
+        raise ValueError("Frappe Customize Form needs a label to derive the Custom Field name")
+    clean = "".join(
+        char
+        for char in label.replace(" ", "_")
+        if char.isdigit() or char.isalpha() or char == "_"
+    )
+    fieldname = f"custom_{clean}".lower()
+    if fieldname in _CUSTOM_FIELD_RESERVED_FIELDNAMES:
+        fieldname += "1"
+    return fieldname
 _UPDATE_DOCTYPE_MAX_OPERATIONS = 50
 _DOCTYPE_LINKS_LIMIT = 100
 _ROLE_PERMISSION_FLAGS = {
@@ -816,9 +873,34 @@ def _unreachable_message(error: httpx.TransportError, *, suggest_check: bool = T
     url = os.environ.get("FRAPPE_URL", "")
     site = _display_url(url) if url else "the site (FRAPPE_URL is not set)"
     message = f"Cannot reach the Frappe site at {site}: {_transport_failure(error)}."
+    port_hint = _local_port_hint(url)
+    if port_hint:
+        message += f" Port check: {port_hint}"
     if suggest_check:
         return f"{message} Is the site running? Run `mcp-frappe check` to test the connection."
     return f"{message} Is the site running?"
+
+
+def _local_port_hint(url: str) -> str | None:
+    """Explain common Aspire/Docker port mistakes without probing other services."""
+    if not _is_local_target(url):
+        return None
+    try:
+        port = urlparse(url).port
+    except ValueError:
+        return None
+    if port == 8000:
+        return (
+            "If Frappe runs in Aspire or Docker, 8000 may be the container's internal HTTP "
+            "port; use the host-published `http` endpoint shown by `aspire describe frappe`."
+        )
+    if port in {9000, 9088}:
+        return (
+            f"Port {port} is commonly used for Frappe Socket.IO, but host-published ports "
+            "vary. Check `aspire describe frappe`; if this is its `socketio` endpoint, use "
+            "the host-published `http` endpoint for the REST API."
+        )
+    return None
 
 
 def _meta_ttl() -> float:
@@ -840,57 +922,88 @@ def _password_auth() -> bool:
 
 def _client() -> httpx.Client:
     global _session
-    if _session is not None:
-        return _session
+    with _session_lock:
+        if _session is not None:
+            return _session
 
-    base_url = os.environ.get("FRAPPE_URL", "").rstrip("/")
-    if not base_url:
-        raise RuntimeError("Set FRAPPE_URL to the target site's base URL")
-    timeout = _timeout()
-    headers = {"Accept": "application/json"}
-    site = os.environ.get("FRAPPE_SITE")
-    if site:
-        headers["Host"] = site
-    key, secret = os.environ.get("FRAPPE_API_KEY"), os.environ.get("FRAPPE_API_SECRET")
-    username = os.environ.get("FRAPPE_USERNAME", "Administrator")
-    password = os.environ.get("FRAPPE_PASSWORD")
-    if key or secret:
-        if not key or not secret:
-            raise RuntimeError("Set both FRAPPE_API_KEY and FRAPPE_API_SECRET")
-        headers["Authorization"] = f"token {key}:{secret}"
-    elif not password:
-        raise RuntimeError("Set an API key/secret or FRAPPE_PASSWORD")
-    if (
-        urlparse(base_url).scheme != "https"
-        and not _is_local_target(base_url)
-        and not _insecure_http_allowed()
-    ):
-        raise RuntimeError(
-            "FRAPPE_URL must use HTTPS unless it is a loopback or .localhost target; "
-            "set FRAPPE_ALLOW_INSECURE_HTTP=YES only for a trusted development network"
+        base_url = os.environ.get("FRAPPE_URL", "").rstrip("/")
+        if not base_url:
+            raise RuntimeError("Set FRAPPE_URL to the target site's base URL")
+        timeout = _timeout()
+        headers = {"Accept": "application/json"}
+        site = os.environ.get("FRAPPE_SITE")
+        if site:
+            headers["Host"] = site
+        key, secret = os.environ.get("FRAPPE_API_KEY"), os.environ.get("FRAPPE_API_SECRET")
+        username = os.environ.get("FRAPPE_USERNAME", "Administrator")
+        password = os.environ.get("FRAPPE_PASSWORD")
+        if key or secret:
+            if not key or not secret:
+                raise RuntimeError("Set both FRAPPE_API_KEY and FRAPPE_API_SECRET")
+            headers["Authorization"] = f"token {key}:{secret}"
+        elif not password:
+            raise RuntimeError("Set an API key/secret or FRAPPE_PASSWORD")
+        if (
+            urlparse(base_url).scheme != "https"
+            and not _is_local_target(base_url)
+            and not _insecure_http_allowed()
+        ):
+            raise RuntimeError(
+                "FRAPPE_URL must use HTTPS unless it is a loopback or .localhost target; "
+                "set FRAPPE_ALLOW_INSECURE_HTTP=YES only for a trusted development network"
+            )
+
+        client = httpx.Client(
+            base_url=base_url,
+            headers=headers,
+            timeout=httpx.Timeout(timeout, connect=_connect_timeout(timeout)),
+            follow_redirects=False,
         )
-
-    client = httpx.Client(
-        base_url=base_url,
-        headers=headers,
-        timeout=httpx.Timeout(timeout, connect=_connect_timeout(timeout)),
-        follow_redirects=False,
-    )
-    if _password_auth():
-        try:
-            _check(client.post("/api/method/login", data={"usr": username, "pwd": password}))
-        except BaseException:
-            client.close()
-            raise
-    _session = client
-    return _session
+        if _password_auth():
+            try:
+                _check(client.post("/api/method/login", data={"usr": username, "pwd": password}))
+            except BaseException:
+                client.close()
+                raise
+        _session = client
+        return client
 
 
-def _reset_session() -> None:
+def _acquire_client() -> httpx.Client:
+    with _session_lock:
+        client = _client()
+        key = id(client)
+        _session_active[key] = _session_active.get(key, 0) + 1
+        return client
+
+
+def _release_client(client: httpx.Client) -> None:
+    key = id(client)
+    with _session_lock:
+        active = _session_active.get(key, 0)
+        if active > 1:
+            _session_active[key] = active - 1
+            return
+        _session_active.pop(key, None)
+        retired = _retired_sessions.pop(key, None)
+        if retired is not None:
+            retired.close()
+
+
+def _reset_session(client: httpx.Client | None = None) -> None:
     global _session
-    if _session is not None:
-        _session.close()
-    _session = None
+    with _session_lock:
+        if client is not None and _session is not client:
+            return
+        previous = _session
+        _session = None
+        if previous is None:
+            return
+        key = id(previous)
+        if _session_active.get(key, 0):
+            _retired_sessions[key] = previous
+        else:
+            previous.close()
 
 
 def _session_expired(client: httpx.Client) -> bool:
@@ -1036,14 +1149,22 @@ def _check(response: httpx.Response) -> Any:
 
 
 def _request(method: str, path: str, **kwargs: Any) -> Any:
-    client = _client()
-    response = client.request(method, path, **kwargs)
-    if response.status_code in (401, 403) and _password_auth() and _session_expired(client):
-        # The expired sid made Frappe handle this request as Guest and reject it before it ran,
-        # so retrying it once after a fresh login is safe even for a POST.
-        _reset_session()
-        response = _client().request(method, path, **kwargs)
-    return _check(response)
+    client = _acquire_client()
+    try:
+        response = client.request(method, path, **kwargs)
+        if response.status_code in (401, 403) and _password_auth() and _session_expired(client):
+            # The expired sid made Frappe handle this request as Guest and reject it before it ran,
+            # so retrying it once after a fresh login is safe even for a POST. Other in-flight
+            # requests can finish on the retired client before its connection pool is closed.
+            _reset_session(client)
+            retry_client = _acquire_client()
+            try:
+                response = retry_client.request(method, path, **kwargs)
+            finally:
+                _release_client(retry_client)
+        return _check(response)
+    finally:
+        _release_client(client)
 
 
 def _resource(doctype: str, name: str | None = None) -> str:
@@ -1111,6 +1232,41 @@ def _forget_meta(doctype: str | None = None) -> None:
     for key, (_, bundle) in list(_meta_cache.items()):
         if key == doctype or doctype in bundle["children"]:
             _meta_cache.pop(key, None)
+
+
+def _schema_fieldnames(doctype: str) -> frozenset[str]:
+    """Return fieldnames from the connected site's DocType metadata, never a release template."""
+    try:
+        fields = _meta_bundle(doctype)["doctype"].get("fields") or []
+        return frozenset(
+            row["fieldname"]
+            for row in fields
+            if isinstance(row, dict) and isinstance(row.get("fieldname"), str)
+        )
+    finally:
+        _forget_meta(doctype)
+
+
+def _site_fieldtypes() -> frozenset[str]:
+    """Read the fieldtype choices that this Frappe site actually exposes for DocField."""
+    try:
+        fields = _meta_bundle("DocField")["doctype"].get("fields") or []
+        row = next(
+            (
+                item
+                for item in fields
+                if isinstance(item, dict) and item.get("fieldname") == "fieldtype"
+            ),
+            None,
+        )
+        options = row.get("options") if row else None
+        if isinstance(options, str):
+            supported = frozenset(item.strip() for item in options.splitlines() if item.strip())
+            if supported:
+                return supported
+    finally:
+        _forget_meta("DocField")
+    raise RuntimeError("Frappe did not expose DocField fieldtype choices; refusing to guess")
 
 
 def _forget_meta_after_write(doctype: str) -> None:
@@ -1657,6 +1813,9 @@ def _build_doctype_payload(
     is_custom: bool = False,
     properties: dict[str, Any] | None = None,
     permissions: list[dict[str, Any]] | None = None,
+    supported_fieldtypes: frozenset[str] | None = None,
+    supported_field_properties: frozenset[str] | None = None,
+    supported_doctype_properties: frozenset[str] | None = None,
 ) -> dict[str, Any]:
     if not _SAFE_NAME.fullmatch(name) or not fields:
         raise ValueError("A valid DocType name and at least one field are required")
@@ -1672,7 +1831,13 @@ def _build_doctype_payload(
     if properties is not None and not isinstance(properties, dict):
         raise ValueError("properties must be an object")
     properties = properties or {}
-    unsupported = set(properties) - _DOCTYPE_PROPERTIES
+    if supported_doctype_properties is None:
+        supported_doctype_properties = _DOCTYPE_PROPERTIES
+    if supported_fieldtypes is None:
+        supported_fieldtypes = _FIELDTYPES
+    if supported_field_properties is None:
+        supported_field_properties = _DOCFIELD_PROPERTIES
+    unsupported = set(properties) - supported_doctype_properties
     if unsupported:
         raise ValueError(f"Unsupported DocType properties: {', '.join(sorted(unsupported))}")
     if permissions is not None and (
@@ -1680,6 +1845,17 @@ def _build_doctype_payload(
         or any(not isinstance(permission, dict) for permission in permissions)
     ):
         raise ValueError("permissions must be a list of objects")
+
+    for index, field in enumerate(fields):
+        fieldtype = field.get("fieldtype")
+        if fieldtype not in supported_fieldtypes:
+            raise ValueError(f"fields[{index}]: unsupported fieldtype {fieldtype!r}")
+        unsupported_fields = set(field) - supported_field_properties - {"fieldname"}
+        if unsupported_fields:
+            raise ValueError(
+                f"fields[{index}]: unsupported DocField properties: "
+                f"{', '.join(sorted(unsupported_fields))}"
+            )
 
     payload = {
         "doctype": "DocType",
@@ -2348,7 +2524,8 @@ def _local_apps(apps: list[str]) -> dict[str, Any]:
 def get_site_info() -> dict[str, Any]:
     """Say who is connected and what the site runs.
 
-    Returns `user`, `apps` with versions, `frappe_major_version`, `site_label`, and `apps_path`
+    Returns `user`, `apps` with versions, `frappe_major_version`, `mcp_guidance`, `site_label`,
+    and `apps_path`
     (which apps have a checkout under FRAPPE_APPS_PATH; never a path). Developer mode can't be read
     through the API.
     """
@@ -2367,11 +2544,26 @@ def get_site_info() -> dict[str, Any]:
             }
         )
     major = str((versions.get("frappe") or {}).get("version") or "").split(".")[0]
+    guidance = (
+        "Frappe v15: use standalone mcp-frappe for data and development tools."
+        if major.isdigit() and int(major) == 15
+        else (
+            "Frappe v16+: if enabled on the site and configured in the MCP host, native Frappe "
+            "MCP may handle data; use standalone mcp-frappe for customize and developer tools "
+            "with read,customize,developer; add bench if FRAPPE_BENCH_PATH is configured."
+        )
+        if major.isdigit() and int(major) >= 16
+        else (
+            "Frappe version is unknown: use standalone mcp-frappe and consult the compatibility "
+            "matrix; do not infer native MCP availability."
+        )
+    )
     return {
         "site_label": label,
         "user": user,
         "apps": apps,
         "frappe_major_version": int(major) if major.isdigit() else None,
+        "mcp_guidance": guidance,
         "apps_path": _local_apps([row["app"] for row in apps]),
         "notes": [_DEVELOPER_MODE_NOTE],
     }
@@ -2758,9 +2950,7 @@ def create_documents(
             continue
         if "name" in row:
             if row["name"] in names:
-                problems.append(
-                    {"row": index, "problem": f"same name as row {names[row['name']]}"}
-                )
+                problems.append({"row": index, "problem": f"same name as row {names[row['name']]}"})
             names.setdefault(row["name"], index)
     fields = sorted({key for row in rows if isinstance(row, dict) for key in row})
     preview_id = (
@@ -3481,8 +3671,9 @@ def undo_mcp_change(
         raise ValueError(f"Undoing this change needs {tool}, whose toolset is not selected")
     inverse = _undo_preview(undo)
     preview_id = hashlib.sha256(
-        json.dumps({"entry": entry_id, "undo": undo, "inverse": inverse}, sort_keys=True,
-                   default=str).encode()
+        json.dumps(
+            {"entry": entry_id, "undo": undo, "inverse": inverse}, sort_keys=True, default=str
+        ).encode()
     ).hexdigest()
     if not confirm:
         return {
@@ -3682,6 +3873,9 @@ def create_doctype(
         is_custom=is_custom,
         properties=properties,
         permissions=permissions,
+        supported_fieldtypes=_site_fieldtypes(),
+        supported_field_properties=_schema_fieldnames("DocField") & _DOCFIELD_PROPERTIES,
+        supported_doctype_properties=_schema_fieldnames("DocType") & _DOCTYPE_PROPERTIES,
     )
     if _doctype_exists(name):
         raise ValueError(f"DocType already exists on the target site: {name}")
@@ -3732,17 +3926,19 @@ def create_doctype(
         _forget_meta(name)
         if not _doctype_exists(name):
             raise RuntimeError("Frappe did not persist the custom DocType record")
-        return _journal_new_doctype({
-            "created": True,
-            "doctype": name,
-            "app": app,
-            "module": module,
-            "is_custom": True,
-            "files": {},
-            "file_status": {},
-            "native_files_complete": None,
-            "reconciled_after_server_reload": reconciled,
-        })
+        return _journal_new_doctype(
+            {
+                "created": True,
+                "doctype": name,
+                "app": app,
+                "module": module,
+                "is_custom": True,
+                "files": {},
+                "file_status": {},
+                "native_files_complete": None,
+                "reconciled_after_server_reload": reconciled,
+            }
+        )
     # Stage the exact templates shipped with this Frappe checkout before the
     # metadata request. Werkzeug watches Python files and can kill that request
     # mid-transaction when Frappe itself creates the scaffolding.
@@ -3776,24 +3972,26 @@ def create_doctype(
         "javascript": javascript_file.is_file() if not is_child_table else None,
         "test": test_file.is_file() if not is_child_table else None,
     }
-    return _journal_new_doctype({
-        "created": True,
-        "doctype": name,
-        "app": app,
-        "files": {
-            key: str(path)
-            for key, path in {
-                "json": destination,
-                "python": python_file,
-                "javascript": javascript_file,
-                "test": test_file,
-            }.items()
-        },
-        "file_status": file_status,
-        "native_files_complete": all(value is not False for value in file_status.values()),
-        "reconciled_after_server_reload": reconciled,
-        "app_path": str(app_path),
-    })
+    return _journal_new_doctype(
+        {
+            "created": True,
+            "doctype": name,
+            "app": app,
+            "files": {
+                key: str(path)
+                for key, path in {
+                    "json": destination,
+                    "python": python_file,
+                    "javascript": javascript_file,
+                    "test": test_file,
+                }.items()
+            },
+            "file_status": file_status,
+            "native_files_complete": all(value is not False for value in file_status.values()),
+            "reconciled_after_server_reload": reconciled,
+            "app_path": str(app_path),
+        }
+    )
 
 
 def _journal_new_doctype(result: dict[str, Any]) -> dict[str, Any]:
@@ -3895,9 +4093,14 @@ def _field_values(values: Any, where: str, allowed: frozenset[str]) -> dict[str,
     return cleaned
 
 
-def _check_field_row(row: dict[str, Any], where: str, values: dict[str, Any]) -> None:
+def _check_field_row(
+    row: dict[str, Any],
+    where: str,
+    values: dict[str, Any],
+    supported_fieldtypes: frozenset[str] = _FIELDTYPES,
+) -> None:
     fieldtype = row.get("fieldtype")
-    if fieldtype not in _FIELDTYPES:
+    if fieldtype not in supported_fieldtypes:
         raise ValueError(f"{where}: unsupported fieldtype {fieldtype!r}")
     if fieldtype in _OPTIONS_REQUIRED_FIELDTYPES and not row.get("options"):
         raise ValueError(f"{where}: {fieldtype} fields need options")
@@ -3923,7 +4126,15 @@ def _insert_position(rows: list[dict[str, Any]], insert_after: Any, where: str) 
     return _field_index(rows, insert_after, f"{where}: insert_after") + 1
 
 
-def _plan_doctype_update(doc: dict[str, Any], operations: Any, taken: set[str]) -> dict[str, Any]:
+def _plan_doctype_update(
+    doc: dict[str, Any],
+    operations: Any,
+    taken: set[str],
+    *,
+    supported_fieldtypes: frozenset[str] = _FIELDTYPES,
+    supported_field_properties: frozenset[str] = _DOCFIELD_PROPERTIES,
+    supported_doctype_properties: frozenset[str] = _DOCTYPE_PROPERTIES,
+) -> dict[str, Any]:
     """Apply `operations` in order to a copy of a DocType record's fields and settings.
 
     `taken` holds fieldnames the DocType already has outside its own record (Custom Fields).
@@ -3958,7 +4169,7 @@ def _plan_doctype_update(doc: dict[str, Any], operations: Any, taken: set[str]) 
             )
         if op == "add_field":
             values = _field_values(
-                operation["field"], f"{where}.field", _DOCFIELD_PROPERTIES | {"fieldname"}
+                operation["field"], f"{where}.field", supported_field_properties | {"fieldname"}
             )
             fieldname = values.get("fieldname")
             if not isinstance(fieldname, str) or not _NEW_FIELDNAME.fullmatch(fieldname):
@@ -3969,7 +4180,7 @@ def _plan_doctype_update(doc: dict[str, Any], operations: Any, taken: set[str]) 
             if fieldname in taken or any(row.get("fieldname") == fieldname for row in rows):
                 raise ValueError(f"{where}: {doc.get('name')} already has a field {fieldname}")
             row = {"doctype": "DocField", **values}
-            _check_field_row(row, where, values)
+            _check_field_row(row, where, values, supported_fieldtypes)
             position = (
                 _insert_position(rows, operation["insert_after"], where)
                 if "insert_after" in operation
@@ -3979,9 +4190,9 @@ def _plan_doctype_update(doc: dict[str, Any], operations: Any, taken: set[str]) 
             touched.setdefault(fieldname, set()).update(values)
         elif op == "update_field":
             row = rows[_field_index(rows, operation["fieldname"], where)]
-            values = _field_values(operation["set"], f"{where}.set", _DOCFIELD_PROPERTIES)
+            values = _field_values(operation["set"], f"{where}.set", supported_field_properties)
             row.update(values)
-            _check_field_row(row, where, values)
+            _check_field_row(row, where, values, supported_fieldtypes)
             touched.setdefault(row["fieldname"], set()).update(values)
         elif op == "remove_field":
             row = rows.pop(_field_index(rows, operation["fieldname"], where))
@@ -3996,7 +4207,9 @@ def _plan_doctype_update(doc: dict[str, Any], operations: Any, taken: set[str]) 
             values = operation["set"]
             if not isinstance(values, dict) or not values:
                 raise ValueError(f"{where}.set must be a non-empty object")
-            unsupported = sorted(set(values) - (_DOCTYPE_PROPERTIES - _DOCTYPE_TABLE_PROPERTIES))
+            unsupported = sorted(
+                set(values) - (supported_doctype_properties - _DOCTYPE_TABLE_PROPERTIES)
+            )
             if unsupported:
                 raise ValueError(
                     f"{where}: unsupported DocType properties: {', '.join(unsupported)}"
@@ -4257,7 +4470,14 @@ def update_doctype(
         for row in _meta_bundle(doctype)["doctype"].get("fields", [])
         if row.get("fieldname")
     } - own
-    plan = _plan_doctype_update(doc, operations, custom_fields)
+    plan = _plan_doctype_update(
+        doc,
+        operations,
+        custom_fields,
+        supported_fieldtypes=_site_fieldtypes(),
+        supported_field_properties=_schema_fieldnames("DocField") & _DOCFIELD_PROPERTIES,
+        supported_doctype_properties=_schema_fieldnames("DocType") & _DOCTYPE_PROPERTIES,
+    )
     before = {row.get("fieldname"): row for row in doc.get("fields") or []}
     children = _check_link_targets(doctype, before, plan["rows"])
     changes = _doctype_diff(doc, plan)
@@ -4451,18 +4671,32 @@ def delete_doctype(
     if not expected_modified or str(doc.get("modified")) != expected_modified:
         raise ValueError(_STALE_DOCUMENT)
     reconciled = False
-    try:
-        _request("DELETE", _resource("DocType", doctype))
-    except httpx.TransportError as error:
-        # Deleting a standard DocType removes Python files, which can reload a dev Bench.
-        if not _wait_for_document_deleted("DocType", doctype):
-            raise RuntimeError(
-                "Frappe disconnected during deletion and the DocType still exists; "
-                "request a fresh preview before retrying."
-            ) from error
-        reconciled = True
-    finally:
-        _forget_meta(doctype)
+    folder = Path(files["folder"]) if files and files.get("local_checkout") else None
+    with tempfile.TemporaryDirectory(prefix="mcp-frappe-doctype-delete-") as temporary:
+        backup = Path(temporary) / "doctype"
+        if folder is not None and folder.is_dir():
+            shutil.copytree(folder, backup, symlinks=True)
+        try:
+            _request("DELETE", _resource("DocType", doctype))
+        except httpx.TransportError as error:
+            # Deleting a standard DocType removes app files, which can reload a dev Bench.
+            if not _wait_for_document_deleted("DocType", doctype):
+                restored = False
+                if folder is not None and backup.is_dir():
+                    try:
+                        restored = _restore_doctype_files_after_failed_delete(folder, backup)
+                    except RuntimeError as recovery_error:
+                        retained = _retain_doctype_snapshot(backup)
+                        snapshot = f" Snapshot retained at {retained}." if retained else ""
+                        raise RuntimeError(f"{recovery_error}.{snapshot}") from error
+                detail = "; original app files restored" if restored else ""
+                raise RuntimeError(
+                    "Frappe disconnected during deletion and the DocType still exists"
+                    f"{detail}; request a fresh preview before retrying."
+                ) from error
+            reconciled = True
+        finally:
+            _forget_meta(doctype)
     return {
         "deleted": True,
         "doctype": doctype,
@@ -4847,7 +5081,11 @@ def _rename_doctype_plan(old: str, new: str, merge: bool) -> dict[str, Any]:
     if custom:
         return plan
     before, after = _doctype_files(app, doc["module"], old), _doctype_files(app, doc["module"], new)
-    plan["app_files"] = {"from": before["folder"], "to": after["folder"]}
+    plan["app_files"] = {
+        "from": before["folder"],
+        "to": after["folder"],
+        "local_checkout": before.get("local_checkout", False),
+    }
     plan["requires_developer_mode"] = True
     plan["requires_administrator"] = True
     warnings = [
@@ -4943,7 +5181,28 @@ def rename(
         return {"renamed": True, **summary, "warnings": plan["warnings"]}
     if kind == "field":
         return _apply_field_rename(doctype, old, new, plan, summary, preview_id)
-    return _apply_doctype_rename(old, new, summary)
+    return _apply_doctype_rename(old, new, summary, plan)
+
+
+def _field_rename_recovery_message(
+    old: str, new: str, app: str, module: str, rollback_id: str, *, confirmed: bool
+) -> str:
+    """Explain how to inspect an uncertain remote save without repeating the write."""
+    state = (
+        "The readback did not confirm the save."
+        if confirmed
+        else "The save could not be read back."
+    )
+    return (
+        f"Frappe disconnected while saving the DocType. {state} Patch files were preserved "
+        f"(rollback_id={rollback_id}). Do not retry the rename yet. Inspect the DocType schema "
+        f"for {old!r} and {new!r}. If the schema is unchanged, preview `rollback_export` with "
+        f"app={app!r}, module={module!r}, rollback_id={rollback_id!r}, then confirm it to remove "
+        "only these generated files. `rollback_export` needs the `customize` toolset; enable it "
+        "in `FRAPPE_MCP_TOOLSETS` and reconnect if it is not listed. If the new field is present "
+        "and the old one is absent, keep "
+        "the patch. If the state is ambiguous, stop and investigate before running `bench migrate`."
+    )
 
 
 def _apply_field_rename(
@@ -4954,7 +5213,7 @@ def _apply_field_rename(
     summary: dict[str, Any],
     preview_id: str,
 ) -> dict[str, Any]:
-    """Write the patch files, then save the DocType; undo the files if the save fails."""
+    """Write patch files, then save the DocType; retain them if remote save is uncertain."""
     rollback_id, undo = _write_app_files(plan["_app_path"], plan["_payloads"], preview_id)
     expected = str(plan["modified"])
     target = {
@@ -4976,14 +5235,34 @@ def _apply_field_rename(
             raise ValueError(_STALE_DOCUMENT) from error
         raise
     except httpx.TransportError as error:
-        _wait_for_server_ready()
-        saved = _request("GET", _resource("DocType", doctype))
-        if not _doctype_matches(saved, target, expected):
-            undo()
+        try:
+            _wait_for_server_ready()
+            saved = _request("GET", _resource("DocType", doctype))
+        except (httpx.TransportError, FrappeError, RuntimeError, ValueError) as read_error:
             raise RuntimeError(
-                "Frappe disconnected while saving the DocType and the saved DocType does not "
-                "hold the rename; the patch files were removed. Request a fresh preview."
+                _field_rename_recovery_message(
+                    old, new, plan["app"], plan["_doc"]["module"], rollback_id, confirmed=False
+                )
+            ) from read_error
+        if not isinstance(saved, dict):
+            raise RuntimeError(
+                _field_rename_recovery_message(
+                    old, new, plan["app"], plan["_doc"]["module"], rollback_id, confirmed=False
+                )
             ) from error
+        fields = saved.get("fields") or []
+        fieldnames = [row.get("fieldname") for row in fields if isinstance(row, dict)]
+        if new not in fieldnames or old in fieldnames:
+            raise RuntimeError(
+                _field_rename_recovery_message(
+                    old, new, plan["app"], plan["_doc"]["module"], rollback_id, confirmed=True
+                )
+            ) from error
+        if not _doctype_matches(saved, target, expected):
+            plan["warnings"].append(
+                "The field rename was confirmed after disconnect, but the saved DocType differs "
+                "from the preview; review the DocType and patch before running bench migrate."
+            )
         reconciled = True
     finally:
         _forget_meta(doctype)
@@ -4999,26 +5278,157 @@ def _apply_field_rename(
     }
 
 
-def _apply_doctype_rename(old: str, new: str, summary: dict[str, Any]) -> dict[str, Any]:
+def _restore_doctype_files_after_failed_rename(
+    source: Path, destination: Path, backup: Path, old: str, new: str
+) -> dict[str, Path] | None:
+    """Quarantine Frappe's moved folder and restore pre-rename app files."""
+    if source.exists() and not destination.exists():
+        return None
+    if not backup.is_dir():
+        raise RuntimeError("The original DocType files are unavailable for recovery")
+    retained = _retain_doctype_snapshot(backup)
+    if retained is None:
+        raise RuntimeError("The original DocType files could not be retained for recovery")
+    if source.exists():
+        raise RuntimeError(
+            f"Both original and renamed DocType folders exist; recovery snapshot: {retained}"
+        )
+    if destination.exists():
+        if destination.is_symlink() or not destination.is_dir():
+            raise RuntimeError("Refusing to move an unexpected DocType destination path")
+        quarantine = source.parent / f".mcp-frappe-recovery-{retained.name}"
+        quarantine.mkdir(mode=0o700)
+        moved_files = quarantine / "moved-doctype-folder"
+        os.replace(destination, moved_files)
+    else:
+        moved_files = None
+    shutil.copytree(retained / "original", source, symlinks=True)
+    recovery = {"snapshot": retained}
+    if moved_files:
+        recovery["moved_files"] = moved_files
+    return recovery
+
+
+def _restore_doctype_files_after_failed_delete(folder: Path, backup: Path) -> bool:
+    """Restore an app folder if Frappe removed it but rolled back the DocType deletion."""
+    if folder.is_symlink():
+        raise RuntimeError("Refusing to restore DocType files over a symlink")
+    if not backup.is_dir():
+        return False
+    if folder.exists():
+        if _doctype_file_trees_match(folder, backup):
+            return False
+        raise RuntimeError(
+            "Frappe left a partially changed DocType folder after the failed deletion"
+        )
+    shutil.copytree(backup, folder, symlinks=True)
+    return True
+
+
+def _doctype_file_trees_match(left: Path, right: Path) -> bool:
+    def entries(root: Path) -> dict[Path, tuple[str, bytes | str | None]]:
+        result = {}
+        for path in root.rglob("*"):
+            relative = path.relative_to(root)
+            if path.is_symlink():
+                result[relative] = ("link", os.readlink(path))
+            elif path.is_dir():
+                result[relative] = ("directory", None)
+            elif path.is_file():
+                result[relative] = ("file", path.read_bytes())
+            else:
+                result[relative] = ("other", None)
+        return result
+
+    return entries(left) == entries(right)
+
+
+def _retain_doctype_snapshot(backup: Path) -> Path | None:
+    """Keep a private copy when native Frappe leaves an ambiguous app-file state."""
+    if not backup.is_dir():
+        return None
+    state_root = Path(
+        os.environ.get("XDG_STATE_HOME") or (Path.home() / ".local" / "state")
+    )
+    recovery_root = state_root / "mcp-frappe" / "doctype-recoveries"
+    recovery_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(recovery_root, 0o700)
+    retained = recovery_root / uuid.uuid4().hex
+    shutil.copytree(backup, retained / "original", symlinks=True)
+    return retained
+
+
+def _apply_doctype_rename(
+    old: str, new: str, summary: dict[str, Any], plan: dict[str, Any]
+) -> dict[str, Any]:
     reconciled = False
     name: Any = new
-    try:
-        name = _request(
-            "POST",
-            _RENAME_DOCUMENT,
-            json={"doctype": "DocType", "docname": old, "name": new, "merge": False},
-        )
-    except httpx.TransportError as error:
-        # Renaming a standard DocType moves its Python files, which can reload a dev Bench.
-        _wait_for_server_ready()
-        if not _doctype_exists(new) or _doctype_exists(old):
-            raise RuntimeError(
-                "Frappe disconnected during the rename and the DocType was not renamed; "
-                "request a fresh preview before retrying."
-            ) from error
-        reconciled = True
-    finally:
-        _forget_meta()
+    app_files = plan.get("app_files") or {}
+    source = Path(app_files["from"]) if app_files.get("local_checkout") else None
+    destination = Path(app_files["to"]) if app_files.get("local_checkout") else None
+    with tempfile.TemporaryDirectory(prefix="mcp-frappe-doctype-rename-") as temporary:
+        backup = Path(temporary) / "doctype"
+        if source is not None and source.is_dir() and destination is not None:
+            shutil.copytree(source, backup, symlinks=True)
+        try:
+            name = _request(
+                "POST",
+                _RENAME_DOCUMENT,
+                json={"doctype": "DocType", "docname": old, "name": new, "merge": False},
+            )
+        except httpx.TransportError as error:
+            # Frappe moves app files during a standard DocType rename. A dev Bench may reload
+            # before the transaction commits, leaving the DB unchanged and the folder moved.
+            try:
+                _wait_for_server_ready()
+            except Exception as wait_error:
+                retained = _retain_doctype_snapshot(backup)
+                snapshot = f" Snapshot retained at {retained}." if retained else ""
+                raise RuntimeError(
+                    "Frappe did not return to a stable state after the DocType rename; "
+                    f"inspect both names and app files before retrying.{snapshot}"
+                ) from wait_error
+            try:
+                new_exists = _doctype_exists(new)
+                old_exists = _doctype_exists(old)
+            except Exception as readback_error:
+                retained = _retain_doctype_snapshot(backup)
+                snapshot = f" Snapshot retained at {retained}." if retained else ""
+                raise RuntimeError(
+                    "Frappe returned but the renamed DocType state could not be read; "
+                    f"inspect both names and app files before retrying.{snapshot}"
+                ) from readback_error
+            if new_exists and not old_exists:
+                reconciled = True
+            elif old_exists and not new_exists:
+                recovery = None
+                if source is not None and destination is not None and backup.is_dir():
+                    try:
+                        recovery = _restore_doctype_files_after_failed_rename(
+                            source, destination, backup, old, new
+                        )
+                    except RuntimeError as recovery_error:
+                        retained = _retain_doctype_snapshot(backup)
+                        snapshot = f" Snapshot retained at {retained}." if retained else ""
+                        raise RuntimeError(f"{recovery_error}{snapshot}") from error
+                detail = ""
+                if recovery:
+                    detail = f"; original snapshot retained at {recovery['snapshot']}"
+                    if recovery.get("moved_files"):
+                        detail += f"; moved files quarantined at {recovery['moved_files']}"
+                raise RuntimeError(
+                    "Frappe disconnected during the rename and the DocType was not renamed"
+                    f"{detail}; request a fresh preview before retrying."
+                ) from error
+            else:
+                retained = _retain_doctype_snapshot(backup)
+                snapshot = f" Snapshot retained at {retained}." if retained else ""
+                raise RuntimeError(
+                    "Frappe disconnected during the rename and its final DocType state is "
+                    f"ambiguous; inspect both names and app folders before retrying.{snapshot}"
+                ) from error
+        finally:
+            _forget_meta()
     return {
         "renamed": True,
         **summary,
@@ -5546,9 +5956,7 @@ def _parse_patches(text: str) -> tuple[str, list[dict[str, Any]], list[str]]:
     if not _PATCH_SECTION_HEADER.match(first):
         for number, line in enumerate(lines, 1):
             if line.strip() and not line.lstrip().startswith("#"):
-                entries.append(
-                    {"patch": line.strip(), "section": "pre_model_sync", "line": number}
-                )
+                entries.append({"patch": line.strip(), "section": "pre_model_sync", "line": number})
         return "plain", entries, warnings
     section: str | None = None
     for number, line in enumerate(lines, 1):
@@ -5708,9 +6116,9 @@ def get_recent_errors(
             "limit_page_length": limit + 1,
         },
     )
-    rows = [_error_row(row) for row in rows if isinstance(row, dict)] if isinstance(
-        rows, list
-    ) else []
+    rows = (
+        [_error_row(row) for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
+    )
     return _page(rows, offset, limit)
 
 
@@ -5790,11 +6198,13 @@ def _file_methods(tree: ast.Module, dotted: str, path: Path, file: str) -> list[
     bare_names: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
-            frappe_names.update(alias.asname or "frappe" for alias in node.names
-                                if alias.name == "frappe")
+            frappe_names.update(
+                alias.asname or "frappe" for alias in node.names if alias.name == "frappe"
+            )
         elif isinstance(node, ast.ImportFrom) and node.module == "frappe" and not node.level:
-            bare_names.update(alias.asname or "whitelist" for alias in node.names
-                              if alias.name == "whitelist")
+            bare_names.update(
+                alias.asname or "whitelist" for alias in node.names if alias.name == "whitelist"
+            )
     functions = (ast.FunctionDef, ast.AsyncFunctionDef)
     found: list[tuple[ast.FunctionDef | ast.AsyncFunctionDef, str | None]] = []
     for node in tree.body:
@@ -5852,8 +6262,7 @@ def list_app_methods(
     for folder, dirnames, filenames in os.walk(package_path):
         # os.walk lists symlinked folders but doesn't descend into them (followlinks=False).
         dirnames[:] = sorted(
-            name for name in dirnames
-            if not name.startswith(".") and name not in _METHOD_SKIP_DIRS
+            name for name in dirnames if not name.startswith(".") and name not in _METHOD_SKIP_DIRS
         )
         for filename in sorted(filenames):
             if filename.startswith(".") or not filename.endswith(".py"):
@@ -5995,9 +6404,11 @@ def _config_suggestion(row: dict[str, Any], app_path: Path) -> dict[str, Any]:
     """Turn a `list_app_methods` row of a module function into a config entry to review."""
     name = row["method"].rsplit(".", 1)[-1]
     args = [arg for arg in row["args"] if not arg["name"].startswith("*")]
-    verbs = {str(verb).upper() for verb in row["methods"]} if isinstance(
-        row["methods"], list
-    ) else set(_WHITELIST_DEFAULT_METHODS)
+    verbs = (
+        {str(verb).upper() for verb in row["methods"]}
+        if isinstance(row["methods"], list)
+        else set(_WHITELIST_DEFAULT_METHODS)
+    )
     entry: dict[str, Any] = {"method": row["method"]}
     if name.startswith("make_") and args and args[0]["name"] == "source_name":
         entry["kind"] = "mapper"
@@ -6182,8 +6593,7 @@ def _load_method_config(value: str) -> tuple[dict[str, dict[str, Any]], list[str
         raise RuntimeError(f"{label}{line}: invalid JSON") from None
     if not isinstance(items, list) or not 1 <= len(items) <= _METHOD_CONFIG_MAX_ENTRIES:
         raise RuntimeError(
-            f"{label}: the file must hold a JSON list of 1 to {_METHOD_CONFIG_MAX_ENTRIES} "
-            "entries"
+            f"{label}: the file must hold a JSON list of 1 to {_METHOD_CONFIG_MAX_ENTRIES} entries"
         )
     entries: dict[str, dict[str, Any]] = {}
     problems: list[str] = []
@@ -6244,8 +6654,11 @@ def _load_method_config(value: str) -> tuple[dict[str, dict[str, Any]], list[str
     warnings = [
         f"{label}: {count} {app} entr{'y' if count == 1 else 'ies'} not checked against the "
         "app source ("
-        + (f"no {app} checkout under FRAPPE_APPS_PATH" if apps_path_set else
-           "FRAPPE_APPS_PATH is not set")
+        + (
+            f"no {app} checkout under FRAPPE_APPS_PATH"
+            if apps_path_set
+            else "FRAPPE_APPS_PATH is not set"
+        )
         + ")"
         for app, count in sorted(unchecked.items())
     ]
@@ -6465,9 +6878,7 @@ def make_mapped_document(method: str, source_name: str) -> dict[str, Any]:
     if not isinstance(source_name, str) or not source_name.strip() or len(source_name) > 140:
         raise ValueError("source_name must be the name of the source record")
     # GET: Frappe rolls back anything a GET request writes, so the mapper only builds a draft.
-    doc = _request(
-        "GET", _MAKE_MAPPED_DOC, params={"method": method, "source_name": source_name}
-    )
+    doc = _request("GET", _MAKE_MAPPED_DOC, params={"method": method, "source_name": source_name})
     return {
         "method": method,
         "source_doctype": entry.get("source_doctype"),
@@ -6836,6 +7247,9 @@ def create_custom_field(
     if field["fieldname"] in existing:
         raise ValueError("Field already exists")
     data = {**field, "doctype": "Custom Field", "dt": doctype}
+    fieldtype = data.get("fieldtype")
+    if fieldtype not in _site_fieldtypes():
+        raise ValueError(f"Unsupported fieldtype for this Frappe site: {fieldtype!r}")
     if module is not None:
         data["module"] = module
     if not confirm:
@@ -7257,7 +7671,14 @@ def _is_custom_row(row: dict[str, Any]) -> bool:
     return bool(row.get("is_custom_field")) and not row.get("is_system_generated")
 
 
-def _plan_customization(form: dict[str, Any], operations: Any) -> dict[str, Any]:
+def _plan_customization(
+    form: dict[str, Any],
+    operations: Any,
+    *,
+    field_properties: dict[str, str] | None = None,
+    doctype_properties: dict[str, str] | None = None,
+    supported_fieldtypes: frozenset[str] = _FIELDTYPES,
+) -> dict[str, Any]:
     """Apply `operations` to a copy of the Customize Form document.
 
     Returns the new `form`, the `touched` (fieldname or None, property) pairs, and the
@@ -7270,6 +7691,10 @@ def _plan_customization(form: dict[str, Any], operations: Any) -> dict[str, Any]
             f"operations must be a list of 1 to {_UPDATE_DOCTYPE_MAX_OPERATIONS} operations"
         )
     form = copy.deepcopy(form)
+    if field_properties is None:
+        field_properties = _CUSTOMIZE_FIELD_PROPERTIES
+    if doctype_properties is None:
+        doctype_properties = _CUSTOMIZE_DOCTYPE_PROPERTIES
     rows: list[dict[str, Any]] = form["fields"]
     touched: list[tuple[str | None, str]] = []
     added: list[str] = []
@@ -7292,25 +7717,21 @@ def _plan_customization(form: dict[str, Any], operations: Any) -> dict[str, Any]
         if op == "set_property":
             prop, fieldname = operation["property"], operation.get("fieldname")
             if fieldname is None:
-                if prop not in _CUSTOMIZE_DOCTYPE_PROPERTIES:
+                if prop not in doctype_properties:
                     raise ValueError(
                         f"{where}: {prop!r} is not a DocType setting Customize Form sets here: "
-                        + ", ".join(sorted(_CUSTOMIZE_DOCTYPE_PROPERTIES))
+                        + ", ".join(sorted(doctype_properties))
                     )
-                form[prop] = _typed_value(
-                    where, prop, operation["value"], _CUSTOMIZE_DOCTYPE_PROPERTIES[prop]
-                )
+                form[prop] = _typed_value(where, prop, operation["value"], doctype_properties[prop])
             else:
-                if prop not in _CUSTOMIZE_FIELD_PROPERTIES:
+                if prop not in field_properties:
                     hint = " (use change_fieldtype)" if prop == "fieldtype" else ""
                     raise ValueError(
                         f"{where}: {prop!r} is not a field property Customize Form sets here"
-                        f"{hint}: " + ", ".join(sorted(_CUSTOMIZE_FIELD_PROPERTIES))
+                        f"{hint}: " + ", ".join(sorted(field_properties))
                     )
                 row = rows[_field_index(rows, fieldname, where)]
-                row[prop] = _typed_value(
-                    where, prop, operation["value"], _CUSTOMIZE_FIELD_PROPERTIES[prop]
-                )
+                row[prop] = _typed_value(where, prop, operation["value"], field_properties[prop])
                 if prop == "options" and row.get("fieldtype") in _CODE_OPTIONS_FIELDTYPES:
                     raise ValueError(
                         f"{where}: options of {row.get('fieldtype')} fields are code; not set"
@@ -7325,7 +7746,7 @@ def _plan_customization(form: dict[str, Any], operations: Any) -> dict[str, Any]
             values = _field_values(
                 operation["field"],
                 f"{where}.field",
-                frozenset(_CUSTOMIZE_FIELD_PROPERTIES) | {"fieldname", "fieldtype"},
+                frozenset(field_properties) | {"fieldname", "fieldtype"},
             )
             fieldname = values.get("fieldname")
             if not isinstance(fieldname, str) or not _NEW_FIELDNAME.fullmatch(fieldname):
@@ -7333,11 +7754,21 @@ def _plan_customization(form: dict[str, Any], operations: Any) -> dict[str, Any]
                     f"{where}: fieldname must be lowercase letters, digits, and underscores, "
                     "starting with a letter, at most 64 characters"
                 )
+            if values.get("fieldtype") in _CODE_OPTIONS_FIELDTYPES and values.get("options"):
+                raise ValueError(
+                    f"{where}: options of {values.get('fieldtype')} fields are code; not set"
+                )
+            effective_fieldname = _frappe_customize_fieldname(values.get("label"))
+            if fieldname != effective_fieldname:
+                raise ValueError(
+                    f"{where}: Frappe Customize Form derives fieldname "
+                    f"{effective_fieldname!r} from label; use that value instead of {fieldname!r}"
+                )
             if any(row.get("fieldname") == fieldname for row in rows):
                 raise ValueError(f"{where}: {form['doc_type']} already has a field {fieldname}")
             for prop, value in values.items():
-                if prop in _CUSTOMIZE_FIELD_PROPERTIES:
-                    kind = _CUSTOMIZE_FIELD_PROPERTIES[prop]
+                if prop in field_properties:
+                    kind = field_properties[prop]
                     values[prop] = _typed_value(where, prop, value, kind)
             row = {
                 "doctype": "Customize Form Field",
@@ -7347,7 +7778,7 @@ def _plan_customization(form: dict[str, Any], operations: Any) -> dict[str, Any]
             }
             if row.get("fieldtype") in _CODE_OPTIONS_FIELDTYPES and row.get("options"):
                 raise ValueError(f"{where}: options of {row['fieldtype']} fields are code; not set")
-            _check_field_row(row, where, values)
+            _check_field_row(row, where, values, supported_fieldtypes)
             position = (
                 _insert_position(rows, operation["insert_after"], where)
                 if "insert_after" in operation
@@ -7358,7 +7789,7 @@ def _plan_customization(form: dict[str, Any], operations: Any) -> dict[str, Any]
         else:
             row = rows[_field_index(rows, operation["fieldname"], where)]
             old, new = row.get("fieldtype"), operation["fieldtype"]
-            if new not in _FIELDTYPES:
+            if new not in supported_fieldtypes:
                 raise ValueError(f"{where}: unsupported fieldtype {new!r}")
             if row.get("fieldname") not in added and not row.get("is_virtual"):
                 if not any(old in group and new in group for group in _FIELDTYPE_CHANGE_GROUPS):
@@ -7369,6 +7800,15 @@ def _plan_customization(form: dict[str, Any], operations: Any) -> dict[str, Any]
                     )
             row["fieldtype"] = new
             touched.append((row["fieldname"], "fieldtype"))
+    for fieldname in added:
+        row = rows[_field_index(rows, fieldname, "operations")]
+        effective_fieldname = _frappe_customize_fieldname(row.get("label"))
+        if fieldname != effective_fieldname:
+            raise ValueError(
+                f"operations: Frappe Customize Form derives fieldname "
+                f"{effective_fieldname!r} from the final label; use that value instead of "
+                f"{fieldname!r}"
+            )
     return {"form": form, "touched": touched, "added": added}
 
 
@@ -7520,7 +7960,10 @@ def _customization_changes(
         before = stored_order.get("value") if stored_order else None
         property_setters.append(
             _setter_change(
-                "update" if stored_order else "create", None, "field_order", before,
+                "update" if stored_order else "create",
+                None,
+                "field_order",
+                before,
                 json.dumps(order),
             )
         )
@@ -7563,13 +8006,41 @@ def _json_list(value: Any) -> Any:
 
 def _customization_preview(doctype: str, operations: Any) -> dict[str, Any]:
     state = _customization_state(doctype)
-    plan = _plan_customization(state["form"], operations)
+    form = state["form"]
+    form_field_names = frozenset(form)
+    # fetch_to_customize omits unset DocType settings from its dict; the connected Customize
+    # Form schema is the authoritative allowlist, while the returned form remains our save data.
+    form_doctype_properties = _schema_fieldnames("Customize Form")
+    # Customize Form renders DocField properties from its own child schema. Current form rows
+    # omit unset properties, so using their keys would incorrectly reject valid Desk controls.
+    form_field_properties = _schema_fieldnames("Customize Form Field")
+    allowed_field_properties = {
+        key: value
+        for key, value in _CUSTOMIZE_FIELD_PROPERTIES.items()
+        if key in form_field_properties
+    }
+    allowed_doctype_properties = {
+        key: value
+        for key, value in _CUSTOMIZE_DOCTYPE_PROPERTIES.items()
+        if key in form_doctype_properties
+    }
+    if not form_field_properties or not form_doctype_properties or not form_field_names:
+        raise RuntimeError("Frappe did not expose Customize Form schema; refusing to guess")
+    plan = _plan_customization(
+        form,
+        operations,
+        field_properties=allowed_field_properties,
+        doctype_properties=allowed_doctype_properties,
+        supported_fieldtypes=_site_fieldtypes(),
+    )
     changes, warnings = _customization_changes(state, plan)
     moved = [row.get("fieldname") for row in plan["form"]["fields"]] != [
         row.get("fieldname") for row in state["form"]["fields"]
     ]
-    if not moved and not changes["custom_fields"] and not any(
-        change["property"] != "field_order" for change in changes["property_setters"]
+    if (
+        not moved
+        and not changes["custom_fields"]
+        and not any(change["property"] != "field_order" for change in changes["property_setters"])
     ):
         raise ValueError("The operations leave the customization unchanged")
     binding = {
@@ -9642,9 +10113,28 @@ _BENCH_FIXTURE_FILES = 200
 # The child process gets these variables and nothing else: no FRAPPE_* credentials, and no
 # `CI`, which makes `run-tests` skip the site's allow_tests check.
 _BENCH_ENV_KEEP = (
-    "PATH", "HOME", "USER", "LOGNAME", "LANG", "LANGUAGE", "TZ", "TMPDIR", "TEMP", "TMP",
-    "SHELL", "TERM", "PYENV_ROOT", "NVM_DIR", "NVM_BIN", "XDG_RUNTIME_DIR", "SSL_CERT_FILE",
-    "SSL_CERT_DIR", "DOCKER_HOST", "DOCKER_CONFIG", "DOCKER_CONTEXT", "CONTAINER_HOST",
+    "PATH",
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "LANG",
+    "LANGUAGE",
+    "TZ",
+    "TMPDIR",
+    "TEMP",
+    "TMP",
+    "SHELL",
+    "TERM",
+    "PYENV_ROOT",
+    "NVM_DIR",
+    "NVM_BIN",
+    "XDG_RUNTIME_DIR",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "DOCKER_HOST",
+    "DOCKER_CONFIG",
+    "DOCKER_CONTEXT",
+    "CONTAINER_HOST",
 )
 _BENCH_WARNINGS = {
     "migrate": (
@@ -9729,9 +10219,7 @@ def _load_bench_config() -> dict[str, Any] | None:
     # A containerized Bench may have no sites/ folder here; then the site isn't checked locally.
     local_sites = (path / "sites").is_dir()
     if local_sites and not (path / "sites" / site / "site_config.json").is_file():
-        raise RuntimeError(
-            f"Site {site} has no sites/{site}/site_config.json in FRAPPE_BENCH_PATH"
-        )
+        raise RuntimeError(f"Site {site} has no sites/{site}/site_config.json in FRAPPE_BENCH_PATH")
     return {
         "path": path,
         "site": site,
@@ -9801,7 +10289,10 @@ def _bench_argv_tail(
     given = [
         name
         for name, value in (
-            ("app", app), ("module", module), ("doctype", doctype), ("test_module", test_module)
+            ("app", app),
+            ("module", module),
+            ("doctype", doctype),
+            ("test_module", test_module),
         )
         if value is not None
     ]
@@ -9834,9 +10325,7 @@ def _bench_argv_tail(
         _, package_path = _app_root(app)  # type: ignore[arg-type]
         module_path = _module_dir(package_path, module)  # type: ignore[arg-type]
         slug = _scrub(doctype)
-        path = (
-            _app_file(module_path, "doctype", slug, f"{slug}.json") if module_path else None
-        )
+        path = _app_file(module_path, "doctype", slug, f"{slug}.json") if module_path else None
         if path is None:
             raise ValueError(f"The {app} checkout has no DocType file for {doctype} in {module}")
         doc, _ = _read_app_json(path)
@@ -10307,7 +10796,10 @@ def _setup_check() -> list[tuple[str, str, str]]:
         toolsets = set()
     url = os.environ.get("FRAPPE_URL", "")
     if not url:
-        problems.append("Set FRAPPE_URL to the target site's base URL")
+        problems.append(
+            "Set FRAPPE_URL to the target site's base URL; for local Aspire, use the "
+            "Frappe desk URL shown by `aspire describe frappe`"
+        )
     target = _display_url(url) if url else "no site URL"
     if label:
         target += f", label {label}"
@@ -10329,12 +10821,17 @@ def _setup_check() -> list[tuple[str, str, str]]:
         rows.append(("FAIL", "connection", _unreachable_message(error, suggest_check=False)))
         return rows
     except (RuntimeError, ValueError, OSError, httpx.HTTPError) as error:
-        rows.append(("FAIL", "connection", str(error) or type(error).__name__))
+        detail = str(error) or type(error).__name__
+        port_hint = _local_port_hint(url)
+        if port_hint:
+            detail += f" Port check: {port_hint}"
+        rows.append(("FAIL", "connection", detail))
         return rows
     if info["user"] in (None, "", "Guest"):
         rows.append(("FAIL", "connection", "the site answered as Guest; check the credentials"))
         return rows
     rows.append(("ok", "connection", f"logged in as {info['user']}"))
+    rows.append(("info", "MCP version guidance", info["mcp_guidance"]))
     versions = ", ".join(f"{app['app']} {app['version']}" for app in info["apps"])
     rows.append(("ok", "versions", versions or "the site reported no app versions"))
     rows.append(("info", "developer mode", "not reported: Frappe has no API for it"))
@@ -10422,8 +10919,9 @@ def main(argv: list[str] | None = None) -> None:
     for warning in method_warnings:
         _log.warning(warning)
     if _method_config and "data" not in selected:
-        _log.warning("FRAPPE_MCP_METHODS is set, but the method tools are in the data toolset, "
-                     "which is off")
+        _log.warning(
+            "FRAPPE_MCP_METHODS is set, but the method tools are in the data toolset, which is off"
+        )
     if _bench_config and "bench" not in selected:
         _log.warning("FRAPPE_BENCH_PATH is set, but the bench toolset is off")
     if _insecure_http_allowed():

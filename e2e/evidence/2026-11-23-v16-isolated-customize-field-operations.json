@@ -1,0 +1,30 @@
+{
+  "cleanup_verified": true,
+  "date": "2026-11-23",
+  "doctype": "Territory",
+  "frappe_major_version": 16,
+  "frappe_version": "16.34.0",
+  "operation": "customize_doctype move_field, add_custom_field and Data-to-Select change",
+  "site_isolated": true,
+  "steps": {
+    "add_custom_field_frappe_messages": [
+      "Territorio actualizado"
+    ],
+    "add_custom_field_preview_confirm_readback": "pass",
+    "add_custom_field_save_warnings": [],
+    "custom_field_rows_immediately_after_save": [
+      {
+        "dt": "Territory",
+        "fieldname": "custom_mcp_qa_25a1cdd66c31",
+        "name": "Territory-custom_mcp_qa_25a1cdd66c31"
+      }
+    ],
+    "final_field_order_and_property_setter_cleanup": "pass",
+    "move_field_order_restored": "pass",
+    "move_field_preview_confirm_readback": "pass",
+    "preflight_schema_and_no_field_order_setter": "pass",
+    "related_type_change_and_options_readback": "pass",
+    "temporary_custom_field_deleted": "pass"
+  },
+  "target_host_port": "redacted-local-loopback"
+}

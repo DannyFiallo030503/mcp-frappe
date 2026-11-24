@@ -1,0 +1,18 @@
+{
+  "cleanup_verified": true,
+  "date": "2026-11-23",
+  "doctype": "ToDo",
+  "frappe_major_version": 16,
+  "operation": "set_role_permissions add then update existing row",
+  "site_isolated": true,
+  "steps": {
+    "add_path_and_database_readback": "pass",
+    "existing_row_update_and_database_readback": "pass",
+    "final_cleanup_query_empty": "pass",
+    "permission_row_cleanup": "pass",
+    "stable_permission_row_identity": "pass",
+    "temporary_role_cleanup": "pass",
+    "temporary_role_create": "pass"
+  },
+  "target_host_port": "redacted-local-loopback"
+}

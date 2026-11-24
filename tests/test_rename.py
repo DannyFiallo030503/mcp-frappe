@@ -449,6 +449,93 @@ def test_a_reload_during_the_save_is_reconciled(fake_site, tmp_path, monkeypatch
     assert result["reconciled_after_server_reload"] is True
 
 
+def test_transport_disconnect_accepts_remote_normalization_and_keeps_patch(
+    fake_site, tmp_path, monkeypatch
+) -> None:
+    package = _field_site(fake_site, tmp_path, monkeypatch)
+    preview = standalone.rename("field", DOCTYPE, "batch_no", "lot_no")
+    record = standalone._request("GET", RECORD_PATH)
+    record["fields"][1]["fieldname"] = "lot_no"
+    record["modified"] = "after reload"
+
+    def put(call):
+        fake_site.add("GET", RECORD_PATH, record)
+        raise httpx.ReadError("worker reloaded")
+
+    fake_site.add("PUT", RECORD_PATH, put)
+    monkeypatch.setattr(standalone, "_wait_for_server_ready", lambda: None)
+    result = standalone.rename(
+        "field", DOCTYPE, "batch_no", "lot_no", expected_preview=preview["preview_id"], confirm=True
+    )
+
+    assert result["renamed"] is True
+    assert any("differs from the preview" in warning for warning in result["warnings"])
+    assert (package / "patches.txt").exists()
+
+
+def test_transport_disconnect_with_unconfirmed_readback_preserves_patch(
+    fake_site, tmp_path, monkeypatch
+) -> None:
+    package = _field_site(fake_site, tmp_path, monkeypatch)
+    preview = standalone.rename("field", DOCTYPE, "batch_no", "lot_no")
+
+    def put(call):
+        fake_site.add("GET", RECORD_PATH, httpx.ReadError("readback unavailable"))
+        raise httpx.ReadError("worker reloaded")
+
+    fake_site.add("PUT", RECORD_PATH, put)
+    monkeypatch.setattr(standalone, "_wait_for_server_ready", lambda: None)
+    rollback_id = f"export-{preview['preview_id'][:32]}.json"
+    with pytest.raises(
+        RuntimeError,
+        match=rf"rollback_id={rollback_id}.*rollback_export.*customize.*FRAPPE_MCP_TOOLSETS",
+    ):
+        standalone.rename(
+            "field",
+            DOCTYPE,
+            "batch_no",
+            "lot_no",
+            expected_preview=preview["preview_id"],
+            confirm=True,
+        )
+
+    assert (package / "patches.txt").exists()
+    assert (package / "patches" / "rename_lab_sample_batch_no_to_lot_no.py").exists()
+    assert len(fake_site.calls_to("PUT", RECORD_PATH)) == 1
+
+
+def test_transport_disconnect_unchanged_schema_returns_rollback_path(
+    fake_site, tmp_path, monkeypatch
+) -> None:
+    package = _field_site(fake_site, tmp_path, monkeypatch)
+    preview = standalone.rename("field", DOCTYPE, "batch_no", "lot_no")
+    existing = standalone._request("GET", RECORD_PATH)
+
+    def put(call):
+        fake_site.add("GET", RECORD_PATH, existing)
+        raise httpx.ReadError("worker reloaded")
+
+    fake_site.add("PUT", RECORD_PATH, put)
+    monkeypatch.setattr(standalone, "_wait_for_server_ready", lambda: None)
+    rollback_id = f"export-{preview['preview_id'][:32]}.json"
+
+    with pytest.raises(
+        RuntimeError,
+        match=rf"rollback_id={rollback_id}.*rollback_export.*customize.*FRAPPE_MCP_TOOLSETS",
+    ):
+        standalone.rename(
+            "field",
+            DOCTYPE,
+            "batch_no",
+            "lot_no",
+            expected_preview=preview["preview_id"],
+            confirm=True,
+        )
+
+    assert (package / "patches.txt").exists()
+    assert len(fake_site.calls_to("PUT", RECORD_PATH)) == 1
+
+
 def test_field_rename_refusals(fake_site, tmp_path, monkeypatch) -> None:
     _field_site(fake_site, tmp_path, monkeypatch, custom=1)
     with pytest.raises(ValueError, match="site-custom"):
@@ -620,6 +707,220 @@ def test_doctype_confirm_reconciles_a_reload(fake_site, tmp_path, monkeypatch) -
         "merge": False,
     }
     assert result["reconciled_after_server_reload"] is True
+
+
+def test_failed_doctype_rename_quarantines_moved_files_and_restores_original(
+    tmp_path, monkeypatch
+) -> None:
+    source = tmp_path / "lab" / "doctype" / "lab_sample"
+    destination = tmp_path / "lab" / "doctype" / "lab_specimen"
+    source.mkdir(parents=True)
+    original = {
+        "lab_sample.json": '{"doctype": "DocType", "name": "Lab Sample"}',
+        "lab_sample.py": "class LabSample(Document):\n    pass\n",
+        "lab_sample.js": "frappe.ui.form.on('Lab Sample', {});\n",
+        "test_lab_sample.py": "class TestLabSample: pass\n",
+    }
+    for name, content in original.items():
+        (source / name).write_text(content)
+    (source / "__pycache__").mkdir()
+    (source / "__pycache__" / "lab_sample.cpython-314.pyc").write_bytes(b"compiled")
+    backup = tmp_path / "backup"
+    import shutil
+
+    shutil.copytree(source, backup)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+
+    source.rename(destination)
+    for path in list(destination.iterdir()):
+        renamed = path.with_name(path.name.replace("lab_sample", "lab_specimen"))
+        path.rename(renamed)
+        if renamed.suffix == ".json":
+            renamed.write_text('{"doctype": "DocType", "name": "Lab Specimen"}')
+        elif renamed.suffix == ".py":
+            renamed.write_text(
+                renamed.read_text().replace("LabSample", "LabSpecimen").replace(
+                    "TestLabSample", "TestLabSpecimen"
+                )
+            )
+        elif renamed.suffix == ".js":
+            renamed.write_text(renamed.read_text().replace("Lab Sample", "Lab Specimen"))
+
+    recovery = standalone._restore_doctype_files_after_failed_rename(
+        source, destination, backup, "Lab Sample", "Lab Specimen"
+    )
+
+    assert recovery is not None
+    assert not destination.exists()
+    quarantine = recovery["moved_files"]
+    assert (quarantine / "lab_specimen.json").is_file()
+    assert (recovery["snapshot"] / "original" / "lab_sample.json").is_file()
+    assert {path.name: path.read_text() for path in source.iterdir() if path.is_file()} == original
+    assert (source / "__pycache__" / "lab_sample.cpython-314.pyc").read_bytes() == b"compiled"
+
+
+def test_failed_doctype_rename_quarantines_unexpected_destination(tmp_path, monkeypatch) -> None:
+    source = tmp_path / "lab" / "doctype" / "lab_sample"
+    destination = tmp_path / "lab" / "doctype" / "lab_specimen"
+    backup = tmp_path / "backup"
+    backup.mkdir(parents=True)
+    (backup / "lab_sample.json").write_text('{"name": "Lab Sample"}')
+    destination.mkdir(parents=True)
+    (destination / "operator-file.txt").write_text("preserve me")
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+
+    recovery = standalone._restore_doctype_files_after_failed_rename(
+        source, destination, backup, "Lab Sample", "Lab Specimen"
+    )
+
+    assert recovery is not None
+    quarantined = recovery["moved_files"]
+    assert (quarantined / "operator-file.txt").read_text() == "preserve me"
+    assert (source / "lab_sample.json").read_text() == '{"name": "Lab Sample"}'
+
+
+def test_doctype_rename_wait_failure_retains_snapshot(tmp_path, monkeypatch) -> None:
+    source = tmp_path / "lab" / "doctype" / "lab_sample"
+    source.mkdir(parents=True)
+    (source / "lab_sample.json").write_text('{"name": "Lab Sample"}')
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(
+        standalone,
+        "_request",
+        lambda *args, **kwargs: (_ for _ in ()).throw(httpx.ReadError("worker stopped")),
+    )
+    monkeypatch.setattr(
+        standalone,
+        "_wait_for_server_ready",
+        lambda: (_ for _ in ()).throw(RuntimeError("still offline")),
+    )
+
+    with pytest.raises(RuntimeError, match="Snapshot retained at") as error:
+        standalone._apply_doctype_rename(
+            "Lab Sample",
+            "Lab Specimen",
+            {},
+            {
+                "app_files": {
+                    "from": str(source),
+                    "to": str(source.parent / "lab_specimen"),
+                    "local_checkout": True,
+                }
+            },
+        )
+
+    snapshot = Path(str(error.value).split("Snapshot retained at ", 1)[1].rstrip("."))
+    assert (snapshot / "original" / "lab_sample.json").read_text() == '{"name": "Lab Sample"}'
+
+
+def test_doctype_rename_ambiguous_remote_state_retains_snapshot(tmp_path, monkeypatch) -> None:
+    source = tmp_path / "lab" / "doctype" / "lab_sample"
+    source.mkdir(parents=True)
+    (source / "lab_sample.json").write_text('{"name": "Lab Sample"}')
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(
+        standalone,
+        "_request",
+        lambda *args, **kwargs: (_ for _ in ()).throw(httpx.ReadError("worker stopped")),
+    )
+    monkeypatch.setattr(standalone, "_wait_for_server_ready", lambda: None)
+    monkeypatch.setattr(standalone, "_doctype_exists", lambda _name: True)
+
+    with pytest.raises(RuntimeError, match="Snapshot retained at") as error:
+        standalone._apply_doctype_rename(
+            "Lab Sample",
+            "Lab Specimen",
+            {},
+            {
+                "app_files": {
+                    "from": str(source),
+                    "to": str(source.parent / "lab_specimen"),
+                    "local_checkout": True,
+                }
+            },
+        )
+
+    snapshot = Path(str(error.value).split("Snapshot retained at ", 1)[1].rstrip("."))
+    assert (snapshot / "original" / "lab_sample.json").read_text() == '{"name": "Lab Sample"}'
+
+
+def test_doctype_rename_readback_failure_retains_snapshot(tmp_path, monkeypatch) -> None:
+    source = tmp_path / "lab" / "doctype" / "lab_sample"
+    source.mkdir(parents=True)
+    (source / "lab_sample.json").write_text('{"name": "Lab Sample"}')
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(
+        standalone,
+        "_request",
+        lambda *args, **kwargs: (_ for _ in ()).throw(httpx.ReadError("worker stopped")),
+    )
+    monkeypatch.setattr(standalone, "_wait_for_server_ready", lambda: None)
+    monkeypatch.setattr(
+        standalone,
+        "_doctype_exists",
+        lambda _name: (_ for _ in ()).throw(httpx.ReadError("worker restarted again")),
+    )
+
+    with pytest.raises(RuntimeError, match="Snapshot retained at") as error:
+        standalone._apply_doctype_rename(
+            "Lab Sample",
+            "Lab Specimen",
+            {},
+            {
+                "app_files": {
+                    "from": str(source),
+                    "to": str(source.parent / "lab_specimen"),
+                    "local_checkout": True,
+                }
+            },
+        )
+
+    snapshot = Path(str(error.value).split("Snapshot retained at ", 1)[1].rstrip("."))
+    assert (snapshot / "original" / "lab_sample.json").read_text() == '{"name": "Lab Sample"}'
+
+
+def test_failed_doctype_delete_restores_removed_app_folder(tmp_path) -> None:
+    folder = tmp_path / "lab" / "doctype" / "lab_sample"
+    folder.mkdir(parents=True)
+    (folder / "lab_sample.json").write_text('{"name": "Lab Sample"}')
+    backup = tmp_path / "backup"
+    import shutil
+
+    shutil.copytree(folder, backup)
+    shutil.rmtree(folder)
+
+    restored = standalone._restore_doctype_files_after_failed_delete(folder, backup)
+
+    assert restored is True
+    assert (folder / "lab_sample.json").read_text() == '{"name": "Lab Sample"}'
+
+
+def test_doctype_recovery_snapshot_is_retained_outside_app_tree(tmp_path, monkeypatch) -> None:
+    backup = tmp_path / "backup"
+    backup.mkdir()
+    (backup / "controller.py").write_text("class Example: pass\n")
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+
+    retained = standalone._retain_doctype_snapshot(backup)
+
+    assert retained is not None
+    assert retained != backup
+    assert (retained / "original" / "controller.py").read_text() == "class Example: pass\n"
+    assert retained.parent.stat().st_mode & 0o777 == 0o700
+
+
+def test_failed_doctype_delete_preserves_partially_changed_folder(tmp_path) -> None:
+    folder = tmp_path / "lab" / "doctype" / "lab_sample"
+    folder.mkdir(parents=True)
+    (folder / "lab_sample.py").write_text("operator edit\n")
+    backup = tmp_path / "backup"
+    backup.mkdir()
+    (backup / "lab_sample.py").write_text("original\n")
+
+    with pytest.raises(RuntimeError, match="partially changed"):
+        standalone._restore_doctype_files_after_failed_delete(folder, backup)
+
+    assert (folder / "lab_sample.py").read_text() == "operator edit\n"
 
 
 def test_app_mentions_skips_symlinks_and_hidden_folders(tmp_path) -> None:

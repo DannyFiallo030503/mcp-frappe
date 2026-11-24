@@ -303,7 +303,11 @@ def test_create_custom_field_invalidates_the_doctype_and_its_parents(site) -> No
     assert set(standalone._meta_cache) == {"Example Tag"}
 
     standalone.get_document("Example", "EX-1")
-    assert [call.params["doctype"] for call in _getdoctype_calls(site)] == ["Example"]
+    assert [call.params["doctype"] for call in _getdoctype_calls(site)] == [
+        "DocField",
+        "DocField",
+        "Example",
+    ]
 
 
 def test_failed_custom_field_write_still_invalidates(site) -> None:

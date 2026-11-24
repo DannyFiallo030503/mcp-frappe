@@ -1,0 +1,24 @@
+{
+  "cleanup_verified": true,
+  "date": "2026-11-23",
+  "doctype": "ToDo",
+  "frappe_major_version": 16,
+  "frappe_version": "16.34.0",
+  "operation": "customize_doctype DocType Check/Data/Int/Select properties, then revert",
+  "property_types": {
+    "default_view": "Select",
+    "grid_page_length": "Int",
+    "sort_order": "Data",
+    "track_changes": "Check"
+  },
+  "site_isolated": true,
+  "steps": {
+    "all_four_property_types_persisted": "pass",
+    "native_defaults_restored": "pass",
+    "preflight_no_existing_test_setters": "pass",
+    "preview_confirmation_save": "pass",
+    "property_setter_query_empty": "pass",
+    "revert_preview_confirmation": "pass"
+  },
+  "target_host_port": "redacted-local-loopback"
+}

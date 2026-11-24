@@ -216,6 +216,7 @@ def test_check_shows_the_selected_toolsets(fake_site, clean_env, capsys) -> None
 
     assert code == 0
     assert "toolsets" in output and "read (read-only mode)" in output
+    assert "MCP version guidance" in output and "native Frappe MCP" in output
 
 
 def test_check_reports_the_tool_list_cost_per_toolset(fake_site, clean_env, capsys) -> None:
@@ -271,6 +272,26 @@ def test_check_fails_when_the_site_is_unreachable(fake_site, clean_env, capsys) 
     assert "Is the site running?" in output
 
 
+@pytest.mark.parametrize(
+    ("port", "hint"),
+    [
+        (8000, "host-published `http` endpoint"),
+        (9000, "if this is its `socketio` endpoint"),
+        (9088, "if this is its `socketio` endpoint"),
+    ],
+)
+def test_check_explains_common_aspire_ports(
+    fake_site, clean_env, capsys, port: int, hint: str
+) -> None:
+    _token_env(clean_env, f"http://127.0.0.1:{port}")
+    fake_site.add("GET", LOGGED_USER, httpx.ConnectError("[Errno 111] Connection refused"))
+
+    code, output = _run_check(capsys)
+
+    assert code == 1
+    assert hint in output
+
+
 def test_check_fails_for_a_guest_session(fake_site, clean_env, capsys) -> None:
     _token_env(clean_env)
     _site_answers(fake_site, user="Guest")
@@ -286,6 +307,7 @@ def test_check_fails_without_a_site_url(clean_env, capsys) -> None:
 
     assert code == 1
     assert "Set FRAPPE_URL" in output
+    assert "aspire describe frappe" in output
     assert "Traceback" not in output
 
 

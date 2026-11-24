@@ -1,0 +1,36 @@
+{
+  "run_date": "2026-11-23",
+  "mcp_version": "0.4.0",
+  "frappe_version": "15.96.0",
+  "erpnext_version": "15.96.1",
+  "runner": "e2e/run_standalone_batch_undo.py",
+  "tools_exercised": [
+    "create_documents",
+    "list_documents",
+    "update_document",
+    "undo_mcp_change",
+    "get_document",
+    "list_mcp_changes",
+    "delete_document"
+  ],
+  "results": {
+    "invalid_batch_left_no_records": true,
+    "batch_created": 3,
+    "update_undo_restored_original_value": true,
+    "undo_refused_after_target_changed": true,
+    "journal_rows": 2,
+    "journal_storage": "memory",
+    "cleanup_marker_records_remaining": false,
+    "journal_tools": [
+      "create_documents",
+      "update_document"
+    ]
+  },
+  "scope": "Temporary ToDo records with a unique run marker; no schema or permission changes",
+  "secrets_recorded": false,
+  "runner_assertions": [
+    "invalid batch leaves no records",
+    "journal is in memory with exactly create_documents and update_document entries",
+    "cleanup leaves no marker records"
+  ]
+}

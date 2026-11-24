@@ -42,9 +42,20 @@ from mcp import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 
 ROOT = Path(__file__).resolve().parents[1]
-TRANSIENT = ("peer closed", "connecterror", "connection refused", "server disconnected",
-             "reset by peer", "incomplete read", "remoteprotocolerror", "502", "503")
-TEST_FILE = '''import frappe
+TRANSIENT = (
+    "peer closed",
+    "connecterror",
+    "connection refused",
+    "server disconnected",
+    "frappe disconnected",
+    "connection was closed before frappe answered",
+    "reset by peer",
+    "incomplete read",
+    "remoteprotocolerror",
+    "502",
+    "503",
+)
+TEST_FILE = """import frappe
 
 try:
     from frappe.tests import IntegrationTestCase as TestCase
@@ -56,7 +67,7 @@ class Test{classname}(TestCase):
     def test_insert(self):
         doc = frappe.get_doc({{"doctype": "{doctype}", "title": "bench flow"}}).insert()
         self.assertTrue(doc.name)
-'''
+"""
 
 
 def value(result):
@@ -110,7 +121,11 @@ class Flow:
         self.doctype = f"MCP Bench {self.suffix}"
         self.slug = scrub(self.doctype)
         self.folder = (
-            Path(config["apps_path"]) / self.app / self.app / scrub(self.module) / "doctype"
+            Path(config["apps_path"])
+            / self.app
+            / self.app
+            / scrub(self.module)
+            / "doctype"
             / self.slug
         )
         self.steps: dict[str, object] = {}
@@ -134,6 +149,8 @@ class Flow:
         preview = await self.read("run_bench", args)
         if not preview.get("requires_confirmation") or not preview.get("preview_id"):
             raise AssertionError(f"run_bench {command} did not return a preview")
+        # A lost response does not prove the subprocess did not run. Never
+        # confirm the same mutating command again automatically.
         result = await self.call(
             "run_bench", {**args, "confirm": True, "expected_preview": preview["preview_id"]}
         )
@@ -148,8 +165,9 @@ class Flow:
         return result
 
     async def verdict(self) -> str | None:
-        drift = await self.read("list_app_drift", {"app": self.app, "module": self.module,
-                                                   "limit": 200})
+        drift = await self.read(
+            "list_app_drift", {"app": self.app, "module": self.module, "limit": 200}
+        )
         for item in drift.get("items", []):
             if item.get("doctype") == self.doctype:
                 return item.get("verdict")
@@ -222,10 +240,14 @@ class Flow:
             try:
                 preview = await self.read("delete_doctype", {"doctype": self.doctype})
                 if preview.get("requires_confirmation"):
-                    await self.call("delete_doctype", {
-                        "doctype": self.doctype, "confirm": True,
-                        "expected_modified": preview.get("modified"),
-                    })
+                    await self.call(
+                        "delete_doctype",
+                        {
+                            "doctype": self.doctype,
+                            "confirm": True,
+                            "expected_modified": preview.get("modified"),
+                        },
+                    )
                 removed = True
                 break
             except RuntimeError as error:
@@ -265,7 +287,8 @@ async def run() -> dict[str, object]:
             flow = Flow(session, config)
             info = await flow.read("get_site_info", {})
             evidence["versions"] = {
-                row.get("app"): row.get("version") for row in info.get("apps", [])
+                row.get("app"): row.get("version")
+                for row in info.get("apps", [])
                 if row.get("app") in ("frappe", "erpnext")
             }
             try:

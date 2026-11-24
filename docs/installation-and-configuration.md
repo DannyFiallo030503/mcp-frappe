@@ -72,6 +72,26 @@ Run `check` with the same environment the host will use before adding the server
 | `FRAPPE_MCP_JOURNAL_RECORDS` | No | `YES` also journals writes of business records (`create_document`, `create_documents`, `update_document`, deletes, submit, cancel, method calls) so that `undo_mcp_change` can reverse creations and updates. Off by default, because the journal then holds record names and old values. Schema and customization changes are always journaled. The journal is `FRAPPE_APPS_PATH/.mcp-frappe-journal/<site>.json`, or memory without `FRAPPE_APPS_PATH`; see [change journal](tool-reference.md#change-journal-and-undo) |
 | `FRAPPE_MCP_READ_ONLY` | No | `YES` exposes only the `read` toolset, for checking a site that must not change. Unset: read-only for a remote target (see [Remote sites](#remote-sites)), no change for a local one. `NO` enables the write toolsets on a remote target too. The server refuses to start with any other value, or when read-only and `FRAPPE_MCP_TOOLSETS` names a non-`read` toolset |
 
+### Aspire and Docker port mapping
+
+When Codex, Claude Code, or `uvx mcp-frappe` runs on the host, `FRAPPE_URL` must use the host-published **HTTP** endpoint. In Aspire, run `aspire describe frappe` from the AppHost directory and copy the displayed Frappe desk URL. The default table output avoids printing the resource environment, which can contain credentials. Do not use the container target port unless the MCP itself runs inside the same container network.
+
+Frappe's common container ports are HTTP `8000` and Socket.IO `9000`, but the host-published ports can be different. For example, use the host and port shown for Aspire’s `http` endpoint:
+
+```bash
+export FRAPPE_URL="<host-published-http-url>"
+```
+
+Do not point `FRAPPE_URL` at the `socketio` URL: the MCP uses the REST API over HTTP. If the HTTP endpoint URL uses `localhost` instead of the site hostname, set `FRAPPE_SITE` to the site's `.localhost` name so Frappe selects the right site. When using a Docker network from inside a container, use the Frappe service name and its internal HTTP port, and set `FRAPPE_SITE` when the Bench needs host-based site routing.
+
+To separate network/port problems from authentication problems, the read-only `GET /api/method/ping` endpoint should answer at the selected HTTP URL. A successful ping only confirms that HTTP reaches Frappe; `mcp-frappe check` must also log in with the configured user's credentials. If `check` cannot connect at a common container port such as `8000` or `9000`, it prints a hint to inspect the current Aspire/Docker mapping; it does not assume a host-published port has a fixed role. It never scans other ports or changes the connection automatically.
+
+The process location matters too: `.localhost`, `localhost`, and `127.0.0.1` resolve from the machine or network namespace running the MCP process. A local stdio MCP launched by Codex or Claude on the same workstation can use the local Aspire URL. A remote MCP service cannot reach the workstation's `.localhost` endpoint; use a network path reachable from that service with HTTPS and its normal credential safeguards, or run this MCP locally. Do not expose the development site's plain-HTTP endpoint publicly.
+
+The environment file used to launch a Frappe container is not automatically the MCP process environment. Map only the needed site URL, site name, and credential to `FRAPPE_URL`, `FRAPPE_SITE`, and `FRAPPE_PASSWORD` in a local launcher or secret manager. Avoid exporting the entire container environment to the MCP host, and never place the password in a committed config or an MCP server command line. A local launcher can derive the URL from the current host-published HTTP endpoint.
+
+Published host ports vary by AppHost configuration. Always read the current values from Aspire instead of copying a port from an example. With the site hostname in `FRAPPE_URL`, `FRAPPE_SITE` is unnecessary.
+
 Use either both API token variables or a username/password. Token auth is preferred for remote sites. Password login uses Frappe's `/api/method/login`.
 
 Both auth modes require HTTPS unless `FRAPPE_URL` points at a loopback host (`localhost`, `127.0.0.1`, `::1`) or a `.localhost` name. If the site is only reachable over plain HTTP by another name, for example a Docker service such as `http://frontend:8080`, set `FRAPPE_ALLOW_INSECURE_HTTP=YES`; do this only on a development network you trust. With password auth, a failed login is not cached, and an expired session is renewed automatically: the server logs in again and retries the rejected request once. A real permission denial is never retried. See [security.md](security.md#sessions). Every request runs as the configured Frappe user. This setup uses `Administrator`; Frappe grants that user all DocType permissions independently of Developer Mode. An Administrator password is highly privileged; use it only in a trusted development environment, and supply it through the MCP host's secret store/environment.
@@ -121,9 +141,36 @@ Inside Claude Code, the same is `/plugin marketplace add DannyFiallo030503/mcp-f
 
 An option left empty is passed as an empty value, which the server treats as unset. The plugin supports API-key login only; for a password login or any other variable from the [Environment](#environment) table, add the server with `claude mcp add` instead and disable the plugin's server in `/mcp`, keeping the skill. Remove the plugin with `claude plugin uninstall frappe-dev@mcp-frappe`. The plugin's files are in [plugins/frappe-dev](../plugins/frappe-dev/README.md).
 
+## Codex
+
+Codex installs the repository's `frappe-development` skill through its plugin marketplace and runs the MCP server as a local stdio process. Install the marketplace from the repository root:
+
+```bash
+codex plugin marketplace add DannyFiallo030503/mcp-frappe --sparse .agents/plugins --sparse plugins/frappe-dev
+```
+
+Then open Codex, run `/plugins`, find **Frappe development**, and install it. Start a new Codex conversation after installation.
+
+From the CLI, the same install is `codex plugin add frappe-dev@mcp-frappe`.
+
+Register the server in `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.frappe-dev]
+command = "uvx"
+args = ["mcp-frappe"]
+env_vars = ["FRAPPE_URL", "FRAPPE_SITE", "FRAPPE_SITE_LABEL", "FRAPPE_API_KEY", "FRAPPE_API_SECRET", "FRAPPE_USERNAME", "FRAPPE_PASSWORD", "FRAPPE_APPS_PATH", "FRAPPE_TIMEOUT", "FRAPPE_META_TTL", "FRAPPE_ALLOW_INSECURE_HTTP", "FRAPPE_MCP_TOOLSETS", "FRAPPE_MCP_METHODS", "FRAPPE_BENCH_PATH", "FRAPPE_BENCH_SITE", "FRAPPE_BENCH_COMMAND", "FRAPPE_BENCH_TIMEOUT", "FRAPPE_MCP_JOURNAL_RECORDS", "FRAPPE_MCP_READ_ONLY"]
+```
+
+Provide those values in the environment used to launch Codex. Codex forwards the listed variables from its own environment to this MCP process; use your operating system's secret manager or a local shell environment manager to supply them. Don't put API keys or secrets in a shared project file or commit them. Set `FRAPPE_URL`, `FRAPPE_API_KEY`, and `FRAPPE_API_SECRET` at minimum. `FRAPPE_SITE` is needed for host-based multi-site routing; `FRAPPE_APPS_PATH` enables standard DocType file changes and exports; `FRAPPE_BENCH_PATH` opts in to the fixed Bench commands. `FRAPPE_MCP_TOOLSETS` can narrow what Codex sees. If Codex was launched from a desktop shortcut and doesn't inherit your shell environment, configure the variables in the environment from which that app launches or use Claude Code's plugin, which prompts for the site and stores API credentials in the system credential store.
+
+Restart Codex after changing `config.toml` or the environment. Check the server is registered with `codex mcp list`, then run `uvx mcp-frappe check` from a terminal where the same Frappe settings are available. The check logs in, reports Frappe and app versions, and describes the version-specific MCP guidance. Once connected in Codex, call `get_site_info` and confirm the site, user, Frappe version, and installed apps before making changes. The repository supports Frappe 15 as its primary target and Frappe 16 as a supported target; tool behavior is selected from the detected site version where the APIs differ.
+
+To remove the server, run `codex mcp remove frappe-dev`. To remove the marketplace, run `codex plugin marketplace remove mcp-frappe`.
+
 ## MCP host configuration
 
-The host launches `uvx mcp-frappe` with the settings in its environment. The [README](../README.md#configure) has ready snippets for Claude Code (`claude mcp add frappe-dev -e FRAPPE_URL=... -- uvx mcp-frappe`) and Claude Desktop. The suggested server name is `frappe-dev`, because Frappe's built-in MCP server suggests `frappe`; to run both, see [using both servers](native-frappe-mcp.md). A generic local server declaration:
+The host launches `uvx mcp-frappe` with the settings in its environment. The [README](../README.md#configure) has ready snippets for Claude Code (`claude mcp add frappe-dev -e FRAPPE_URL=... -- uvx mcp-frappe`), Codex (above), and Claude Desktop. The suggested server name is `frappe-dev`, because Frappe's built-in MCP server suggests `frappe`; to run both, see [using both servers](native-frappe-mcp.md). A generic local server declaration:
 
 ```json
 {

@@ -42,6 +42,8 @@ uvx mcp-frappe check
 
 `check` logs in and prints the user, app versions, toolsets, how many characters each toolset adds to the host's context, and whether `FRAPPE_APPS_PATH` holds the site's apps. It never prints a secret. HTTPS is required except for loopback and `.localhost` hosts.
 
+For an Aspire or Docker site, configure `FRAPPE_URL` with the host-published HTTP URL, not a container port or Socket.IO URL; see [port mapping guidance](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/docs/installation-and-configuration.md#aspire-and-docker-port-mapping).
+
 ### Claude Code plugin
 
 The quickest setup in Claude Code is the plugin. It adds the server as `frappe-dev` and a `frappe-development` skill that tells Claude which tool fits which DocType and how to run the change, compare, export, migrate, and check loop:
@@ -52,6 +54,10 @@ claude plugin install frappe-dev@mcp-frappe
 ```
 
 Claude Code asks for the site URL, the API key and secret (kept in the system's credential store), and optionally the Bench `apps` folder. See the [plugin's README](https://github.com/DannyFiallo030503/mcp-frappe/tree/main/plugins/frappe-dev) for every option.
+
+### Codex
+
+Codex users can install the `frappe-development` skill from this repository's plugin marketplace, then register the local MCP server. The skill gives Codex the same Frappe workflow as the Claude Code plugin; the MCP server is configured separately so API credentials can come from the environment instead of being embedded in a shared plugin manifest. Follow [the Codex setup](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/docs/installation-and-configuration.md#codex).
 
 ### By hand
 
@@ -90,7 +96,7 @@ Standard DocTypes, DocType edits, and file exports need **developer mode** on th
 
 ## Next to Frappe's built-in MCP
 
-Frappe v16 ships its own MCP server for record data and whitelisted method calls. This server covers the development side: DocTypes, customizations, app files, and configuration records, with a preview before every write. To run both, keep the native server as `frappe`, add this one as `frappe-dev`, and set `FRAPPE_MCP_TOOLSETS=read,customize,developer` here so the record tools aren't listed twice. See [using both servers](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/docs/native-frappe-mcp.md).
+Frappe v16 ships its own MCP server for record data and whitelisted method calls. This server covers the development side: DocTypes, customizations, app files, and configuration records, with a preview before every write. To run both, keep the native server as `frappe`, add this one as `frappe-dev`, and set `FRAPPE_MCP_TOOLSETS=read,customize,developer` here so record writes are not duplicated; add `bench` when `FRAPPE_BENCH_PATH` is configured. See [using both servers](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/docs/native-frappe-mcp.md).
 
 ## Toolsets
 
@@ -120,6 +126,7 @@ Use an Administrator key only on a development site. See the [security model](ht
 - [Using both servers](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/docs/native-frappe-mcp.md): this server next to Frappe's built-in MCP
 - [Developer-task evaluations](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/docs/evaluations.md): twelve development tasks run with this server, Frappe's built-in MCP, and both
 - [Compatibility and validation](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/docs/compatibility-and-validation.md): what has been run on v15 and v16 sites
+- [Complete developer-pack roadmap](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/docs/work-plan/roadmap-complete-developer-pack.md): remaining validation and coding-agent workflow phases
 - [Field feedback](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/docs/field-feedback/README.md): sanitized task usage, missing capabilities, and bugs reported from real MCP use
 - [Architecture](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/docs/architecture.md), [security](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/docs/security.md), [development](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/docs/development.md)
 - [Frappe capability study](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/docs/frappe-capability-study.md): what Frappe offers and what the server covers

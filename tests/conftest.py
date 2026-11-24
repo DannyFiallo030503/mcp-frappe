@@ -121,8 +121,12 @@ class FakeSite:
         looked up among the DocTypes registered here when the request is made. Frappe has
         already merged Custom Fields and Property Setters into `fields`.
         """
-        self.doctypes[doctype] = {"doctype": "DocType", "name": doctype, **properties,
-                                  "fields": fields}
+        self.doctypes[doctype] = {
+            "doctype": "DocType",
+            "name": doctype,
+            **properties,
+            "fields": fields,
+        }
         if not any(
             route.method == "GET" and route.path == standalone._GETDOCTYPE for route in self.routes
         ):
@@ -178,6 +182,35 @@ def _reset_module_caches() -> None:
 def fake_site(monkeypatch) -> Iterator[FakeSite]:
     """Replace `standalone._request` with a `FakeSite` and keep real HTTP out of reach."""
     site = FakeSite()
+    site.add_doctype(
+        "DocField",
+        [
+            {
+                "fieldname": "fieldtype",
+                "fieldtype": "Select",
+                "options": "\n".join(sorted(standalone._FIELDTYPES)),
+            },
+            *[{"fieldname": name, "fieldtype": "Data"} for name in standalone._DOCFIELD_PROPERTIES],
+        ],
+    )
+    site.add_doctype(
+        "DocType",
+        [{"fieldname": name, "fieldtype": "Data"} for name in standalone._DOCTYPE_PROPERTIES],
+    )
+    site.add_doctype(
+        "Customize Form",
+        [
+            {"fieldname": name, "fieldtype": "Data"}
+            for name in standalone._CUSTOMIZE_DOCTYPE_PROPERTIES
+        ],
+    )
+    site.add_doctype(
+        "Customize Form Field",
+        [
+            {"fieldname": name, "fieldtype": "Data"}
+            for name in standalone._CUSTOMIZE_FIELD_PROPERTIES
+        ],
+    )
     _reset_module_caches()
     monkeypatch.delenv("FRAPPE_META_TTL", raising=False)
     monkeypatch.setattr(standalone, "_request", site)

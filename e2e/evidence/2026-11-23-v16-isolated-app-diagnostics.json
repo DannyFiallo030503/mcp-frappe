@@ -1,0 +1,53 @@
+{
+  "app_methods": {
+    "config_suggestion_count": 97,
+    "files_scanned": 118,
+    "files_truncated": false,
+    "method_count": 97,
+    "skipped_file_count_reported": 0,
+    "skipped_file_list_at_limit": false
+  },
+  "app_versions": {
+    "application": "0.0.1",
+    "erpnext": "16.35.0",
+    "frappe": "16.34.0"
+  },
+  "drift": {
+    "counts": {
+      "in_sync": 12,
+      "site_ahead": 1
+    },
+    "missing_local_module_count": 0,
+    "site_ahead_details": [
+      {
+        "changed_doc_type_property_names": [
+          "row_format"
+        ],
+        "diff_truncated": false,
+        "migrate_imports_file": false,
+        "newer_side": "site",
+        "section_change_counts": {
+          "added": 0,
+          "changed": 0,
+          "moved": 0,
+          "properties": 1,
+          "removed": 0,
+          "tables": 0
+        }
+      }
+    ],
+    "total": 13
+  },
+  "frappe_major_version": 16,
+  "patches": {
+    "applied_count": 22,
+    "format": "sections",
+    "pending_count": 0,
+    "unknown_in_log_count": 0,
+    "warning_count_reported": 0,
+    "warning_list_at_limit": false
+  },
+  "read_only": true,
+  "server_name": "frappe",
+  "tool_count": 43
+}

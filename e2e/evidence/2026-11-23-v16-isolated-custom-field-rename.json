@@ -1,0 +1,21 @@
+{
+  "date": "2026-11-23",
+  "mcp_version": "0.4.0 working tree",
+  "mcp_commit": "89a167bed1719a9b7f81facb3e05189b7edd0d51",
+  "frappe_major_version": 16,
+  "site_alias": "isolated-v16",
+  "operation": "rename(kind=custom_field)",
+  "doctype": "ToDo",
+  "steps": {
+    "create_temporary_custom_field": "pass",
+    "rename_through_frappe": "pass",
+    "schema_readback_after_rename": "pass",
+    "rename_back": "pass",
+    "schema_readback_after_rename_back": "pass",
+    "delete_temporary_field": "pass",
+    "cleanup_test_field_metadata_remaining": false,
+    "cleanup_verified": true
+  },
+  "read_only": false,
+  "isolated_site": true
+}

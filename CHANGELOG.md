@@ -17,6 +17,14 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `get_site_info` and `mcp-frappe check` report version-based MCP routing guidance. Frappe v15 uses this server; v16+ may use the native MCP for data when it is enabled and configured; unknown versions do not assume native availability. The local server cannot configure another MCP host.
+
+### Fixed
+
+- `rename(kind="field")` no longer removes its generated patch files when a transport error leaves the remote DocType state uncertain. It reconciles an unambiguous field rename despite Frappe metadata normalization; otherwise it returns the rollback ID and a conditional recovery path without retrying the write.
+
 ## [0.4.0] - 2026-11-21
 
 This release adds the rest of the development loop that Frappe's built-in MCP server can't

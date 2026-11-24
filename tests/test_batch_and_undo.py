@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import copy
+import functools
 import itertools
 import json
 import os
 import stat
 
+import anyio
 import pytest
 
 from frappe_mcp import standalone
@@ -61,7 +63,16 @@ def _undo(entry_id: str) -> dict:
 
 def _registered(name: str):
     """The tool as an MCP host calls it, through `_tool()`'s wrapper."""
-    return standalone.server._tool_manager._tools[name].fn
+    registered = standalone.server._tool_manager._tools[name].fn
+
+    @functools.wraps(registered)
+    def call(*args, **kwargs):
+        async def invoke():
+            return await registered(*args, **kwargs)
+
+        return anyio.run(invoke)
+
+    return call
 
 
 # create_documents
