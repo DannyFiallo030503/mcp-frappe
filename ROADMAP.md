@@ -22,7 +22,7 @@ Frappe MCP is a standalone stdio server for Frappe developers. This page lists w
 
 ## Next
 
-- **Close the remaining validation gaps**: `set_role_permissions` update under concurrency control and record lifecycle writes as a user without System Manager ([list](docs/compatibility-and-validation.md#not-yet-checked-on-a-site)).
+- **Close the remaining validation gaps**: concurrent `set_role_permissions` updates (the native update path has no compare-and-set) ([list](docs/compatibility-and-validation.md#not-yet-checked-on-a-site)).
 - **Repeat the developer-task evaluations** ([first results](docs/evaluations.md)) several times per cell to turn single passes into rates, and on v15 with `--config dev`.
 
 ## Backlog
