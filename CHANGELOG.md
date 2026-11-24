@@ -23,6 +23,7 @@ All notable changes to this project are listed here. The format follows
 
 ### Fixed
 
+- `customize_doctype`'s `add_custom_field` accepts the name Frappe derives from a non-ASCII label, as Desk does (`Código` → `custom_código`), instead of refusing it as not lowercase ASCII and then asking for that same name. `order_by` in `list_documents` and `upsert_report`, and `{{ doc.<field> }}` placeholders in Notification templates, accept such field names too.
 - The DocType recovery copies kept when a standard DocType rename or deletion loses the connection now go to `<app>/.mcp-frappe-backups/doctype-recoveries/` inside `FRAPPE_APPS_PATH`, like export backups, instead of `~/.local/state`, and Frappe's moved folder is kept there instead of in the module's `doctype/` folder. One recovery keeps one copy, and its error message is punctuated correctly.
 - `mcp-frappe check` and connection errors describe local ports generically: 8000 as `bench start`'s web port (or a container's internal port) and 9000 as Socket.IO, without assuming a particular container tool.
 - `docs/security.md` no longer claims a default `admin` password; password login always needs `FRAPPE_PASSWORD`.
