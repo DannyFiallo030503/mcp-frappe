@@ -1,0 +1,11 @@
+{
+  "date": "2026-11-24",
+  "frappe_version": "15.96.0",
+  "doctype": "ToDo",
+  "operation": "two concurrent confirmed updates to one temporary Custom DocPerm row",
+  "outcome": "both updates accepted serially",
+  "same_permission_row": true,
+  "final_row_matches_one_complete_writer": true,
+  "cleanup_verified": true,
+  "site_isolated": false
+}
