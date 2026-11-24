@@ -1,0 +1,12 @@
+{
+  "bench_exit_code": 1,
+  "bench_reported_failure": true,
+  "bench_tests_status": "FAILED",
+  "cleanup_verified": true,
+  "command": "run-tests",
+  "date": "2026-11-24",
+  "deliberate_failure_marker": "MCP intentional failure",
+  "frappe_version": "16.34.0",
+  "site_isolated": true,
+  "test_file_absent": true
+}
