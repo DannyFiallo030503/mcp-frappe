@@ -4,9 +4,13 @@ Add an entry when an existing MCP tool fails unexpectedly or produces an incorre
 
 ## Open bugs
 
-### BUG-2026-001 — DocType rename leaves native files after development reload
+None.
 
-- **Status:** open; default-reloader recovery validated on 2026-11-24; successful rename still requires a stable worker
+## Closed bugs
+
+### BUG-2026-001 — Default development reload interrupts DocType rename
+
+- **Status:** closed on 2026-11-24; MCP recovery leaves metadata and app files consistent. Completing the rename still requires a stable worker.
 - **Reported:** 2026-11-23
 - **Task reference:** `mcp-frappe-v16-doctype-rename`
 - **Tool:** `rename(kind="doctype", doctype="DocType")`
@@ -14,9 +18,9 @@ Add an entry when an existing MCP tool fails unexpectedly or produces an incorre
 - **Frappe version / apps:** Frappe 16.34.0
 - **Preconditions:** Standard app DocType, developer mode, Bench web server watching app Python files
 - **Reproduction:** Create a standard virtual DocType in an app checkout, preview its DocType rename, then confirm it. The native request moves the app folder and triggers the web worker reload during the request.
-- **Expected:** Rename either completes, or the MCP leaves the original DocType and its app files intact after reporting failure.
+- **Expected:** Rename either completes, or the MCP leaves the original DocType and its app files intact after reporting failure. The recovery behavior now satisfies this acceptance criterion.
 - **Actual:** On the default development server, Frappe reloaded after moving app files and before the virtual DocType metadata transaction committed. The MCP reported failure, preserved the original metadata and folder, quarantined the moved folder, and retained a recovery snapshot. Cleanup through MCP on a stable worker on the same Bench/site passed. A separate same-site `bench serve --noreload` run passed create, rename, readback, and delete.
-- **Impact:** Rename does not complete on the default development-server worker, but the validated recovery leaves the old metadata and files intact. The operation requires a stable worker to complete.
+- **Impact:** Frappe's default development worker interrupts the native rename request. MCP no longer leaves metadata and app files inconsistent; a stable worker is still needed to complete the operation.
 - **Workaround:** Use the same Bench/site through `bench serve --noreload` for standard virtual DocType renames; inspect metadata and app files after a failed request.
 - **Evidence:** `e2e/evidence/2026-11-24-v16-isolated-doctype-rename.json`; `e2e/evidence/2026-11-24-v16-doctype-rename-reloader-recovery.json`; private details retained in the consuming repository.
 - **Implementation:** Recovery guards merged in PR #40; default-watcher safe recovery validated with live evidence on 2026-11-24.

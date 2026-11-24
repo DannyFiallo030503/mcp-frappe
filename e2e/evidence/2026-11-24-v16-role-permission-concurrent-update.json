@@ -1,0 +1,16 @@
+{
+  "date": "2026-11-24",
+  "doctype": "ToDo",
+  "frappe_major_version": 16,
+  "frappe_version": "16.34.0",
+  "operation": "two independent MCP processes preview and confirm different changes to one temporary Custom DocPerm row",
+  "outcome": "one update accepted; the overlapping stale update was refused",
+  "stale_refusal": "Frappe TimestampMismatchError",
+  "same_permission_row": true,
+  "final_flags_match_accepted_writer": true,
+  "cleanup": {
+    "temporary_custom_docperm_absent": true,
+    "temporary_role_absent": true
+  },
+  "site_isolated": true
+}
