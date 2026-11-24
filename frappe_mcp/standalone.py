@@ -390,7 +390,9 @@ _FILTER_OPERATORS = (
     "is",
     "timespan",
 )
-_ORDER_TERM = re.compile(r"\s*([A-Za-z_][A-Za-z0-9_]*)(?:\s+(asc|desc))?\s*", re.I)
+# Field names may hold Unicode letters: Customize Form derives them from the label, and
+# Frappe accepts any word characters (`\w`) in a column name.
+_ORDER_TERM = re.compile(r"\s*([^\W\d]\w*)(?:\s+(asc|desc))?\s*", re.I)
 _ORDER_MAX_TERMS = 3
 _STALE_DOCUMENT = "Document changed since preview; request a fresh preview"
 
@@ -680,6 +682,27 @@ def _frappe_customize_fieldname(label: Any) -> str:
     if fieldname in _CUSTOM_FIELD_RESERVED_FIELDNAMES:
         fieldname += "1"
     return fieldname
+
+
+_CUSTOMIZE_FIELDNAME = re.compile(r"custom_\w+")
+_FIELDNAME_MAX_LENGTH = 64  # MariaDB's limit for a column name
+
+
+def _check_customize_fieldname(where: str, fieldname: str) -> None:
+    """Refuse a derived Custom Field name that Frappe or the database would reject.
+
+    Frappe keeps Unicode letters (a label "Código" gives `custom_código`), so they are allowed.
+    """
+    if not _CUSTOMIZE_FIELDNAME.fullmatch(fieldname):
+        raise ValueError(
+            f"{where}: the label needs a letter or digit for Frappe to derive a fieldname"
+        )
+    if len(fieldname) > _FIELDNAME_MAX_LENGTH:
+        raise ValueError(
+            f"{where}: Frappe would derive {fieldname!r} from the label; a fieldname is at most "
+            f"{_FIELDNAME_MAX_LENGTH} characters, so shorten the label"
+        )
+
 _UPDATE_DOCTYPE_MAX_OPERATIONS = 50
 _DOCTYPE_LINKS_LIMIT = 100
 _ROLE_PERMISSION_FLAGS = {
@@ -7762,11 +7785,8 @@ def _plan_customization(
                 frozenset(field_properties) | {"fieldname", "fieldtype"},
             )
             fieldname = values.get("fieldname")
-            if not isinstance(fieldname, str) or not _NEW_FIELDNAME.fullmatch(fieldname):
-                raise ValueError(
-                    f"{where}: fieldname must be lowercase letters, digits, and underscores, "
-                    "starting with a letter, at most 64 characters"
-                )
+            if not isinstance(fieldname, str):
+                raise ValueError(f"{where}: fieldname must be the name Frappe derives from label")
             if values.get("fieldtype") in _CODE_OPTIONS_FIELDTYPES and values.get("options"):
                 raise ValueError(
                     f"{where}: options of {values.get('fieldtype')} fields are code; not set"
@@ -7777,6 +7797,7 @@ def _plan_customization(
                     f"{where}: Frappe Customize Form derives fieldname "
                     f"{effective_fieldname!r} from label; use that value instead of {fieldname!r}"
                 )
+            _check_customize_fieldname(where, fieldname)
             if any(row.get("fieldname") == fieldname for row in rows):
                 raise ValueError(f"{where}: {form['doc_type']} already has a field {fieldname}")
             for prop, value in values.items():
@@ -8420,7 +8441,7 @@ _TEMPLATE_FILTERS: dict[str, tuple[type, ...]] = {
 }
 _ROUND_METHODS = frozenset({"common", "ceil", "floor"})
 _PLACEHOLDER = re.compile(r"\{\{(.*?)\}\}", re.S)
-_PLACEHOLDER_BODY = re.compile(r"\s*doc\.([A-Za-z_][A-Za-z0-9_]*)\s*((?:\|[^|]*)*)")
+_PLACEHOLDER_BODY = re.compile(r"\s*doc\.([^\W\d]\w*)\s*((?:\|[^|]*)*)")
 _TEMPLATE_FILTER = re.compile(r"\s*([a-z_]+)\s*(?:\(([^()]*)\))?\s*")
 _EMAIL_ADDRESS = re.compile(r"[^@\s,;{}<>()\"'%]+@[^@\s,;{}<>()\"'%]+\.[A-Za-z0-9-]+")
 

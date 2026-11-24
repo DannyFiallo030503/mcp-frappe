@@ -98,6 +98,16 @@ def test_list_documents_order_by_rejects_sql_and_unknown_fields(site, order_by, 
     assert site.calls_to("GET", "/api/resource/Example") == []
 
 
+def test_list_documents_orders_by_a_unicode_fieldname(site) -> None:
+    site.add_doctype("Unicode Example", [{"fieldname": "custom_código", "fieldtype": "Data"}])
+    site.add("GET", "/api/resource/Unicode%20Example", [])
+
+    standalone.list_documents("Unicode Example", order_by="custom_código DESC, name")
+
+    params = _list_params(site, "/api/resource/Unicode%20Example")
+    assert params["order_by"] == "custom_código desc, name asc"
+
+
 def test_list_documents_forwards_validated_or_filters(site) -> None:
     site.add("GET", "/api/resource/Example", [])
     or_filters = [["title", "like", "%a%"], ["Example Item", "item_code", "=", "X"]]

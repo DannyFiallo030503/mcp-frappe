@@ -312,6 +312,74 @@ def test_adding_a_custom_field_rejects_name_frappe_would_replace(fake_site) -> N
         )
 
 
+def test_adding_a_custom_field_accepts_the_unicode_name_frappe_derives(fake_site) -> None:
+    _Site(fake_site)
+
+    preview = standalone.customize_doctype(
+        DOCTYPE,
+        [
+            {
+                "op": "add_custom_field",
+                "field": {"fieldname": "custom_código", "fieldtype": "Data", "label": "Código"},
+            }
+        ],
+    )
+
+    assert preview["custom_fields"][0]["fieldname"] == "custom_código"
+
+
+@pytest.mark.parametrize(
+    ("label", "derived"),
+    [
+        ("Código", "custom_código"),
+        ("Año fiscal", "custom_año_fiscal"),
+        ("Nº de lote", "custom_nº_de_lote"),
+    ],
+)
+def test_frappe_customize_fieldname_keeps_unicode_letters(label, derived) -> None:
+    assert standalone._frappe_customize_fieldname(label) == derived
+
+
+def test_adding_a_custom_field_points_an_ascii_guess_to_the_unicode_name(fake_site) -> None:
+    _Site(fake_site)
+
+    with pytest.raises(ValueError, match="derives fieldname 'custom_código'"):
+        standalone.customize_doctype(
+            DOCTYPE,
+            [
+                {
+                    "op": "add_custom_field",
+                    "field": {"fieldname": "custom_codigo", "fieldtype": "Data", "label": "Código"},
+                }
+            ],
+        )
+
+
+@pytest.mark.parametrize(
+    ("label", "message"),
+    [
+        ("%", "needs a letter or digit"),
+        ("x" * 58, "at most 64 characters"),
+    ],
+)
+def test_adding_a_custom_field_rejects_a_label_frappe_cannot_name(
+    fake_site, label, message
+) -> None:
+    _Site(fake_site)
+    fieldname = standalone._frappe_customize_fieldname(label)
+
+    with pytest.raises(ValueError, match=message):
+        standalone.customize_doctype(
+            DOCTYPE,
+            [
+                {
+                    "op": "add_custom_field",
+                    "field": {"fieldname": fieldname, "fieldtype": "Data", "label": label},
+                }
+            ],
+        )
+
+
 def test_adding_a_custom_field_rejects_batch_that_changes_derived_name(fake_site) -> None:
     _Site(fake_site)
 

@@ -408,10 +408,11 @@ FIELDS = {"title", "total", "name", "owner"}
         "{{ doc.title | upper | truncate(20) }} {{ doc.total|round(0, 'floor') }}",
         "{{ doc.title | default(\"n/a\") | e }}",
         "Line one\n<b>{{ doc.title }}</b> 100% done }}",
+        "Código: {{ doc.custom_código | e }}",
     ],
 )
 def test_template_rule_accepts_placeholders_and_safe_filters(text) -> None:
-    standalone._assert_template(text, "message", FIELDS)
+    standalone._assert_template(text, "message", FIELDS | {"custom_código"})
 
 
 @pytest.mark.parametrize(
