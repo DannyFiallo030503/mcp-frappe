@@ -63,9 +63,9 @@ Seven tasks were added after the first run, all from day-to-day development, and
 | `workflow-fixture-export` | The site-only Workflow is in the app's `fixtures/workflow.json` and the managed `hooks.py` block |
 | `export-rollback` | The mistaken export's `custom/todo.json` is gone and the Custom Field is still on the site |
 | `undo-schema-change` | The three added fields are gone, the moved field is back in place, and the DocType is `in_sync` |
-| `diagnose-error` | The answer names the batch from the planted Error Log, and the log is still there |
+| `diagnose-error` (Bench) | The answer names the batch from an Error Log a planted test wrote, and the log is still there |
 
-`promote-prototype` now tells the agent to apply the change without asking, since a headless run has nobody to answer. `--repeat` runs each cell several times, so the next run can report rates instead of single passes.
+Every task that asks for a change tells the agent to apply it without asking, since a headless run has nobody to answer; in a trial run, agents with this server stopped at the preview otherwise. `--repeat` runs each cell several times, so the next run can report rates instead of single passes.
 
 ## How the comparison is kept fair
 

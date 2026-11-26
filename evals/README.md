@@ -43,7 +43,7 @@ Needs:
 - a Frappe **v16** site with the built-in MCP server enabled (System Settings > AI Agents > Enable MCP) for `native` and `both`; on v15, run `--config dev` only;
 - developer mode, Administrator's API key and secret (deleting standard DocTypes needs Administrator), and a loopback or `.localhost` URL;
 - `FRAPPE_APPS_PATH`, and a disposable test app (`FRAPPE_TEST_APP`, `FRAPPE_TEST_MODULE`) whose Git checkout is clean: each run resets it to its last commit;
-- `FRAPPE_BENCH_PATH` for the four tasks that need Bench commands (`rename-field-keep-data`, `missing-doctype`, `sync-teammate-change`, `run-app-tests`); without it they are `skipped`. `run-app-tests` also needs `allow_tests` in the site config, or its setup fails;
+- `FRAPPE_BENCH_PATH` for the five tasks that need Bench commands (`rename-field-keep-data`, `missing-doctype`, `sync-teammate-change`, `run-app-tests`, `diagnose-error`); without it they are `skipped`. `run-app-tests` and `diagnose-error` also need `allow_tests` in the site config, because their setup runs a planted test (Error Log fields are read-only through the API, so `diagnose-error` logs its error from a test);
 - no `<module>/custom/todo.json` committed in the test app, because `export-rollback` checks that the rollback removes the file;
 - Claude Code, signed in.
 

@@ -3,7 +3,8 @@ title: Ship a Workflow that exists only on the site with the app
 prompt: |
   The approval workflow "MCP Eval Leave Approval" of the DocType "MCP Eval Leave" exists only on
   this site. Put it into the app ${app}, module ${module}, so that `bench migrate` creates it on
-  every other site that installs the app.
+  every other site that installs the app. Apply the change yourself; don't stop to ask me for
+  confirmation.
 setup:
   - write: create_doctype
     args:

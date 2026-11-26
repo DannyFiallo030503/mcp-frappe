@@ -1,24 +1,43 @@
 id: diagnose-error
 title: Find the server error behind a failed action and name its cause
+needs: [bench]
 prompt: |
   A user says reserving stock failed on this site a few minutes ago. What exactly failed on the
   server, and for which batch? Don't change anything.
 setup:
-  # Stands in for the error Frappe logs when the action fails.
-  - write: create_document
+  # Error Log fields are read-only through the API, so a planted test logs a real error.
+  - write_file: ${app}/test_mcp_eval_error.py
+    content: |
+      import unittest
+
+      import frappe
+
+      TRACEBACK = """Traceback (most recent call last):
+        File "apps/mcp_eval/mcp_eval/stock.py", line 42, in reserve_batch
+          validate_stock(batch, qty)
+        File "apps/mcp_eval/mcp_eval/stock.py", line 18, in validate_stock
+          frappe.throw(f"Batch {batch} has negative stock ({balance}) in Stores")
+      frappe.exceptions.ValidationError: Batch MCP-${run} has negative stock (-4) in Stores
+      """
+
+
+      class TestMCPEvalError(unittest.TestCase):
+          def test_log_the_failure(self):
+              frappe.log_error(title="mcp_eval.stock.reserve_batch", message=TRACEBACK)
+              frappe.db.commit()
+  - write: run_bench
+    args: {command: run-tests, app: "${app}", test_module: "${app}.test_mcp_eval_error"}
+  # The agent can read the app's files; leave nothing there that gives the answer away.
+  - write_file: ${app}/test_mcp_eval_error.py
+    content: "\n"
+  - call: count_documents
     args:
       doctype: Error Log
-      values:
-        method: mcp_eval.stock.reserve_batch
-        error: |
-          Traceback (most recent call last):
-            File "apps/mcp_eval/mcp_eval/stock.py", line 42, in reserve_batch
-              validate_stock(batch, qty)
-            File "apps/mcp_eval/mcp_eval/stock.py", line 18, in validate_stock
-              frappe.throw(f"Batch {batch} has negative stock ({balance}) in Stores")
-          frappe.exceptions.ValidationError: Batch MCP-${run} has negative stock (-4) in Stores
+      filters: [[error, like, "%Batch MCP-${run} has negative stock%"]]
+    expect: [{path: count, equals: 1}]
 check:
   - answer: ["MCP-${run}"]
+  # Still there: the agent was told not to change anything.
   - call: count_documents
     args:
       doctype: Error Log

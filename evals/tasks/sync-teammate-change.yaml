@@ -4,7 +4,8 @@ needs: [bench]
 prompt: |
   A teammate changed the DocType "MCP Eval Batch" in the app ${app} and pushed it; I pulled the
   change, but the site still shows the old form. Bring the site up to date with the app's files.
-  Don't edit the app's files: they are the teammate's version.
+  Don't edit the app's files: they are the teammate's version. Apply the change yourself; don't
+  stop to ask me for confirmation.
 setup:
   - write: create_doctype
     args:

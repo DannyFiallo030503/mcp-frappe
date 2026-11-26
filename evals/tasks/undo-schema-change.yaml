@@ -4,7 +4,7 @@ prompt: |
   A few minutes ago someone edited the DocType "MCP Eval Undo" of the app ${app} by mistake:
   they added the fields `legacy_ref`, `legacy_note`, and `legacy_flag` and moved `notes` above
   `title`. Put the DocType back exactly as it was before that edit, and make sure the app's files
-  match the site afterwards.
+  match the site afterwards. Apply the change yourself; don't stop to ask me for confirmation.
 setup:
   - write: create_doctype
     args:
