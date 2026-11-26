@@ -5,6 +5,7 @@ prompt: |
   On the DocType "MCP Eval Item" of the app ${app}, rename the field `old_code` to `item_code`.
   The three existing records must keep their values under the new field. Finish the job so the
   site already uses the new field.
+  Apply each change yourself; don't stop to ask me for confirmation.
 setup:
   - write: create_doctype
     args:

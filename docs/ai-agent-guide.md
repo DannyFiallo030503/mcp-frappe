@@ -85,7 +85,7 @@ Changes made through this server go in a change journal. To take one back:
 2. `undo_mcp_change(entry_id=...)` previews the inverse: deleting created records, a Custom Field, a Property Setter, or a DocType; writing an update's old values back; or the `update_doctype` operations that reverse a DocType edit. Show the preview to the user.
 3. Confirm with `expected_preview` set to the preview's `preview_id`.
 
-Undo is refused when someone changed the target after the journaled change (its `modified` moved on): say so, and don't work around it. Undo the newest change first when several touched the same target. Deletes, submit and cancel, exports (use `rollback_export`), renames, `customize_doctype`, and Bench commands have no undo; the entry's `no_undo` says what to do instead. Record writes are journaled only when the user set `FRAPPE_MCP_JOURNAL_RECORDS=YES`; `list_mcp_changes` reports it as `records_journaled`.
+Undo is refused when someone changed the target after the journaled change (its `modified` moved on): say so, and don't work around it. Undo the newest change first when several touched the same target. Deletes, submit and cancel, exports (use `rollback_export` with the `rollback_id` in the entry's `target`), renames, `customize_doctype`, and Bench commands have no undo; the entry's `no_undo` says what to do instead. Record writes are journaled only when the user set `FRAPPE_MCP_JOURNAL_RECORDS=YES`; `list_mcp_changes` reports it as `records_journaled`.
 
 ### Test my submittable DocType
 

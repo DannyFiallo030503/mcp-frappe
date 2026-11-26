@@ -52,7 +52,7 @@ def _environ(tmp_path: Path, **overrides: str) -> dict[str, str]:
 
 def test_every_task_loads_and_fills_its_placeholders(run) -> None:
     tasks = run.load_tasks()
-    assert 10 <= len(tasks) <= 15
+    assert 15 <= len(tasks) <= 30
     assert len({task.id for task in tasks}) == len(tasks)
     for task in tasks:
         for part in (task.prompt, task.setup, task.check, task.cleanup):
@@ -338,3 +338,35 @@ def test_transcripts_are_saved_privately_only_when_asked(run, tmp_path) -> None:
     assert path.stat().st_mode & 0o777 == 0o600
     assert run.parse_args(["--transcripts", str(tmp_path)]).transcripts == tmp_path
     assert run.parse_args([]).transcripts is None
+
+
+def test_numbered_attempts_get_their_own_transcript(run, tmp_path) -> None:
+    path = run.save_transcript(tmp_path, "add-field-after", "dev", ["{}"], attempt=2)
+    assert path == tmp_path / "add-field-after-dev-2.jsonl"
+
+
+def test_repeat_multiplies_the_planned_runs(run, capsys, monkeypatch) -> None:
+    monkeypatch.delenv("FRAPPE_ALLOW_EVALS", raising=False)
+    argv = ["--dry-run", "--config", "dev", "--config", "native", "--task", "pending-patches"]
+    assert run.main([*argv, "--repeat", "3"]) == 0
+    plan = json.loads(capsys.readouterr().out)
+    assert plan["repeat"] == 3 and plan["runs"] == 6
+    for bad in ("0", "11"):
+        with pytest.raises(SystemExit, match="between 1 and 10"):
+            run.main([*argv, "--repeat", bad])
+
+
+def test_summary_counts_passes_over_the_runs_that_counted(run) -> None:
+    rows = [
+        {"config": "dev", "status": "pass"},
+        {"config": "dev", "status": "pass"},
+        {"config": "dev", "status": "fail"},
+        {"config": "native", "status": "fail"},
+        {"config": "native", "status": "setup_failed"},
+        {"config": "native", "status": "skipped"},
+        {"config": "both", "status": "invalid"},
+    ]
+    assert run.summarize(rows) == {
+        "dev": {"passed": 2, "runs": 3},
+        "native": {"passed": 0, "runs": 2},
+    }

@@ -124,7 +124,7 @@ Use an Administrator key only on a development site. See the [security model](ht
 - [Tool reference](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/docs/tool-reference.md): every tool, its arguments, and its limits
 - [AI agent guide](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/docs/ai-agent-guide.md): the workflows an agent should follow
 - [Using both servers](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/docs/native-frappe-mcp.md): this server next to Frappe's built-in MCP
-- [Developer-task evaluations](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/docs/evaluations.md): twelve development tasks run with this server, Frappe's built-in MCP, and both
+- [Developer-task evaluations](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/docs/evaluations.md): development tasks run with this server, Frappe's built-in MCP, and both
 - [Compatibility and validation](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/docs/compatibility-and-validation.md): what has been run on v15 and v16 sites
 - [Complete developer-pack roadmap](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/docs/work-plan/roadmap-complete-developer-pack.md): remaining validation and coding-agent workflow phases
 - [Field feedback](https://github.com/DannyFiallo030503/mcp-frappe/blob/main/docs/field-feedback/README.md): sanitized task usage, missing capabilities, and bugs reported from real MCP use

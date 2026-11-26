@@ -1,0 +1,37 @@
+id: workflow-fixture-export
+title: Ship a Workflow that exists only on the site with the app
+prompt: |
+  The approval workflow "MCP Eval Leave Approval" of the DocType "MCP Eval Leave" exists only on
+  this site. Put it into the app ${app}, module ${module}, so that `bench migrate` creates it on
+  every other site that installs the app. Apply the change yourself; don't stop to ask me for
+  confirmation.
+setup:
+  - write: create_doctype
+    args:
+      app: ${app}
+      module: ${module}
+      name: MCP Eval Leave
+      fields: [{fieldname: title, fieldtype: Data, label: Title}]
+  - write: upsert_workflow
+    args:
+      doctype: MCP Eval Leave
+      name: MCP Eval Leave Approval
+      states:
+        - {state: Draft, doc_status: 0, allow_edit: System Manager}
+        - {state: Pending, doc_status: 0, allow_edit: System Manager}
+        - {state: Approved, doc_status: 0, allow_edit: System Manager}
+      transitions:
+        - {state: Draft, action: Review, next_state: Pending, allowed: System Manager}
+        - {state: Pending, action: Approve, next_state: Approved, allowed: System Manager}
+check:
+  - file: ${app}/fixtures/workflow.json
+    contains: MCP Eval Leave Approval
+  - file: ${app}/hooks.py
+    contains: MCP Eval Leave Approval
+cleanup:
+  - write: delete_document
+    args: {doctype: Workflow, name: MCP Eval Leave Approval}
+  - write: delete_document
+    args: {doctype: Custom Field, name: MCP Eval Leave-workflow_state}
+  - write: delete_doctype
+    args: {doctype: MCP Eval Leave}

@@ -3,6 +3,7 @@ title: Add a required Select field at a given position and show it in the list v
 prompt: |
   On the DocType "MCP Eval Task" of the app ${app}, add a required Select field `priority` with
   the options Low, Medium, and High, right after the `title` field. Show it in the list view.
+  Apply each change yourself; don't stop to ask me for confirmation.
 setup:
   - write: create_doctype
     args:

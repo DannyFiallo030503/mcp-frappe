@@ -4,6 +4,7 @@ prompt: |
   When an "MCP Eval Order" is submitted, users with the System Manager role should get a
   System Notification (not an email) saying which order it was. Name the rule
   "MCP Eval Submitted".
+  Apply each change yourself; don't stop to ask me for confirmation.
 setup:
   - write: create_doctype
     args:

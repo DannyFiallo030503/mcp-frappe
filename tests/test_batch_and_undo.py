@@ -338,6 +338,19 @@ def test_other_writes_are_journaled_by_the_tool_wrapper_without_an_inverse(site)
         standalone.undo_mcp_change(row["id"])
 
 
+def test_an_export_entry_keeps_the_rollback_id_its_undo_needs() -> None:
+    result = {"written": ["custom/todo.json"], "rollback_id": "export-0123abcd.json"}
+
+    standalone._journal_call(
+        "export_customizations", "customize", {"app": "lab_app", "module": "Lab"}, result
+    )
+
+    (row,) = standalone.list_mcp_changes()["rows"]
+    assert row["target"]["rollback_id"] == "export-0123abcd.json"
+    assert row["undoable"] is False and "rollback_export" in row["no_undo"]
+    assert "rollback_id" in row["no_undo"]
+
+
 def test_previews_and_record_deletes_are_not_journaled_by_the_wrapper(site) -> None:
     path = standalone._resource("Example", "EX-1")
     site.add("GET", path, {"name": "EX-1", "modified": MODIFIED})

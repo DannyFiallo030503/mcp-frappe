@@ -4,6 +4,7 @@ prompt: |
   Create 20 ToDo records for testing, with the descriptions "MCP Eval seed ${run} 1" through
   "MCP Eval seed ${run} 20". Check that all 20 exist. Then take the whole batch back, so none of
   them are left on the site.
+  Apply each change yourself; don't stop to ask me for confirmation.
 check:
   - call: count_documents
     args:

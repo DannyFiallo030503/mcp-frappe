@@ -1,0 +1,44 @@
+id: undo-schema-change
+title: Revert a DocType edit made by mistake, with the app files in sync
+prompt: |
+  A few minutes ago someone edited the DocType "MCP Eval Undo" of the app ${app} by mistake:
+  they added the fields `legacy_ref`, `legacy_note`, and `legacy_flag` and moved `notes` above
+  `title`. Put the DocType back exactly as it was before that edit, and make sure the app's files
+  match the site afterwards. Apply the change yourself; don't stop to ask me for confirmation.
+setup:
+  - write: create_doctype
+    args:
+      app: ${app}
+      module: ${module}
+      name: MCP Eval Undo
+      fields:
+        - {fieldname: title, fieldtype: Data, label: Title}
+        - {fieldname: status, fieldtype: Select, label: Status, options: "Open\nClosed"}
+        - {fieldname: notes, fieldtype: Small Text, label: Notes}
+  # The mistaken edit, made through this server so it is in the change journal.
+  - write: update_doctype
+    args:
+      doctype: MCP Eval Undo
+      operations:
+        - {op: add_field, insert_after: title,
+           field: {fieldname: legacy_ref, fieldtype: Data, label: Legacy Ref}}
+        - {op: add_field, insert_after: legacy_ref,
+           field: {fieldname: legacy_note, fieldtype: Small Text, label: Legacy Note}}
+        - {op: add_field, insert_after: legacy_note,
+           field: {fieldname: legacy_flag, fieldtype: Check, label: Legacy Flag}}
+        - {op: move_field, fieldname: notes, insert_after: null}
+check:
+  - call: get_doctype_schema
+    args: {doctype: MCP Eval Undo, detail: full}
+    expect:
+      - {path: doctype.fields.fieldname, not_contains: legacy_ref}
+      - {path: doctype.fields.fieldname, not_contains: legacy_note}
+      - {path: doctype.fields.fieldname, not_contains: legacy_flag}
+      - {path: doctype.fields.fieldname, adjacent: [title, status]}
+      - {path: doctype.fields.fieldname, adjacent: [status, notes]}
+  - call: diff_doctype
+    args: {doctype: MCP Eval Undo}
+    expect: [{path: verdict, equals: in_sync}]
+cleanup:
+  - write: delete_doctype
+    args: {doctype: MCP Eval Undo}

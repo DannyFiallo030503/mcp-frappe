@@ -601,12 +601,15 @@ def _version(argv: list[str]) -> str | None:
         return None
 
 
-def save_transcript(folder: Path | None, task: str, config: str, lines: list[str]) -> Path | None:
+def save_transcript(
+    folder: Path | None, task: str, config: str, lines: list[str], attempt: int | None = None
+) -> Path | None:
     """Keep a run's raw stream-json for debugging (mode 0600). It holds site data: not evidence."""
     if folder is None:
         return None
     folder.mkdir(parents=True, exist_ok=True)
-    path = folder / f"{task}-{config}.jsonl"
+    suffix = f"-{attempt}" if attempt else ""
+    path = folder / f"{task}-{config}{suffix}.jsonl"
     path.touch(mode=0o600)
     path.chmod(0o600)
     path.write_text("".join(f"{line}\n" for line in lines))
@@ -615,7 +618,7 @@ def save_transcript(folder: Path | None, task: str, config: str, lines: list[str
 
 async def run_task(
     harness: Harness, task: Task, config: str, args: argparse.Namespace, names: dict[str, str],
-    environ: dict[str, str], baseline_drift: set[str],
+    environ: dict[str, str], baseline_drift: set[str], attempt: int | None = None,
 ) -> dict[str, Any]:
     settings = harness.settings
     names = {**names, "run": uuid.uuid4().hex[:8]}
@@ -623,6 +626,8 @@ async def run_task(
     check = substitute(task.check, names)
     cleanup = substitute(task.cleanup, names)
     row: dict[str, Any] = {"task": task.id, "config": config}
+    if attempt:
+        row["attempt"] = attempt
 
     await harness.run_steps(cleanup, tolerant=True)
     git_restore(settings.apps_path / settings.app)
@@ -644,7 +649,7 @@ async def run_task(
             )
         finally:
             shutil.rmtree(folder, ignore_errors=True)
-        save_transcript(args.transcripts, task.id, config, lines)
+        save_transcript(args.transcripts, task.id, config, lines, attempt)
         summary = parse_stream(lines)
         answer = summary.pop("answer", "")
         failed_servers = sorted(
@@ -706,10 +711,15 @@ async def main_async(args: argparse.Namespace) -> dict[str, Any]:
                     rows.append({"task": task.id, "config": config, "status": "skipped",
                                  "problems": [f"needs {', '.join(missing)}"]})
                     continue
-                print(f"{task.id} [{config}] ...", file=sys.stderr, flush=True)
-                row = await run_task(harness, task, config, args, names, environ, baseline)
-                print(f"{task.id} [{config}] {row['status']}", file=sys.stderr, flush=True)
-                rows.append(row)
+                for attempt in range(1, args.repeat + 1):
+                    numbered = attempt if args.repeat > 1 else None
+                    label = f"{task.id} [{config}]" + (f" #{attempt}" if numbered else "")
+                    print(f"{label} ...", file=sys.stderr, flush=True)
+                    row = await run_task(
+                        harness, task, config, args, names, environ, baseline, numbered
+                    )
+                    print(f"{label} {row['status']}", file=sys.stderr, flush=True)
+                    rows.append(row)
     commit = _version(["git", "-C", str(ROOT), "rev-parse", "--short", "HEAD"])
     from frappe_mcp import __version__
 
@@ -723,8 +733,22 @@ async def main_async(args: argparse.Namespace) -> dict[str, Any]:
         "tools": args.tools,
         "site": "loopback .localhost development site; URL, site name, and credentials omitted",
         "apps": {name: apps.get(name) for name in ("frappe", "erpnext") if apps.get(name)},
+        "repeat": args.repeat,
+        "summary": summarize(rows),
         "results": rows,
     }
+
+
+def summarize(rows: list[dict[str, Any]]) -> dict[str, dict[str, int]]:
+    """Count passes per configuration over the runs that counted (not skipped or invalid)."""
+    summary: dict[str, dict[str, int]] = {}
+    for row in rows:
+        if row["status"] in ("skipped", "invalid"):
+            continue
+        counts = summary.setdefault(row["config"], {"passed": 0, "runs": 0})
+        counts["runs"] += 1
+        counts["passed"] += row["status"] == "pass"
+    return summary
 
 
 def plan(args: argparse.Namespace) -> dict[str, Any]:
@@ -733,7 +757,8 @@ def plan(args: argparse.Namespace) -> dict[str, Any]:
     return {
         "tasks": [{"id": task.id, "title": task.title, "needs": task.needs} for task in tasks],
         "configs": configs,
-        "runs": len(tasks) * len(configs),
+        "repeat": args.repeat,
+        "runs": len(tasks) * len(configs) * args.repeat,
         "model": args.model,
         "tools": args.tools,
     }
@@ -744,6 +769,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--config", action="append", choices=CONFIGS,
                         help="dev, native, or both; repeat for several (default: all three)")
     parser.add_argument("--task", action="append", help="a task id; repeat (default: all)")
+    parser.add_argument("--repeat", type=int, default=1,
+                        help="runs per task and configuration, 1-10 (default 1), to get rates")
     parser.add_argument("--model", help="passed to claude --model")
     parser.add_argument("--max-budget-usd", type=float, help="per run, passed to claude")
     parser.add_argument("--tools", default=",".join(DEFAULT_TOOLS),
@@ -761,6 +788,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    if not 1 <= args.repeat <= 10:
+        raise SystemExit("--repeat must be between 1 and 10")
     result = plan(args) if args.dry_run else asyncio.run(main_async(args))
     text = json.dumps(result, indent=2, default=str)
     print(text)

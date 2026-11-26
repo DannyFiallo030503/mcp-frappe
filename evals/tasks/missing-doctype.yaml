@@ -4,6 +4,7 @@ needs: [bench]
 prompt: |
   A teammate added a DocType to the app ${app}, but it doesn't show up on this site. Find which
   DocType of ${app} is missing from the site and fix it, without editing its files.
+  Apply each change yourself; don't stop to ask me for confirmation.
 setup:
   - write_file: ${app}/${module_dir}/doctype/mcp_eval_missing/__init__.py
     content: ""

@@ -10,7 +10,7 @@
 - [AI agent guide](docs/ai-agent-guide.md): discovery, schema-first reads, preview and confirm, DocType edits, drift checks, post-change checks, exports, and rollback.
 - [Tool reference](docs/tool-reference.md): every tool, its arguments, caps, and unsupported features.
 - [Claude Code plugin](plugins/frappe-dev/README.md): `claude plugin install frappe-dev@mcp-frappe` after `claude plugin marketplace add DannyFiallo030503/mcp-frappe`; the server plus the `frappe-development` skill.
-- [Developer-task evaluations](docs/evaluations.md): twelve development tasks run with this server, Frappe's built-in MCP, and both; the runner is in `evals/`.
+- [Developer-task evaluations](docs/evaluations.md): development tasks run with this server, Frappe's built-in MCP, and both; the runner is in `evals/`.
 - [Compatibility and validation](docs/compatibility-and-validation.md): the v15/v16 matrix, evidence, and how to run the live runners.
 - [Security](docs/security.md): credentials, native permissions, previews, code fields, and file boundaries.
 - [Architecture](docs/architecture.md): stdio, HTTP authentication, metadata cache, and local app writes.

@@ -16,7 +16,7 @@ Submit and cancel a document to test a controller: `submit_document` and `cancel
 2. `undo_mcp_change(entry_id)` previews the inverse: delete created records, a Custom Field, a Property Setter, or a DocType; write an update's old values back; or reverse an `update_doctype` edit.
 3. Confirm with `expected_preview`.
 
-Undo is refused when the target changed after the journaled change: say so. Undo the newest change first when several touched the same target. Deletes, submit and cancel, exports (use `rollback_export`), renames, `customize_doctype`, and Bench commands have no undo; the entry's `no_undo` says what to do instead.
+Undo is refused when the target changed after the journaled change: say so. Undo the newest change first when several touched the same target. Deletes, submit and cancel, exports (use `rollback_export` with the rollback id in the entry's target), renames, `customize_doctype`, and Bench commands have no undo; the entry's `no_undo` says what to do instead.
 
 Record writes (`create_document`, `create_documents`, updates) are journaled only with `FRAPPE_MCP_JOURNAL_RECORDS=YES`; `list_mcp_changes` reports it as `records_journaled`. Without it, delete seeded records with `delete_document`.
 
