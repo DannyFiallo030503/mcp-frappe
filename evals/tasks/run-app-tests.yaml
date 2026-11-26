@@ -1,0 +1,43 @@
+id: run-app-tests
+title: Run the app's tests and report which one fails
+needs: [bench]
+prompt: |
+  The test module `${app}.test_mcp_eval_suite` of the app ${app} was just added. Run its tests
+  on this site and tell me which test fails, by its method name. Don't change any file.
+setup:
+  - write_file: ${app}/test_mcp_eval_suite.py
+    content: |
+      import unittest
+
+      import frappe
+
+
+      class TestMCPEvalPricing(unittest.TestCase):
+          def test_bulk_discount(self):
+              # 15% off three units of 19.99, plus 7% tax.
+              total = round(3 * 19.99 * 0.85 * 1.07, 2)
+              self.assertEqual(total, 54.55)
+
+          def test_line_total(self):
+              self.assertEqual(round(3 * 19.99, 2), 59.97)
+
+          def test_records_the_run(self):
+              frappe.get_doc(
+                  {"doctype": "ToDo", "description": "MCP Eval tests ran ${run}"}
+              ).insert(ignore_permissions=True)
+              frappe.db.commit()
+  # Fails here, before the agent runs, when the site lacks allow_tests.
+  - call: run_bench
+    args: {command: run-tests, app: "${app}", test_module: "${app}.test_mcp_eval_suite"}
+    expect: [{path: preview_id, not_equals: ""}]
+check:
+  # The tests ran: only the planted test writes this record.
+  - call: count_documents
+    args:
+      doctype: ToDo
+      filters: [[description, "=", "MCP Eval tests ran ${run}"]]
+    expect: [{path: count, equals: 1}]
+  - answer: [test_bulk_discount]
+cleanup:
+  - delete_matching: ToDo
+    filters: [[description, like, "MCP Eval tests ran%"]]

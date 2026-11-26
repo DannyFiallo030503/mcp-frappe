@@ -36,14 +36,15 @@ An `expect` entry is `{path: ..., <op>: value}`. A path is dotted, `fields[field
 
 ## Run it
 
-It writes to the site and to the test app, and every run costs API usage (12 tasks × 3 configurations = 36 Claude Code sessions). Use a disposable development site only.
+It writes to the site and to the test app, and every run costs API usage (19 tasks × 3 configurations = 57 Claude Code sessions, times `--repeat`). Use a disposable development site only.
 
 Needs:
 
 - a Frappe **v16** site with the built-in MCP server enabled (System Settings > AI Agents > Enable MCP) for `native` and `both`; on v15, run `--config dev` only;
 - developer mode, Administrator's API key and secret (deleting standard DocTypes needs Administrator), and a loopback or `.localhost` URL;
 - `FRAPPE_APPS_PATH`, and a disposable test app (`FRAPPE_TEST_APP`, `FRAPPE_TEST_MODULE`) whose Git checkout is clean: each run resets it to its last commit;
-- `FRAPPE_BENCH_PATH` for the two tasks that need Bench commands (`rename-field-keep-data`, `missing-doctype`); without it they are `skipped`;
+- `FRAPPE_BENCH_PATH` for the four tasks that need Bench commands (`rename-field-keep-data`, `missing-doctype`, `sync-teammate-change`, `run-app-tests`); without it they are `skipped`. `run-app-tests` also needs `allow_tests` in the site config, or its setup fails;
+- no `<module>/custom/todo.json` committed in the test app, because `export-rollback` checks that the rollback removes the file;
 - Claude Code, signed in.
 
 ```bash
@@ -53,7 +54,7 @@ FRAPPE_ALLOW_EVALS=YES uv run python evals/run.py \
   --model <model> --max-budget-usd 2 --out e2e/evidence/<date>-v16-evals.json
 ```
 
-Options: `--config dev|native|both` and `--task <id>` (repeat either), `--no-skill`, `--tools`, `--claude <path>`, and `--transcripts <dir>`, which saves each run's raw stream-json (tool arguments and results, the final answer) as `<task>-<config>.jsonl` with mode 0600. Transcripts hold site data and local paths: use them to debug a failure, never as evidence. The native endpoint defaults to `<scheme>://<FRAPPE_SITE or host>:<port>/api/v2/mcp`; set `FRAPPE_NATIVE_MCP_URL` to override it (it must be loopback or `.localhost` too).
+Options: `--config dev|native|both` and `--task <id>` (repeat either), `--repeat N` (1-10 runs of each task and configuration, so a cell becomes a rate; the output's `summary` counts passes per configuration and each row has its `attempt`), `--no-skill`, `--tools`, `--claude <path>`, and `--transcripts <dir>`, which saves each run's raw stream-json (tool arguments and results, the final answer) as `<task>-<config>.jsonl` with mode 0600. Transcripts hold site data and local paths: use them to debug a failure, never as evidence. The native endpoint defaults to `<scheme>://<FRAPPE_SITE or host>:<port>/api/v2/mcp`; set `FRAPPE_NATIVE_MCP_URL` to override it (it must be loopback or `.localhost` too).
 
 The runner refuses to start without `FRAPPE_ALLOW_EVALS=YES`, with a URL that isn't loopback or `.localhost`, with `frappe` or `erpnext` as the test app, or with uncommitted changes in the test app. It writes the `--mcp-config` file, which holds the API key for both servers, with mode 0600 in the run's temporary folder and deletes the folder after the run; Claude Code itself gets no `FRAPPE_*` variable. Your `~/.claude/CLAUDE.md` may still be loaded; note it with the results if it says anything about Frappe.
 

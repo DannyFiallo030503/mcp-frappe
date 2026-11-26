@@ -2,7 +2,8 @@ id: promote-prototype
 title: Move a site-custom prototype DocType into the app
 prompt: |
   I prototyped "MCP Eval Proto" as a custom DocType on the site. Move it into the app ${app},
-  module ${module}, so it ships with the app.
+  module ${module}, so it ships with the app. Apply the change yourself; don't stop to ask me
+  for confirmation.
 setup:
   - write: create_doctype
     args:

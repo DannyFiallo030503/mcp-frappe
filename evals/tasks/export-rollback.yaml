@@ -1,0 +1,24 @@
+id: export-rollback
+title: Undo a customization export made by mistake, keeping the site's customizations
+prompt: |
+  A few minutes ago someone exported ToDo's customizations into the app ${app}, module
+  ${module}, by mistake. Undo that export so the app's files are exactly as they were before it.
+  Keep the customizations on the site: only the export should go.
+setup:
+  - write: create_custom_field
+    args:
+      doctype: ToDo
+      field: {fieldname: mcp_eval_ticket, fieldtype: Data, label: Ticket, insert_after: description}
+  - write: export_customizations
+    args: {app: "${app}", module: "${module}", doctypes: [ToDo]}
+  - file: ${app}/${module_dir}/custom/todo.json
+    contains: mcp_eval_ticket
+check:
+  - file: ${app}/${module_dir}/custom/todo.json
+    exists: false
+  - call: get_doctype_schema
+    args: {doctype: ToDo}
+    expect: [{path: fields.fieldname, contains: mcp_eval_ticket}]
+cleanup:
+  - write: delete_document
+    args: {doctype: Custom Field, name: ToDo-mcp_eval_ticket}

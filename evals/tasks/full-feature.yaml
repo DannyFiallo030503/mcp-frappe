@@ -1,0 +1,65 @@
+id: full-feature
+title: Build a small feature end to end, shipped with the app
+timeout: 1800
+prompt: |
+  Build a small lab feature in the app ${app}, module ${module}:
+
+  - a child table DocType "MCP Eval Lab Reading" with `parameter` (Data) and `value` (Float);
+  - a submittable DocType "MCP Eval Lab Sample" with a required `sample_title` (Data) and a table
+    `readings` of MCP Eval Lab Reading;
+  - a System Notification named "MCP Eval Lab Sample Submitted" that tells users with the System
+    Manager role when a sample is submitted;
+  - a Report Builder report "MCP Eval Lab Samples" on MCP Eval Lab Sample with the columns `name`
+    and `sample_title`;
+  - a Workspace "MCP Eval Lab" in module ${module} with shortcuts to MCP Eval Lab Sample and to
+    that report.
+
+  Everything must ship with the app: when you are done, the app's files must hold all of it and
+  match the site. Apply each change yourself; don't stop to ask me for confirmation.
+check:
+  - call: get_doctype_schema
+    args: {doctype: MCP Eval Lab Sample}
+    expect:
+      - {path: is_submittable, equals: 1}
+      - {path: "fields[fieldname=sample_title].reqd", equals: 1}
+      - {path: "fields[fieldname=readings].fieldtype", equals: Table}
+      - {path: "fields[fieldname=readings].options", equals: MCP Eval Lab Reading}
+      - {path: "child_tables.MCP Eval Lab Reading.fieldname", contains: parameter}
+      - {path: "child_tables.MCP Eval Lab Reading.fieldname", contains: value}
+  - call: diff_doctype
+    args: {doctype: MCP Eval Lab Sample}
+    expect: [{path: verdict, equals: in_sync}]
+  - call: diff_doctype
+    args: {doctype: MCP Eval Lab Reading}
+    expect: [{path: verdict, equals: in_sync}]
+  - call: list_notifications
+    args: {document_type: MCP Eval Lab Sample}
+    expect:
+      - {path: "notifications[name=MCP Eval Lab Sample Submitted].event", equals: Submit}
+      - {path: "notifications[name=MCP Eval Lab Sample Submitted].channel",
+         equals: System Notification}
+  - call: list_reports
+    args: {ref_doctype: MCP Eval Lab Sample}
+    expect: [{path: rows.name, contains: MCP Eval Lab Samples}]
+  - call: get_workspace
+    args: {name: MCP Eval Lab}
+    expect:
+      - {path: shortcuts.link_to, contains: MCP Eval Lab Sample}
+      - {path: shortcuts.link_to, contains: MCP Eval Lab Samples}
+  - file: ${app}/${module_dir}/notification/mcp_eval_lab_sample_submitted/mcp_eval_lab_sample_submitted.json
+    contains: MCP Eval Lab Sample Submitted
+  - file: ${app}/${module_dir}/report/mcp_eval_lab_samples/mcp_eval_lab_samples.json
+    contains: MCP Eval Lab Samples
+  - file: ${app}/${module_dir}/workspace/mcp_eval_lab/mcp_eval_lab.json
+    contains: MCP Eval Lab Sample
+cleanup:
+  - write: delete_document
+    args: {doctype: Workspace, name: MCP Eval Lab}
+  - write: delete_document
+    args: {doctype: Report, name: MCP Eval Lab Samples}
+  - write: delete_document
+    args: {doctype: Notification, name: MCP Eval Lab Sample Submitted}
+  - write: delete_doctype
+    args: {doctype: MCP Eval Lab Sample}
+  - write: delete_doctype
+    args: {doctype: MCP Eval Lab Reading}

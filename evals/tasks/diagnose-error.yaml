@@ -1,0 +1,29 @@
+id: diagnose-error
+title: Find the server error behind a failed action and name its cause
+prompt: |
+  A user says reserving stock failed on this site a few minutes ago. What exactly failed on the
+  server, and for which batch? Don't change anything.
+setup:
+  # Stands in for the error Frappe logs when the action fails.
+  - write: create_document
+    args:
+      doctype: Error Log
+      values:
+        method: mcp_eval.stock.reserve_batch
+        error: |
+          Traceback (most recent call last):
+            File "apps/mcp_eval/mcp_eval/stock.py", line 42, in reserve_batch
+              validate_stock(batch, qty)
+            File "apps/mcp_eval/mcp_eval/stock.py", line 18, in validate_stock
+              frappe.throw(f"Batch {batch} has negative stock ({balance}) in Stores")
+          frappe.exceptions.ValidationError: Batch MCP-${run} has negative stock (-4) in Stores
+check:
+  - answer: ["MCP-${run}"]
+  - call: count_documents
+    args:
+      doctype: Error Log
+      filters: [[error, like, "%Batch MCP-${run} has negative stock%"]]
+    expect: [{path: count, equals: 1}]
+cleanup:
+  - delete_matching: Error Log
+    filters: [[method, "=", mcp_eval.stock.reserve_batch]]

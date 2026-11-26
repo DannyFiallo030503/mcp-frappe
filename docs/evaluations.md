@@ -1,6 +1,6 @@
 # Developer-task evaluations
 
-Does this server make Claude better at Frappe development than Frappe's built-in MCP server? The [evaluation suite](../evals/README.md) answers with twelve development tasks, each run by Claude Code headless in three configurations (this server with its skill, the native server, and both) and checked against the site and the app checkout afterwards, not against the agent's own report.
+Does this server make Claude better at Frappe development than Frappe's built-in MCP server? The [evaluation suite](../evals/README.md) answers with development tasks (twelve in the first run below; the suite now has nineteen, see [newer tasks](#newer-tasks)), each run by Claude Code headless in three configurations (this server with its skill, the native server, and both) and checked against the site and the app checkout afterwards, not against the agent's own report.
 
 ## Results
 
@@ -50,6 +50,22 @@ These were the hypotheses; the run confirmed all three:
 - The native server has no access to the app checkout and can't create DocTypes in an app's files, export customizations, or run Bench commands. In the `native` configuration the agent can still read the app's files (`Read`, `Glob`, `Grep`), and it can write DocType, Custom Field, and Workflow records directly, which in developer mode can make Frappe write the files too. Tasks such as `child-table-export`, `workflow-three-states`, and `seed-and-undo` may well pass there.
 - Tasks that need Bench (`rename-field-keep-data`, `missing-doctype`) can't pass with the native server alone: the agent can't run commands in this setup.
 - `both` should match `dev` on development tasks and use the native server for `seed-and-undo`, which then has no journal to undo from.
+
+## Newer tasks
+
+Seven tasks were added after the first run, all from day-to-day development, and none has been run against a live site yet:
+
+| Task | What the check reads |
+|---|---|
+| `full-feature` | Submittable DocType with a child table, a submit Notification, a Report Builder report, and a Workspace, all in the app's files and `in_sync` |
+| `run-app-tests` (Bench) | A record only the planted test writes exists; the answer names the failing test |
+| `sync-teammate-change` (Bench) | A field added to the app's JSON is on the site, `in_sync`, and the teammate's file is untouched |
+| `workflow-fixture-export` | The site-only Workflow is in the app's `fixtures/workflow.json` and the managed `hooks.py` block |
+| `export-rollback` | The mistaken export's `custom/todo.json` is gone and the Custom Field is still on the site |
+| `undo-schema-change` | The three added fields are gone, the moved field is back in place, and the DocType is `in_sync` |
+| `diagnose-error` | The answer names the batch from the planted Error Log, and the log is still there |
+
+`promote-prototype` now tells the agent to apply the change without asking, since a headless run has nobody to answer. `--repeat` runs each cell several times, so the next run can report rates instead of single passes.
 
 ## How the comparison is kept fair
 

@@ -19,6 +19,9 @@ All notable changes to this project are listed here. The format follows
 
 ### Added
 
+- Seven developer-task evaluations: `full-feature`, `run-app-tests`, `sync-teammate-change`, `workflow-fixture-export`, `export-rollback`, `undo-schema-change`, and `diagnose-error`. `promote-prototype` now tells the agent not to stop for confirmation.
+- `evals/run.py --repeat N` runs each task and configuration N times and adds a per-configuration `summary` of passes.
+- The change journal keeps the `rollback_id` of an export or field rename in the entry's `target`, so an agent can find the export to undo with `rollback_export`.
 - `get_site_info` and `mcp-frappe check` report version-based MCP routing guidance. Frappe v15 uses this server; v16+ may use the native MCP for data when it is enabled and configured; unknown versions do not assume native availability. The local server cannot configure another MCP host.
 
 ### Fixed
