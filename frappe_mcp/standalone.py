@@ -3291,7 +3291,7 @@ _NO_UNDO = {
     "delete_doctype": "a deleted DocType can't be restored from the journal",
     "submit_document": "a submitted document has no safe inverse; cancel it instead",
     "cancel_document": "a cancelled document can't be submitted again",
-    "export_customizations": "use rollback_export for exported files",
+    "export_customizations": "use rollback_export with the entry's rollback_id",
     "export_form_customizations": "restore the exported files from version control",
     "rollback_export": "export again to redo it",
     "promote_custom_doctype": "a promoted DocType's files can't be removed from the journal",
@@ -3424,6 +3424,9 @@ def _journal_call(tool: str, toolset: str, kwargs: dict[str, Any], result: Any) 
         for key in _JOURNAL_TARGET_KEYS
         if isinstance(value := kwargs.get(key), str)
     }
+    # Exports and field renames write app files; keep the id rollback_export needs to undo them.
+    if isinstance(result, dict) and isinstance(rollback_id := result.get("rollback_id"), str):
+        target["rollback_id"] = rollback_id
     return _journal(result, tool, target, record_data=record_data)
 
 
