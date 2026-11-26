@@ -4,6 +4,7 @@ needs: [bench]
 prompt: |
   The test module `${app}.test_mcp_eval_suite` of the app ${app} was just added. Run its tests
   on this site and tell me which test fails, by its method name. Don't change any file.
+  Run them yourself; don't stop to ask me for confirmation.
 setup:
   - write_file: ${app}/test_mcp_eval_suite.py
     content: |

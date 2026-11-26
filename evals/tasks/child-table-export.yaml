@@ -5,6 +5,7 @@ prompt: |
   "MCP Eval Reading" in module ${module} with two fields: `value` (Float) and `unit` (Data).
   Then add a table field `readings` to MCP Eval Sample that uses it. Make sure the app's files
   match the site when you are done.
+  Apply each change yourself; don't stop to ask me for confirmation.
 setup:
   - write: create_doctype
     args:

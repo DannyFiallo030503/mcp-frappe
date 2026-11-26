@@ -3,6 +3,7 @@ title: Create a Report Builder report
 prompt: |
   Create a report named "MCP Eval Open ToDos" on ToDo that lists the description, status, and
   date columns and shows only ToDos whose status is Open. It is a site report, not part of an app.
+  Apply each change yourself; don't stop to ask me for confirmation.
 check:
   - call: list_reports
     args: {search: MCP Eval Open ToDos}

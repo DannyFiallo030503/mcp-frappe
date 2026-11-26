@@ -5,6 +5,7 @@ prompt: |
   links to User, placed after `description`, and make the `status` field bold. Then export
   ToDo's customizations into the app ${app}, module ${module}, so `bench migrate` applies them
   on other sites.
+  Apply each change yourself; don't stop to ask me for confirmation.
 setup: []
 check:
   - call: get_doctype_schema

@@ -5,6 +5,7 @@ prompt: |
   three states: Draft, Pending, and Approved. A System Manager can send a Draft for review,
   which moves it to Pending, and can approve a Pending request, which moves it to Approved.
   Nothing is submitted.
+  Apply each change yourself; don't stop to ask me for confirmation.
 setup:
   - write: create_doctype
     args:
